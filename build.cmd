@@ -11,10 +11,12 @@ build\make_icon.exe
 if errorlevel 1 exit /b 1
 rc /nologo /fo build\picoslip.res src\picoslip.rc
 if errorlevel 1 exit /b 1
+cl /nologo /TC /std:c17 /W4 /WX /O2 /MT /utf-8 /c src\archive.c /Fo"build\archive.obj"
+if errorlevel 1 exit /b 1
 if /i "%~1"=="test-only" goto tests
 if /i "%~1"=="screenshots-only" goto screenshots
 if /i "%~1"=="profile-only" goto profile
-cl /nologo /TC /std:c17 /W4 /WX /O2 /MT /utf-8 src\picoslip.c /Fo"build\picoslip.obj" /Fe"dist\PicoSlip.exe" /link build\picoslip.res /SUBSYSTEM:WINDOWS /MANIFEST:EMBED /MANIFESTINPUT:src\app.manifest user32.lib gdi32.lib shell32.lib
+cl /nologo /TC /std:c17 /W4 /WX /O2 /MT /utf-8 src\picoslip.c /Fo"build\picoslip.obj" /Fe"dist\PicoSlip.exe" /link build\picoslip.res /SUBSYSTEM:WINDOWS /MANIFEST:EMBED /MANIFESTINPUT:src\app.manifest build\archive.obj user32.lib gdi32.lib shell32.lib dwmapi.lib comctl32.lib
 if errorlevel 1 exit /b 1
 rc /nologo /fo build\setup.res src\setup.rc
 if errorlevel 1 exit /b 1
@@ -26,13 +28,13 @@ echo Ready: %CD%\dist\PicoSlip.exe
 exit /b 0
 
 :tests
-cl /nologo /TC /std:c17 /W4 /WX /O2 /MT /utf-8 tests\tests.c /Fo"build\tests.obj" /Fe"build\tests.exe" /link build\picoslip.res /SUBSYSTEM:CONSOLE /MANIFEST:EMBED /MANIFESTINPUT:src\app.manifest user32.lib gdi32.lib shell32.lib
+cl /nologo /TC /std:c17 /W4 /WX /O2 /MT /utf-8 tests\tests.c /Fo"build\tests.obj" /Fe"build\tests.exe" /link build\picoslip.res /SUBSYSTEM:CONSOLE /MANIFEST:EMBED /MANIFESTINPUT:src\app.manifest build\archive.obj user32.lib gdi32.lib shell32.lib dwmapi.lib comctl32.lib
 if errorlevel 1 exit /b 1
 build\tests.exe %~2
 exit /b %errorlevel%
 
 :screenshots
-cl /nologo /TC /std:c17 /W4 /WX /O2 /MT /utf-8 tests\demo.c /Fo"build\demo.obj" /Fe"build\demo.exe" /link build\picoslip.res /SUBSYSTEM:CONSOLE /MANIFEST:EMBED /MANIFESTINPUT:src\app.manifest user32.lib gdi32.lib shell32.lib
+cl /nologo /TC /std:c17 /W4 /WX /O2 /MT /utf-8 tests\demo.c /Fo"build\demo.obj" /Fe"build\demo.exe" /link build\picoslip.res /SUBSYSTEM:CONSOLE /MANIFEST:EMBED /MANIFESTINPUT:src\app.manifest build\archive.obj user32.lib gdi32.lib shell32.lib dwmapi.lib comctl32.lib
 if errorlevel 1 exit /b 1
 build\demo.exe %~2
 exit /b %errorlevel%

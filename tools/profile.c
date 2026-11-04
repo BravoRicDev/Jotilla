@@ -21,7 +21,7 @@ static BOOL CALLBACK prepare_note(HWND window,LPARAM fill) {
     if (wcscmp(name,APP_NOTE)) return TRUE;
     ++visible_notes;
     if (fill) {
-        HWND edit=FindWindowExW(window,NULL,L"EDIT",NULL);
+        HWND edit=GetDlgItem(window,10);
         SendMessageW(edit,EM_SETSEL,0,-1);
         SendMessageW(edit,EM_REPLACESEL,TRUE,(LPARAM)L"A small note.\r\nPlain text, saved locally.");
     }

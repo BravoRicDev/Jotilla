@@ -6,10 +6,17 @@
 #include <windowsx.h>
 #include <shellapi.h>
 #include <shlobj.h>
+#include <richedit.h>
+#include <commdlg.h>
+#include <tom.h>
+#include <dwmapi.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <wchar.h>
+#include <wctype.h>
 #include "resource.h"
+#include "archive.h"
+#include "colors.h"
 
 #define APP_CLASS APP_CONTROLLER
 #define NOTE_CLASS APP_NOTE
@@ -21,8 +28,12 @@
 #define EXIT_COMMAND 1
 #define NOTE_WIDTH 300
 #define NOTE_HEIGHT 240
+#define MIN_WIDTH 160
+#define MIN_HEIGHT 100
+#define MAX_SIZE 4096
 #define CMD_ARCHIVE 100
 #define CMD_TITLE 101
+#define CMD_BROWSE 102
 #define CMD_OPACITY 200
 #define CMD_SIZE 300
 #define CMD_PALETTE 400
@@ -32,6 +43,7 @@ struct Note {
     Note *next;
     HWND window, edit;
     WNDPROC edit_proc;
+    ITextDocument *document;
     HBRUSH brush;
     HFONT font;
     HPEN pen;
@@ -39,16 +51,10 @@ struct Note {
     size_t text_capacity;
     wchar_t id[80], path[PATH_CAP];
     int color, palette, size, opacity, dpi, line_height, max_lines, hover, pressed;
-    int saved_layout[9];
+    int width, height, wheel_delta;
+    int saved_layout[11];
     DWORD selection_start, selection_end;
-    BOOL collapsed, ready, dirty, save_failed, validating, layout_saved;
-};
-#define COLOR_COUNT 6
-
-static const COLORREF PALETTES[3][6] = {
-    {RGB(255,238,151), RGB(199,229,255), RGB(213,239,187), RGB(255,210,218), RGB(229,214,255), RGB(255,222,180)},
-    {RGB(255,255,255), RGB(28,28,28), RGB(255,255,255), RGB(28,28,28), RGB(255,255,255), RGB(28,28,28)},
-    {RGB(255,238,151), RGB(255,224,112), RGB(255,245,184), RGB(250,218,128), RGB(255,239,105), RGB(255,250,205)}
+    BOOL collapsed, ready, dirty, save_failed, validating, layout_saved, persisted;
 };
 static const SIZE NOTE_SIZES[] = {{240,180}, {NOTE_WIDTH,NOTE_HEIGHT}, {420,340}, {540,440}, {300,300}};
 static const wchar_t *SIZE_NAMES[] = {L"Small", L"Medium", L"Large", L"Extra large", L"Square"};
@@ -64,11 +70,15 @@ static UINT taskbar_created;
 static int next_color;
 static int current_palette;
 static BOOL testing;
+static HMODULE rich_edit;
+static const IID TEXT_DOCUMENT_IID = {0x8cc497c0, 0xa1df, 0x11ce, {0x80,0x98,0x00,0xaa,0x00,0x47,0xbe,0x5d}};
+static BOOL remove_note_files(const wchar_t *id);
+static Note *find_note(const wchar_t *id);
 
 static int scaled(const Note *note, int value) { return MulDiv(value, note->dpi, 96); }
 static int bar_height(const Note *note) { return scaled(note, 32); }
-static int note_width(const Note *note) { return scaled(note, NOTE_SIZES[note->size].cx); }
-static int expanded_height(const Note *note) { return scaled(note, NOTE_SIZES[note->size].cy); }
+static int note_width(const Note *note) { return note->width; }
+static int expanded_height(const Note *note) { return note->height; }
 static int note_height(const Note *note) { return note->collapsed ? bar_height(note) : expanded_height(note); }
 static COLORREF note_color(const Note *note) { return PALETTES[note->palette][note->color]; }
 static COLORREF ink_color(const Note *note) {
@@ -107,19 +117,81 @@ static int setting(const wchar_t *section, const wchar_t *key, int fallback) {
 }
 
 static BOOL save_layout(Note *note, BOOL open) {
-    static const wchar_t *keys[] = {L"x", L"y", L"color", L"has_title", L"collapsed", L"open", L"palette", L"size", L"opacity"};
+    static const wchar_t *keys[] = {L"x", L"y", L"color", L"has_title", L"collapsed", L"open", L"palette", L"size", L"opacity", L"width", L"height"};
     RECT rect;
-    int values[9], i;
+    int values[11], i;
     if (!GetWindowRect(note->window, &rect)) return FALSE;
     values[0] = rect.left; values[1] = rect.top; values[2] = note->color;
     values[3] = note->title != NULL; values[4] = note->collapsed; values[5] = open;
     values[6] = note->palette; values[7] = note->size; values[8] = note->opacity;
-    for (i = 0; i < 9; ++i)
+    values[9] = MulDiv(note->width, 96, note->dpi); values[10] = MulDiv(note->height, 96, note->dpi);
+    for (i = 0; i < 11; ++i)
         if ((!note->layout_saved || values[i] != note->saved_layout[i]) &&
             !write_setting(note->id, keys[i], values[i])) return FALSE;
     memcpy(note->saved_layout, values, sizeof(values));
     note->layout_saved = TRUE;
     return TRUE;
+}
+
+static DWORD CALLBACK write_rich(DWORD_PTR cookie, LPBYTE data, LONG bytes, LONG *written) {
+    DWORD count = 0;
+    BOOL ok = WriteFile((HANDLE)cookie, data, (DWORD)bytes, &count, NULL);
+    *written = (LONG)count;
+    return ok && count == (DWORD)bytes ? 0 : ERROR_WRITE_FAULT;
+}
+
+static DWORD CALLBACK read_rich(DWORD_PTR cookie, LPBYTE data, LONG bytes, LONG *read) {
+    DWORD count = 0;
+    BOOL ok = ReadFile((HANDLE)cookie, data, (DWORD)bytes, &count, NULL);
+    *read = (LONG)count;
+    return ok ? 0 : ERROR_READ_FAULT;
+}
+
+/* Keep the UTF-8 archive readable; Windows streams formatting to a companion
+   RTF without building a second document in our heap. Both writes are atomic. */
+static BOOL save_rich(Note *note) {
+    wchar_t path[PATH_CAP], temporary[PATH_CAP];
+    EDITSTREAM stream = {0};
+    HANDLE file;
+    BOOL ok;
+    if (swprintf_s(path, PATH_CAP, L"%s\\%s.rtf", directory, note->id) < 0 ||
+        swprintf_s(temporary, PATH_CAP, L"%s.tmp", path) < 0) return FALSE;
+    file = CreateFileW(temporary, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (file == INVALID_HANDLE_VALUE) return FALSE;
+    stream.dwCookie = (DWORD_PTR)file; stream.pfnCallback = write_rich;
+    SendMessageW(note->edit, EM_STREAMOUT, SF_RTF, (LPARAM)&stream);
+    ok = !stream.dwError && FlushFileBuffers(file);
+    if (!CloseHandle(file)) ok = FALSE;
+    return ok && MoveFileExW(temporary, path, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH);
+}
+
+static void load_rich(Note *note) {
+    wchar_t path[PATH_CAP], *text;
+    HANDLE file;
+    LARGE_INTEGER size;
+    EDITSTREAM stream = {0};
+    int length;
+    BOOL matches = FALSE;
+    if (swprintf_s(path, PATH_CAP, L"%s\\%s.rtf", directory, note->id) < 0) return;
+    file = CreateFileW(path, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (file == INVALID_HANDLE_VALUE) return;
+    if (!GetFileSizeEx(file, &size) || size.QuadPart < 0 || size.QuadPart > TEXT_LIMIT * 16LL) {
+        CloseHandle(file); return;
+    }
+    stream.dwCookie = (DWORD_PTR)file; stream.pfnCallback = read_rich;
+    SendMessageW(note->edit, EM_STREAMIN, SF_RTF, (LPARAM)&stream);
+    CloseHandle(file);
+    length = GetWindowTextLengthW(note->edit);
+    text = (wchar_t *)malloc(((size_t)length + 1) * sizeof(wchar_t));
+    if (text) {
+        GetWindowTextW(note->edit, text, length + 1);
+        matches = !stream.dwError && !wcscmp(text, note->accepted_text);
+        free(text);
+    }
+    /* A crash between the two replacements, or an external TXT edit, must
+       never resurrect an older body from the formatting companion. */
+    if (!matches) SetWindowTextW(note->edit, note->accepted_text);
+    SendMessageW(note->edit, EM_EMPTYUNDOBUFFER, 0, 0);
 }
 
 /* Replace a complete UTF-8 snapshot on the same volume. A failed write never
@@ -159,15 +231,29 @@ static BOOL save_text(Note *note) {
     free(utf8);
     if (ok) ok = FlushFileBuffers(file);
     if (!CloseHandle(file)) ok = FALSE;
+    if (ok) ok = save_rich(note);
     if (ok) ok = MoveFileExW(temporary, note->path, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH);
-    if (ok) note->dirty = FALSE;
+    if (ok) { note->dirty = FALSE; note->persisted = TRUE; }
     return ok;
+}
+
+static BOOL note_has_content(const Note *note) {
+    const wchar_t *text = note->accepted_text;
+    if (note->title) return TRUE;
+    while (*text && iswspace(*text)) ++text;
+    return *text != 0;
 }
 
 static BOOL save_note(Note *note) {
     BOOL previous_failure = note->save_failed;
-    BOOL ok = save_text(note);
-    if (ok) ok = save_layout(note, TRUE);
+    BOOL ok;
+    if (!note_has_content(note)) {
+        ok = !note->persisted || remove_note_files(note->id);
+        if (ok) { note->dirty = note->persisted = note->layout_saved = FALSE; }
+    } else {
+        ok = save_text(note);
+        if (ok) ok = save_layout(note, TRUE);
+    }
     note->save_failed = !ok;
     if (ok) KillTimer(note->window, SAVE_TIMER);
     else SetTimer(note->window, SAVE_TIMER, 1000, NULL);
@@ -235,12 +321,21 @@ static void update_style(Note *note) {
     TEXTMETRICW metrics;
     HDC dc;
     HGDIOBJ old;
+    int previous_dpi = note->dpi;
     note->dpi = (int)GetDpiForWindow(note->window);
     if (!note->dpi) note->dpi = 96;
+    note->width = MulDiv(note->width, note->dpi, previous_dpi);
+    note->height = MulDiv(note->height, note->dpi, previous_dpi);
     note->font = CreateFontW(-MulDiv(11, note->dpi, 72), 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE,
                             DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
                             CLEARTYPE_QUALITY, FIXED_PITCH | FF_MODERN, L"Consolas");
-    SendMessageW(note->edit, WM_SETFONT, (WPARAM)note->font, TRUE);
+    if (!note->ready) {
+        CHARFORMAT2W format = {0};
+        SendMessageW(note->edit, WM_SETFONT, (WPARAM)note->font, TRUE);
+        format.cbSize = sizeof(format); format.dwMask = CFM_COLOR; format.crTextColor = ink_color(note);
+        SendMessageW(note->edit, EM_SETCHARFORMAT, SCF_DEFAULT, (LPARAM)&format);
+    }
+    SendMessageW(note->edit, EM_SETBKGNDCOLOR, 0, note_color(note));
     dc = GetDC(note->edit); old = SelectObject(dc, note->font);
     GetTextMetricsW(dc, &metrics);
     note->line_height = metrics.tmHeight;
@@ -251,7 +346,14 @@ static void update_style(Note *note) {
 }
 
 static BOOL text_fits(Note *note) {
-    return (int)SendMessageW(note->edit, EM_GETLINECOUNT, 0, 0) <= note->max_lines;
+    RECT rect;
+    POINTL end = {0};
+    GETTEXTLENGTHEX length = {GTL_PRECISE | GTL_NUMCHARS, 1200};
+    LONG count = (LONG)SendMessageW(note->edit, EM_GETTEXTLENGTHEX, (WPARAM)&length, 0);
+    SendMessageW(note->edit, EM_GETRECT, 0, (LPARAM)&rect);
+    SendMessageW(note->edit, EM_POSFROMCHAR, (WPARAM)&end, count);
+    return end.y + note->line_height <= rect.bottom &&
+           (int)SendMessageW(note->edit, EM_GETLINECOUNT, 0, 0) <= note->max_lines;
 }
 
 static BOOL remember_text(Note *note) {
@@ -294,9 +396,9 @@ static BOOL promote_title(Note *note) {
     if (text[after] == L'\r') ++after;
     if (text[after] == L'\n') ++after;
     note->validating = TRUE;
-    if (!SetWindowTextW(note->edit, text + after)) {
-        note->validating = FALSE; free(title); return FALSE;
-    }
+    SendMessageW(note->edit, EM_SETSEL, 0, end + (text[end] ? 1 : 0));
+    SendMessageW(note->edit, EM_REPLACESEL, TRUE, (LPARAM)L"");
+    SendMessageW(note->edit, EM_EMPTYUNDOBUFFER, 0, 0);
     note->validating = FALSE;
     free(note->title); note->title = title;
     memmove(note->accepted_text, text + after, (wcslen(text + after) + 1) * sizeof(wchar_t));
@@ -381,17 +483,200 @@ static void paint_note(Note *note) {
     EndPaint(note->window, &ps);
 }
 
+static void paragraph_at(HWND edit, LONG position, CHARRANGE *range) {
+    FINDTEXTEXW find = {{position, 0}, L"\r", {0, 0}};
+    GETTEXTLENGTHEX length = {GTL_PRECISE | GTL_NUMCHARS, 1200};
+    range->cpMin = SendMessageW(edit, EM_FINDTEXTEXW, 0, (LPARAM)&find) < 0 ? 0 : find.chrgText.cpMax;
+    find.chrg.cpMin = position; find.chrg.cpMax = -1;
+    range->cpMax = SendMessageW(edit, EM_FINDTEXTEXW, FR_DOWN, (LPARAM)&find) < 0 ?
+                      (LONG)SendMessageW(edit, EM_GETTEXTLENGTHEX, (WPARAM)&length, 0) : find.chrgText.cpMin;
+}
+
+static wchar_t todo_marker(HWND edit, const CHARRANGE *range) {
+    wchar_t text[3] = {0};
+    TEXTRANGEW part = {{range->cpMin, min(range->cpMin + 2, range->cpMax)}, text};
+    SendMessageW(edit, EM_GETTEXTRANGE, 0, (LPARAM)&part);
+    return (text[0] == L'\x2610' || text[0] == L'\x2611') && text[1] == L' ' ? text[0] : 0;
+}
+
+static void strike_todo(Note *note, const CHARRANGE *range, BOOL checked) {
+    CHARRANGE selection;
+    CHARFORMAT2W format = {0};
+    format.cbSize = sizeof(format); format.dwMask = CFM_STRIKEOUT;
+    format.dwEffects = checked ? CFE_STRIKEOUT : 0;
+    SendMessageW(note->edit, EM_EXGETSEL, 0, (LPARAM)&selection);
+    SendMessageW(note->edit, EM_SETSEL, range->cpMin + 2, range->cpMax);
+    SendMessageW(note->edit, EM_SETCHARFORMAT, SCF_SELECTION, (LPARAM)&format);
+    SendMessageW(note->edit, EM_EXSETSEL, 0, (LPARAM)&selection);
+}
+
+static void toggle_format(Note *note, DWORD effect) {
+    CHARFORMAT2W format = {0};
+    format.cbSize = sizeof(format);
+    SendMessageW(note->edit, EM_GETCHARFORMAT, SCF_SELECTION, (LPARAM)&format);
+    format.dwEffects = (format.dwMask & effect) && (format.dwEffects & effect) ? 0 : effect;
+    format.dwMask = effect;
+    SendMessageW(note->edit, EM_STOPGROUPTYPING, 0, 0);
+    note->validating = TRUE;
+    SendMessageW(note->edit, EM_SETCHARFORMAT, SCF_SELECTION, (LPARAM)&format);
+    if (!text_fits(note)) SendMessageW(note->edit, EM_UNDO, 0, 0);
+    note->validating = FALSE;
+    mark_dirty(note);
+}
+
+/* Treat a checkbox gesture and its derived formatting as one native undo
+   operation. Validation can then roll back the whole edit without losing styles. */
+static void begin_edit(Note *note, CHARRANGE *selection) {
+    SendMessageW(note->edit, EM_EXGETSEL, 0, (LPARAM)selection);
+    SendMessageW(note->edit, EM_STOPGROUPTYPING, 0, 0);
+    note->document->lpVtbl->BeginEditCollection(note->document);
+    note->validating = TRUE;
+}
+
+static void finish_edit(Note *note, const CHARRANGE *selection) {
+    note->document->lpVtbl->EndEditCollection(note->document);
+    if (!text_fits(note) || !remember_text(note)) {
+        SendMessageW(note->edit, EM_UNDO, 0, 0);
+        SendMessageW(note->edit, EM_EXSETSEL, 0, (LPARAM)selection);
+    } else mark_dirty(note);
+    note->validating = FALSE;
+}
+
+static void clear_paragraph_strike(Note *note) {
+    CHARRANGE selection, paragraph;
+    CHARFORMAT2W format = {0};
+    format.cbSize = sizeof(format); format.dwMask = CFM_STRIKEOUT;
+    SendMessageW(note->edit, EM_EXGETSEL, 0, (LPARAM)&selection);
+    paragraph_at(note->edit, selection.cpMin, &paragraph);
+    SendMessageW(note->edit, EM_EXSETSEL, 0, (LPARAM)&paragraph);
+    SendMessageW(note->edit, EM_SETCHARFORMAT, SCF_SELECTION, (LPARAM)&format);
+    SendMessageW(note->edit, EM_EXSETSEL, 0, (LPARAM)&selection);
+    SendMessageW(note->edit, EM_SETCHARFORMAT, SCF_SELECTION, (LPARAM)&format);
+}
+
+static BOOL todo_enter(Note *note, BOOL shift) {
+    CHARRANGE selection, paragraph, previous;
+    wchar_t text[3] = {0};
+    TEXTRANGEW part;
+    wchar_t marker;
+    SendMessageW(note->edit, EM_EXGETSEL, 0, (LPARAM)&selection);
+    if (selection.cpMin != selection.cpMax) return FALSE;
+    paragraph_at(note->edit, selection.cpMin, &paragraph);
+    part.chrg = paragraph; part.lpstrText = text;
+    if (shift && paragraph.cpMax - paragraph.cpMin == 1) {
+        SendMessageW(note->edit, EM_GETTEXTRANGE, 0, (LPARAM)&part);
+        if (text[0] == L'*' && selection.cpMin == paragraph.cpMax) {
+            begin_edit(note, &previous);
+            SendMessageW(note->edit, EM_EXSETSEL, 0, (LPARAM)&paragraph);
+            SendMessageW(note->edit, EM_REPLACESEL, TRUE, (LPARAM)L"\x2610 ");
+            clear_paragraph_strike(note);
+            finish_edit(note, &previous);
+            return TRUE;
+        }
+    }
+    marker = todo_marker(note->edit, &paragraph);
+    if (!marker || selection.cpMin < paragraph.cpMin + 2) return FALSE;
+    begin_edit(note, &previous);
+    if (paragraph.cpMax == paragraph.cpMin + 2) {
+        SendMessageW(note->edit, EM_EXSETSEL, 0, (LPARAM)&paragraph);
+        SendMessageW(note->edit, EM_REPLACESEL, TRUE, (LPARAM)L"");
+    } else {
+        SendMessageW(note->edit, EM_REPLACESEL, TRUE, (LPARAM)L"\r\n\x2610 ");
+    }
+    clear_paragraph_strike(note);
+    finish_edit(note, &previous);
+    return TRUE;
+}
+
+static BOOL click_todo(Note *note, LPARAM position) {
+    POINTL point = {GET_X_LPARAM(position), GET_Y_LPARAM(position)}, origin;
+    LONG index = (LONG)SendMessageW(note->edit, EM_CHARFROMPOS, 0, (LPARAM)&point);
+    CHARRANGE paragraph, selection;
+    wchar_t marker, replacement[2] = {0};
+    paragraph_at(note->edit, index, &paragraph);
+    marker = todo_marker(note->edit, &paragraph);
+    if (!marker) return FALSE;
+    SendMessageW(note->edit, EM_POSFROMCHAR, (WPARAM)&origin, paragraph.cpMin);
+    if (point.x < origin.x || point.x >= origin.x + scaled(note, 16) ||
+        point.y < origin.y || point.y >= origin.y + note->line_height) return FALSE;
+    begin_edit(note, &selection);
+    replacement[0] = marker == L'\x2610' ? L'\x2611' : L'\x2610';
+    SendMessageW(note->edit, EM_SETSEL, paragraph.cpMin, paragraph.cpMin + 1);
+    SendMessageW(note->edit, EM_REPLACESEL, TRUE, (LPARAM)replacement);
+    strike_todo(note, &paragraph, replacement[0] == L'\x2611');
+    SendMessageW(note->edit, EM_EXSETSEL, 0, (LPARAM)&selection);
+    finish_edit(note, &selection);
+    return TRUE;
+}
+
+static BOOL remove_todo_marker(Note *note) {
+    CHARRANGE selection, paragraph, previous;
+    SendMessageW(note->edit, EM_EXGETSEL, 0, (LPARAM)&selection);
+    if (selection.cpMin != selection.cpMax) return FALSE;
+    paragraph_at(note->edit, selection.cpMin, &paragraph);
+    if (selection.cpMin != paragraph.cpMin + 2 || !todo_marker(note->edit, &paragraph)) return FALSE;
+    begin_edit(note, &previous);
+    SendMessageW(note->edit, EM_SETSEL, paragraph.cpMin, paragraph.cpMin + 2);
+    SendMessageW(note->edit, EM_REPLACESEL, TRUE, (LPARAM)L"");
+    clear_paragraph_strike(note);
+    finish_edit(note, &previous);
+    return TRUE;
+}
+
 static LRESULT CALLBACK edit_proc(HWND window, UINT message, WPARAM wparam, LPARAM lparam) {
     Note *note = (Note *)GetWindowLongPtrW(GetParent(window), GWLP_USERDATA);
     if (note->ready && !note->validating && (message == WM_CHAR || message == WM_KEYDOWN ||
         message == WM_PASTE || message == WM_CUT || message == WM_CLEAR || message == WM_UNDO ||
         message == EM_REPLACESEL || message == WM_SETTEXT))
+    {
         SendMessageW(window, EM_GETSEL, (WPARAM)&note->selection_start, (LPARAM)&note->selection_end);
-    if (message == WM_KEYDOWN && wparam == 'A' && GetKeyState(VK_CONTROL) < 0) {
-        SendMessageW(window, EM_SETSEL, 0, -1); return 0;
+        /* An overflow rollback must not undo earlier accepted keystrokes. */
+        if (message != WM_KEYDOWN) SendMessageW(window, EM_STOPGROUPTYPING, 0, 0);
     }
-    if (message == WM_CHAR && wparam == L'\r' && note->ready && GetKeyState(VK_SHIFT) >= 0 &&
-        promote_title(note)) return 0;
+    if (message == WM_MOUSEWHEEL && (GET_KEYSTATE_WPARAM(wparam) & MK_CONTROL))
+        return SendMessageW(note->window, message, wparam, lparam);
+    if (note->ready && !note->validating && (message == WM_UNDO || message == EM_UNDO || message == EM_REDO)) {
+        CHARRANGE selection;
+        UINT action = message == EM_REDO ? EM_REDO : EM_UNDO;
+        LRESULT result;
+        SendMessageW(window, EM_EXGETSEL, 0, (LPARAM)&selection);
+        note->validating = TRUE;
+        result = CallWindowProcW(note->edit_proc, window, action, 0, 0);
+        if (result) {
+            if (!text_fits(note) || !remember_text(note)) {
+                CallWindowProcW(note->edit_proc, window, action == EM_UNDO ? EM_REDO : EM_UNDO, 0, 0);
+                SendMessageW(window, EM_EXSETSEL, 0, (LPARAM)&selection);
+                result = FALSE;
+            } else mark_dirty(note);
+        }
+        note->validating = FALSE;
+        return result;
+    }
+    if (message == WM_KEYDOWN && GetKeyState(VK_CONTROL) < 0 && GetKeyState(VK_MENU) >= 0) {
+        DWORD effect = wparam == 'B' ? CFM_BOLD : wparam == 'I' ? CFM_ITALIC :
+                       wparam == 'U' ? CFM_UNDERLINE :
+                       wparam == 'X' && GetKeyState(VK_SHIFT) < 0 ? CFM_STRIKEOUT : 0;
+        if (effect) { toggle_format(note, effect); return 0; }
+        if (wparam == 'Z' || wparam == 'Y') {
+            SendMessageW(window, wparam == 'Y' || GetKeyState(VK_SHIFT) < 0 ? EM_REDO : EM_UNDO, 0, 0);
+            return 0;
+        }
+        if (wparam == 'A') { SendMessageW(window, EM_SETSEL, 0, -1); return 0; }
+    }
+    if (message == WM_CHAR && GetKeyState(VK_CONTROL) < 0 &&
+        (wparam == 2 || wparam == 9 || wparam == 21 || wparam == 25 || wparam == 26 ||
+         (wparam == 24 && GetKeyState(VK_SHIFT) < 0))) return 0;
+    if (message == WM_PASTE) return SendMessageW(window, EM_PASTESPECIAL, CF_UNICODETEXT, 0);
+    if (message == WM_LBUTTONDOWN && note->ready && click_todo(note, lparam)) return 0;
+    if (message == WM_KEYDOWN && wparam == VK_BACK && note->ready && remove_todo_marker(note)) return 0;
+    if (message == WM_KEYDOWN && wparam == VK_RETURN && note->ready) {
+        BOOL shift = GetKeyState(VK_SHIFT) < 0;
+        if (todo_enter(note, shift) || (!shift && promote_title(note))) return 0;
+        SendMessageW(window, EM_REPLACESEL, TRUE, (LPARAM)L"\r\n"); return 0;
+    }
+    /* Rich Edit edits on key-down. Consume the corresponding translated
+       characters so Enter/Backspace cannot perform a second operation. */
+    if (message == WM_CHAR && note->ready && (wparam == L'\r' || wparam == L'\n' || wparam == L'\b')) return 0;
     if (message == WM_KILLFOCUS && note->ready) save_note(note);
     return CallWindowProcW(note->edit_proc, window, message, wparam, lparam);
 }
@@ -452,21 +737,56 @@ static BOOL apply_opacity(Note *note) {
     return TRUE;
 }
 
+static BOOL fit_dimensions(Note *note, int width, int height);
+static void browse_notes(void);
+
 static BOOL resize_note(Note *note, int size) {
-    int previous = note->size;
-    note->size = size;
-    SetWindowPos(note->window, NULL, 0, 0, note_width(note), note_height(note), SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
-    if (!text_fits(note)) {
-        note->size = previous;
-        SetWindowPos(note->window, NULL, 0, 0, note_width(note), note_height(note), SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
+    int width = scaled(note, NOTE_SIZES[size].cx), height = scaled(note, NOTE_SIZES[size].cy);
+    if (!fit_dimensions(note, width, height)) {
         report_error(note->window, L"The text does not fit this size. Choose a larger size or shorten the note first.");
         return FALSE;
     }
+    note->size = size;
+    SetWindowPos(note->window, NULL, 0, 0, note_width(note), note_height(note),
+                 SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
     save_note(note); return TRUE;
 }
 
+static BOOL fit_dimensions(Note *note, int width, int height) {
+    int previous_width = note->width, previous_height = note->height;
+    if (width < scaled(note, MIN_WIDTH) || height < scaled(note, MIN_HEIGHT) ||
+        width > scaled(note, MAX_SIZE) || height > scaled(note, MAX_SIZE)) return FALSE;
+    if (width == previous_width && height == previous_height) return TRUE;
+    note->width = width; note->height = height;
+    layout(note);
+    if (note->ready && !text_fits(note)) {
+        note->width = previous_width; note->height = previous_height;
+        layout(note); return FALSE;
+    }
+    note->size = -1;
+    return TRUE;
+}
+
+static void wheel_resize(Note *note, int delta) {
+    int steps, width, height;
+    note->wheel_delta += delta;
+    steps = note->wheel_delta / WHEEL_DELTA;
+    note->wheel_delta %= WHEEL_DELTA;
+    while (steps) {
+        width = MulDiv(note->width, steps > 0 ? 110 : 100, steps > 0 ? 100 : 110);
+        height = MulDiv(note->height, width, note->width);
+        if (!fit_dimensions(note, width, height)) break;
+        SetWindowPos(note->window, NULL, 0, 0, note_width(note), note_height(note),
+                     SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
+        steps += steps > 0 ? -1 : 1;
+    }
+    if (note->ready) SetTimer(note->window, SAVE_TIMER, 400, NULL);
+}
+
 static void note_command(Note *note, UINT command) {
-    if (command == CMD_ARCHIVE) {
+    if (command == CMD_BROWSE) {
+        browse_notes();
+    } else if (command == CMD_ARCHIVE) {
         if ((INT_PTR)ShellExecuteW(note->window, L"open", directory, NULL, NULL, SW_SHOWNORMAL) <= 32)
             report_error(note->window, L"The notes archive could not be opened.");
     } else if (command == CMD_TITLE) {
@@ -498,6 +818,7 @@ static HMENU build_note_menu(const Note *note) {
         return NULL;
     }
     AppendMenuW(menu, MF_STRING, CMD_ARCHIVE, L"Open notes archive");
+    AppendMenuW(menu, MF_STRING, CMD_BROWSE, L"Browse notes...");
     AppendMenuW(menu, MF_SEPARATOR, 0, NULL);
     for (i = 0; i < 5; ++i) {
         swprintf_s(label, 64, i ? L"%d%% opacity" : L"%d%% (opaque)", OPACITIES[i]);
@@ -536,37 +857,83 @@ static LRESULT CALLBACK note_proc(HWND window, UINT message, WPARAM wparam, LPAR
     if (!note) return DefWindowProcW(window, message, wparam, lparam);
     switch (message) {
     case WM_NCCALCSIZE: return 0;
+    case WM_NCPAINT: return 0;
+    case WM_NCACTIVATE: return TRUE;
     case WM_CREATE:
+        {
+            enum DWMNCRENDERINGPOLICY policy = DWMNCRP_DISABLED;
+            DwmSetWindowAttribute(window, DWMWA_NCRENDERING_POLICY, &policy, sizeof(policy));
+        }
         note->brush = CreateSolidBrush(note_color(note));
-        note->edit = CreateWindowExW(0, L"EDIT", L"", WS_CHILD | WS_VISIBLE | ES_MULTILINE | ES_WANTRETURN,
+        note->edit = CreateWindowExW(0, MSFTEDIT_CLASS, L"", WS_CHILD | WS_VISIBLE | ES_MULTILINE | ES_WANTRETURN,
                                     0, 0, 1, 1, window, (HMENU)(INT_PTR)10, instance, NULL);
         if (!note->edit || !note->brush) return -1;
+        {
+            IUnknown *editor = NULL;
+            SendMessageW(note->edit, EM_GETOLEINTERFACE, 0, (LPARAM)&editor);
+            if (!editor) return -1;
+            editor->lpVtbl->QueryInterface(editor, &TEXT_DOCUMENT_IID, (void **)&note->document);
+            editor->lpVtbl->Release(editor);
+            if (!note->document) return -1;
+        }
         note->edit_proc = (WNDPROC)SetWindowLongPtrW(note->edit, GWLP_WNDPROC, (LONG_PTR)edit_proc);
         SendMessageW(note->edit, EM_SETLIMITTEXT, TEXT_LIMIT, 0);
         SendMessageW(note->edit, EM_SETMARGINS, EC_LEFTMARGIN | EC_RIGHTMARGIN, MAKELPARAM(0, 0));
+        SendMessageW(note->edit, EM_SETEVENTMASK, 0, ENM_CHANGE);
+        SendMessageW(note->edit, EM_SETUNDOLIMIT, 100, 0);
         update_style(note);
         return 0;
     case WM_NCHITTEST: {
         POINT p = {GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)};
         RECT rect;
         ScreenToClient(window, &p); GetClientRect(window, &rect);
+        if (!note->collapsed) {
+            int edge = scaled(note, 6);
+            BOOL left = p.x < edge, right = p.x >= rect.right - edge;
+            BOOL top = p.y < edge, bottom = p.y >= rect.bottom - edge;
+            if (top && left) return HTTOPLEFT;
+            if (top && right) return HTTOPRIGHT;
+            if (bottom && left) return HTBOTTOMLEFT;
+            if (bottom && right) return HTBOTTOMRIGHT;
+            if (left) return HTLEFT;
+            if (right) return HTRIGHT;
+            if (top) return HTTOP;
+            if (bottom) return HTBOTTOM;
+        }
         if (p.y < bar_height(note) && p.x >= rect.right - bar_height(note) * 2) return HTCLIENT;
         return p.y < bar_height(note) ? HTCAPTION : HTCLIENT;
     }
     case WM_GETMINMAXINFO: {
         MINMAXINFO *info = (MINMAXINFO *)lparam;
-        info->ptMinTrackSize.x = info->ptMaxTrackSize.x = note_width(note);
-        info->ptMinTrackSize.y = info->ptMaxTrackSize.y = note_height(note);
+        info->ptMinTrackSize.x = scaled(note, MIN_WIDTH);
+        info->ptMinTrackSize.y = note->collapsed ? bar_height(note) : scaled(note, MIN_HEIGHT);
+        info->ptMaxTrackSize.x = scaled(note, MAX_SIZE);
+        info->ptMaxTrackSize.y = note->collapsed ? bar_height(note) : scaled(note, MAX_SIZE);
         return 0;
     }
     case WM_WINDOWPOSCHANGING: {
         WINDOWPOS *position = (WINDOWPOS *)lparam;
         if (!(position->flags & SWP_NOSIZE)) {
-            position->cx = note_width(note);
-            position->cy = note_height(note);
+            if (!fit_dimensions(note, position->cx, note->collapsed ? note->height : position->cy)) {
+                position->cx = note_width(note);
+                position->cy = note_height(note);
+                position->flags |= SWP_NOMOVE;
+            }
+            if (note->collapsed) position->cy = bar_height(note);
         }
         return 0;
     }
+    case WM_SIZING: {
+        RECT *rect = (RECT *)lparam;
+        if (!fit_dimensions(note, rect->right - rect->left, rect->bottom - rect->top))
+            GetWindowRect(window, rect);
+        return TRUE;
+    }
+    case WM_MOUSEWHEEL:
+        if (GET_KEYSTATE_WPARAM(wparam) & MK_CONTROL) {
+            wheel_resize(note, GET_WHEEL_DELTA_WPARAM(wparam)); return 0;
+        }
+        return 0;
     case WM_SIZE:
         if (note->edit) layout(note);
         return 0;
@@ -588,7 +955,8 @@ static LRESULT CALLBACK note_proc(HWND window, UINT message, WPARAM wparam, LPAR
         if (HIWORD(wparam) == EN_CHANGE && note->ready && !note->validating) {
             if (!text_fits(note) || !remember_text(note)) {
                 note->validating = TRUE;
-                SetWindowTextW(note->edit, note->accepted_text);
+                if (!SendMessageW(note->edit, EM_UNDO, 0, 0))
+                    SetWindowTextW(note->edit, note->accepted_text);
                 SendMessageW(note->edit, EM_SETSEL, note->selection_start, note->selection_end);
                 note->validating = FALSE;
                 return 0;
@@ -646,13 +1014,13 @@ static LRESULT CALLBACK note_proc(HWND window, UINT message, WPARAM wparam, LPAR
         return 0;
     }
     case WM_NCLBUTTONDBLCLK:
-        if (wparam == HTCAPTION) { toggle_note(note); return 0; }
+        if (wparam == HTCAPTION) { note_command(note, CMD_TITLE); return 0; }
         break;
     case WM_SETFOCUS:
         if (!note->collapsed) SetFocus(note->edit);
         return 0;
     case WM_CLOSE:
-        if (!save_note(note) || !save_layout(note, FALSE)) {
+        if (!save_note(note) || (note->persisted && !save_layout(note, FALSE))) {
             report_error(window, L"This note could not be saved. Check that the notes folder is writable.\nThe note will stay open.");
             return 0;
         }
@@ -669,6 +1037,7 @@ static LRESULT CALLBACK note_proc(HWND window, UINT message, WPARAM wparam, LPAR
         if (note->brush) DeleteObject(note->brush);
         if (note->font) DeleteObject(note->font);
         if (note->pen) DeleteObject(note->pen);
+        if (note->document) note->document->lpVtbl->Release(note->document);
         free(note->accepted_text);
         free(note->title);
         SetWindowLongPtrW(window, GWLP_USERDATA, 0);
@@ -696,6 +1065,11 @@ static Note *open_note(const wchar_t *id, int color, BOOL restore) {
     if (note->palette < 0 || note->palette > 2) note->palette = 0;
     note->size = restore ? setting(id, L"size", 1) : 1;
     if (note->size < 0 || note->size >= SIZE_COUNT) note->size = 1;
+    width = restore ? setting(id, L"width", NOTE_SIZES[note->size].cx) : NOTE_SIZES[note->size].cx;
+    height = restore ? setting(id, L"height", NOTE_SIZES[note->size].cy) : NOTE_SIZES[note->size].cy;
+    note->width = scaled(note, max(MIN_WIDTH, min(width, MAX_SIZE)));
+    note->height = scaled(note, max(MIN_HEIGHT, min(height, MAX_SIZE)));
+    if (width != NOTE_SIZES[note->size].cx || height != NOTE_SIZES[note->size].cy) note->size = -1;
     note->opacity = restore ? setting(id, L"opacity", 100) : 100;
     if (note->opacity < 60 || note->opacity > 100) note->opacity = 100;
     width = note_width(note);
@@ -714,7 +1088,7 @@ static Note *open_note(const wchar_t *id, int color, BOOL restore) {
     note->collapsed = restore && setting(id, L"collapsed", FALSE);
     note->next = notes; notes = note;
     window = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_TOPMOST, NOTE_CLASS, L"PicoSlip",
-                             WS_POPUP | WS_CLIPCHILDREN,
+                             WS_POPUP | WS_THICKFRAME | WS_CLIPCHILDREN,
                              x, y, width, note->collapsed ? bar_height(note) : height,
                              NULL, NULL, instance, note);
     /* A failed WM_CREATE destroys the window and releases Note in WM_NCDESTROY. */
@@ -722,14 +1096,19 @@ static Note *open_note(const wchar_t *id, int color, BOOL restore) {
         if (notes == note) { notes = note->next; free(note); }
         return NULL;
     }
-    if (!load_text(note)) { destroy_note(note); return NULL; }
+    if (restore) {
+        if (!load_text(note)) { destroy_note(note); return NULL; }
+        note->persisted = TRUE;
+        load_rich(note);
+    }
     SetWindowPos(window, NULL, 0, 0, note_width(note), note_height(note),
                  SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
     layout(note);
     if (!text_fits(note) || !remember_text(note)) { destroy_note(note); return NULL; }
     note->ready = TRUE;
     if (!apply_opacity(note)) { destroy_note(note); return NULL; }
-    if (!save_layout(note, TRUE)) { destroy_note(note); return NULL; }
+    if (note_has_content(note) && !save_layout(note, TRUE)) { destroy_note(note); return NULL; }
+    if (note->persisted && !note_has_content(note) && !save_note(note)) { destroy_note(note); return NULL; }
     if (!testing) {
         ShowWindow(window, SW_SHOWNORMAL);
         SetForegroundWindow(window);
@@ -741,7 +1120,6 @@ static Note *open_note(const wchar_t *id, int color, BOOL restore) {
 static Note *new_note(void) {
     SYSTEMTIME now;
     wchar_t id[80], path[PATH_CAP];
-    HANDLE file;
     Note *note;
     int suffix, color = next_color;
     GetLocalTime(&now);
@@ -749,9 +1127,10 @@ static Note *new_note(void) {
         swprintf_s(id, 80, L"note-%04u-%02u-%02u_%02u-%02u-%02u-%03u-%03d", now.wYear, now.wMonth,
                    now.wDay, now.wHour, now.wMinute, now.wSecond, now.wMilliseconds, suffix);
         if (swprintf_s(path, PATH_CAP, L"%s\\%s.txt", directory, id) < 0) return NULL;
-        file = CreateFileW(path, GENERIC_WRITE, 0, NULL, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, NULL);
-        if (file != INVALID_HANDLE_VALUE) { CloseHandle(file); break; }
-        if (GetLastError() != ERROR_FILE_EXISTS) return NULL;
+        if (!find_note(id) && GetFileAttributesW(path) == INVALID_FILE_ATTRIBUTES) {
+            if (GetLastError() != ERROR_FILE_NOT_FOUND) return NULL;
+            break;
+        }
     }
     if (suffix == 10000) return NULL;
     note = open_note(id, color, FALSE);
@@ -799,6 +1178,70 @@ static BOOL save_all(void) {
     return ok;
 }
 
+static Note *find_note(const wchar_t *id) {
+    Note *note;
+    for (note = notes; note; note = note->next) if (!wcscmp(note->id, id)) return note;
+    return NULL;
+}
+
+static BOOL open_archived_note(const wchar_t *id) {
+    Note *note = find_note(id);
+    if (!note) note = open_note(id, 0, TRUE);
+    if (!note) return FALSE;
+    if (note->collapsed) toggle_note(note);
+    ShowWindow(note->window, SW_SHOWNORMAL);
+    SetForegroundWindow(note->window); SetFocus(note->edit);
+    return TRUE;
+}
+
+/* Acquire both files before marking either for deletion. Keeping the handles
+   open lets a failed disposition be rolled back before any file disappears. */
+static BOOL remove_note_files(const wchar_t *id) {
+    static const wchar_t *extensions[] = {L"txt", L"rtf"};
+    HANDLE files[2] = {INVALID_HANDLE_VALUE, INVALID_HANDLE_VALUE};
+    wchar_t path[PATH_CAP];
+    FILE_DISPOSITION_INFO disposition = {TRUE};
+    BOOL ok = TRUE;
+    int i, marked = 0;
+    for (i = 0; i < 2; ++i) {
+        if (swprintf_s(path, PATH_CAP, L"%s\\%s.%s", directory, id, extensions[i]) < 0) { ok = FALSE; break; }
+        files[i] = CreateFileW(path, DELETE, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                               NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+        if (files[i] == INVALID_HANDLE_VALUE && GetLastError() != ERROR_FILE_NOT_FOUND) { ok = FALSE; break; }
+    }
+    if (ok) for (i = 0; i < 2; ++i) {
+        if (files[i] == INVALID_HANDLE_VALUE) continue;
+        if (!SetFileInformationByHandle(files[i], FileDispositionInfo, &disposition, sizeof(disposition))) { ok = FALSE; break; }
+        marked = i + 1;
+    }
+    if (!ok) {
+        disposition.DeleteFile = FALSE;
+        for (i = 0; i < marked; ++i)
+            if (files[i] != INVALID_HANDLE_VALUE)
+                SetFileInformationByHandle(files[i], FileDispositionInfo, &disposition, sizeof(disposition));
+    }
+    for (i = 0; i < 2; ++i) if (files[i] != INVALID_HANDLE_VALUE) CloseHandle(files[i]);
+    if (!ok) return FALSE;
+    WritePrivateProfileStringW(id, NULL, NULL, state_path);
+    for (i = 0; i < 2; ++i) {
+        if (swprintf_s(path, PATH_CAP, L"%s\\%s.%s.tmp", directory, id, extensions[i]) >= 0) DeleteFileW(path);
+    }
+    return TRUE;
+}
+
+static BOOL delete_archived_note(const wchar_t *id) {
+    Note *note = find_note(id);
+    if ((note && !save_note(note)) || !remove_note_files(id)) return FALSE;
+    if (note) destroy_note(note);
+    return TRUE;
+}
+
+static void browse_notes(void) {
+    static const ArchiveActions actions = {save_all, open_archived_note, delete_archived_note};
+    if (!archive_show(controller, directory, state_path, &actions))
+        report_error(controller, L"The notes archive could not be opened.");
+}
+
 static LRESULT CALLBACK controller_proc(HWND window, UINT message, WPARAM wparam, LPARAM lparam) {
     if (taskbar_created && message == taskbar_created) { tray(TRUE); return 0; }
     switch (message) {
@@ -824,6 +1267,7 @@ static LRESULT CALLBACK controller_proc(HWND window, UINT message, WPARAM wparam
         if (!save_all()) {
             report_error(NULL, L"Some notes could not be saved. PicoSlip will stay open."); return 0;
         }
+        archive_close();
         while (notes) destroy_note(notes);
         DestroyWindow(window);
         return 0;
@@ -842,6 +1286,8 @@ static LRESULT CALLBACK controller_proc(HWND window, UINT message, WPARAM wparam
 
 static BOOL register_classes(void) {
     WNDCLASSW cls = {0};
+    rich_edit = LoadLibraryW(L"Msftedit.dll");
+    if (!rich_edit) return FALSE;
     cls.hInstance = instance; cls.hCursor = LoadCursorW(NULL, IDC_ARROW);
     cls.hIcon = app_icon; cls.lpszClassName = NOTE_CLASS;
     cls.style = CS_DBLCLKS | CS_DROPSHADOW; cls.lpfnWndProc = note_proc;
