@@ -6,6 +6,7 @@
 #include <windows.h>
 #include <windowsx.h>
 #include <commctrl.h>
+#include <dwmapi.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <limits.h>
@@ -16,6 +17,14 @@
 #define ARCHIVE_CLASS L"PicoSlip.Archive"
 #define ARCHIVE_PATH_CAP 1024
 #define DELETE_NOTES 1
+#define ARCHIVE_PAPER RGB(244,238,226)
+#define ARCHIVE_SIDEBAR RGB(235,226,209)
+#define ARCHIVE_INK RGB(58,52,43)
+
+static const wchar_t *MONTH_NAMES[] = {
+    L"January", L"February", L"March", L"April", L"May", L"June",
+    L"July", L"August", L"September", L"October", L"November", L"December"
+};
 
 typedef struct ArchiveEntry {
     wchar_t id[80];
@@ -28,6 +37,7 @@ typedef struct ArchiveEntry {
 typedef struct Archive {
     HWND window, tree, list;
     HFONT font, bold;
+    HBRUSH background;
     HIMAGELIST tiles;
     ArchiveEntry *entries;
     int count, first, visible, dpi;
@@ -160,12 +170,9 @@ static BOOL refresh_archive(Archive *archive) {
             if (filter == year * 10000) selected = year_node;
         }
         if (m != month) {
-            SYSTEMTIME time = {0};
+            unsigned number = m % 100;
             month = m; day = UINT_MAX;
-            time.wYear = (WORD)year; time.wMonth = (WORD)(month % 100); time.wDay = 1;
-            if (!GetDateFormatEx(LOCALE_NAME_USER_DEFAULT, 0, &time, L"MMMM", label, 64, NULL))
-                swprintf_s(label, 64, L"%02u", month % 100);
-            month_node = date_node(archive, year_node, label, month * 100);
+            month_node = date_node(archive, year_node, number >= 1 && number <= 12 ? MONTH_NAMES[number - 1] : L"Unknown", month * 100);
             if (filter == month * 100) selected = month_node;
         }
         if (date != day) {
@@ -239,6 +246,9 @@ static LRESULT draw_preview(Archive *archive, NMLVCUSTOMDRAW *draw) {
     SetDCBrushColor(dc, RGB(GetRValue(entry->paper) * 94 / 100, GetGValue(entry->paper) * 94 / 100,
                             GetBValue(entry->paper) * 94 / 100));
     FillRect(dc, &bar, brush);
+    SetDCBrushColor(dc, RGB(GetRValue(entry->paper) * 85 / 100, GetGValue(entry->paper) * 85 / 100,
+                            GetBValue(entry->paper) * 85 / 100));
+    FrameRect(dc, &card, brush);
     if (ListView_GetItemState(archive->list, index, LVIS_SELECTED)) {
         RECT border = card;
         SetDCBrushColor(dc, GetSysColor(COLOR_HIGHLIGHT)); FrameRect(dc, &border, brush);
@@ -336,6 +346,11 @@ static LRESULT CALLBACK archive_proc(HWND window, UINT message, WPARAM wparam, L
     switch (message) {
     case WM_CREATE: {
         HINSTANCE app = GetModuleHandleW(NULL);
+        COLORREF caption = ARCHIVE_PAPER, ink = ARCHIVE_INK;
+        archive->background = CreateSolidBrush(ARCHIVE_PAPER);
+        if (!archive->background) return -1;
+        DwmSetWindowAttribute(window, DWMWA_CAPTION_COLOR, &caption, sizeof(caption));
+        DwmSetWindowAttribute(window, DWMWA_TEXT_COLOR, &ink, sizeof(ink));
         archive->tree = CreateWindowExW(0, WC_TREEVIEWW, L"", WS_CHILD | WS_VISIBLE | WS_TABSTOP |
             TVS_HASBUTTONS | TVS_HASLINES | TVS_LINESATROOT | TVS_SHOWSELALWAYS,
             0, 0, 1, 1, window, (HMENU)(INT_PTR)1, app, NULL);
@@ -343,9 +358,21 @@ static LRESULT CALLBACK archive_proc(HWND window, UINT message, WPARAM wparam, L
             LVS_ICON | LVS_OWNERDATA | LVS_AUTOARRANGE | LVS_NOLABELWRAP | LVS_SHOWSELALWAYS | LVS_SHAREIMAGELISTS,
             0, 0, 1, 1, window, (HMENU)(INT_PTR)2, app, NULL);
         if (!archive->tree || !archive->list) return -1;
+        TreeView_SetBkColor(archive->tree, ARCHIVE_SIDEBAR);
+        TreeView_SetTextColor(archive->tree, ARCHIVE_INK);
+        TreeView_SetLineColor(archive->tree, RGB(190,177,151));
+        ListView_SetBkColor(archive->list, ARCHIVE_PAPER);
+        ListView_SetTextBkColor(archive->list, ARCHIVE_PAPER);
+        ListView_SetTextColor(archive->list, ARCHIVE_INK);
         ListView_SetExtendedListViewStyle(archive->list, LVS_EX_DOUBLEBUFFER);
         archive_fonts(archive);
         return 0;
+    }
+    case WM_ERASEBKGND: {
+        RECT rect;
+        GetClientRect(window, &rect);
+        FillRect((HDC)wparam, &rect, archive->background);
+        return 1;
     }
     case WM_SIZE: archive_layout(archive); return 0;
     case WM_GETMINMAXINFO: {
@@ -429,6 +456,7 @@ static LRESULT CALLBACK archive_proc(HWND window, UINT message, WPARAM wparam, L
         if (archive->tiles) ImageList_Destroy(archive->tiles);
         if (archive->font) DeleteObject(archive->font);
         if (archive->bold) DeleteObject(archive->bold);
+        if (archive->background) DeleteObject(archive->background);
         free_entries(archive->entries, archive->count);
         archive_window = NULL;
         SetWindowLongPtrW(window, GWLP_USERDATA, 0); free(archive);
@@ -453,7 +481,7 @@ HWND archive_show(HWND owner, const wchar_t *directory, const wchar_t *settings,
         if (!InitCommonControlsEx(&controls)) return NULL;
         cls.lpfnWndProc = archive_proc; cls.hInstance = GetModuleHandleW(NULL);
         cls.hIcon = (HICON)GetClassLongPtrW(owner, GCLP_HICON);
-        cls.hCursor = LoadCursorW(NULL, IDC_ARROW); cls.hbrBackground = (HBRUSH)(COLOR_WINDOW + 1);
+        cls.hCursor = LoadCursorW(NULL, IDC_ARROW);
         cls.lpszClassName = ARCHIVE_CLASS;
         window_class = RegisterClassW(&cls);
         if (!window_class) return NULL;

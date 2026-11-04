@@ -6,7 +6,7 @@ Tiny sticky notes for Windows. **Pure C, no dependencies.**
 
 Windows 10/11, x64. Installs for your account without administrator rights.
 
-![Floating notes and a collapsed note](docs/screenshots/notes.png)
+![Formatting, checklists and a collapsed note](docs/screenshots/notes.png)
 
 ## Use
 
@@ -27,7 +27,7 @@ Windows 10/11, x64. Installs for your account without administrator rights.
 | Note size | Small, medium, large, extra large or square |
 | New note palette | Pastel, black and white, or yellow only |
 
-![Right-click menu walkthrough](docs/screenshots/menu-demo.gif)
+![Native menus, border resizing and notes archive](docs/screenshots/menu-demo.gif)
 
 ![The three palettes](docs/screenshots/palettes.png)
 

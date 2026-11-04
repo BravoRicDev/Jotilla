@@ -11,6 +11,8 @@ static HMENU recording_menu;
 static const wchar_t *frame_directory=L"build\\gif";
 static int frame_delay=85, menu_offset=200;
 static FILE *frame_timing;
+static const wchar_t *WELCOME_BODY=L"Welcome my son\r\nWelcome to the machine\r\nWhere have you been?";
+static const wchar_t *WELCOME_ARCHIVE_ID=L"note-2025-06-18_09-30-00-000-001";
 
 static LRESULT CALLBACK backdrop_proc(HWND window,UINT message,WPARAM wparam,LPARAM lparam) {
     if (message==WM_PAINT) {
@@ -84,8 +86,75 @@ static Note *demo_note(int palette,int color,int size,int x,int y,const wchar_t 
 }
 
 static void clear_scene(void) {
+    archive_close();
     while (notes) destroy_note(notes);
     RedrawWindow(backdrop,NULL,NULL,RDW_INVALIDATE|RDW_UPDATENOW);
+}
+
+static void clear_demo_archive(void) {
+    wchar_t pattern[PATH_CAP],path[PATH_CAP];
+    WIN32_FIND_DATAW entry;
+    HANDLE search;
+    WritePrivateProfileStringW(NULL,NULL,NULL,state_path);
+    swprintf_s(pattern,PATH_CAP,L"%s\\*",directory);
+    search=FindFirstFileW(pattern,&entry);
+    if (search==INVALID_HANDLE_VALUE) return;
+    do {
+        if (entry.dwFileAttributes&FILE_ATTRIBUTE_DIRECTORY) continue;
+        swprintf_s(path,PATH_CAP,L"%s\\%s",directory,entry.cFileName);
+        require(DeleteFileW(path),"remove isolated demonstration data");
+    } while (FindNextFileW(search,&entry));
+    FindClose(search);
+}
+
+static void format_overview_note(Note *note) {
+    CHARFORMAT2W format={0};
+    CHARRANGE paragraph;
+    LONG start=0;
+    const DWORD effects[]={CFM_BOLD,CFM_ITALIC,CFM_UNDERLINE};
+    int i;
+    format.cbSize=sizeof(format);
+    format.dwMask=CFM_BOLD|CFM_ITALIC|CFM_UNDERLINE|CFM_STRIKEOUT;
+    note->validating=TRUE;
+    SendMessageW(note->edit,EM_SETSEL,0,-1);
+    SendMessageW(note->edit,EM_SETCHARFORMAT,SCF_SELECTION,(LPARAM)&format);
+    for (i=0;i<3;++i) {
+        paragraph_at(note->edit,start,&paragraph);
+        SendMessageW(note->edit,EM_EXSETSEL,0,(LPARAM)&paragraph);
+        format.dwMask=format.dwEffects=effects[i];
+        SendMessageW(note->edit,EM_SETCHARFORMAT,SCF_SELECTION,(LPARAM)&format);
+        start=paragraph.cpMax+1;
+    }
+    paragraph_at(note->edit,start,&paragraph); strike_todo(note,&paragraph,TRUE);
+    SendMessageW(note->edit,EM_SETSEL,(WPARAM)-1,-1);
+    note->validating=FALSE;
+    require(text_fits(note),"formatting and both checklist states fit in the overview");
+    mark_dirty(note);
+}
+
+static void populate_demo_archive(void) {
+    static const struct { const wchar_t *id; const char *text; } fixtures[]={
+        {L"note-2026-11-03_09-00-00-000-001","#Small wins\r\nReview the draft.\r\nShip one useful thing."},
+        {L"note-2026-09-22_10-00-00-000-001","#Autumn ideas\r\nA quieter morning.\r\nA fresh notebook."},
+        {L"note-2026-04-12_11-00-00-000-001","#Desk notes\r\nSketch the next idea.\r\nKeep the first version small."},
+        {L"note-2026-04-08_08-00-00-000-001","#Spring plans\r\nBook the museum.\r\nFind a good cafe."},
+        {L"note-2026-01-17_12-00-00-000-001","#New year\r\nMake room for good ideas."},
+        {L"note-2025-12-19_16-00-00-000-001","#Winter break\r\nPack a book.\r\nBring the camera."},
+        {L"note-2025-10-05_14-00-00-000-001","#Reading list\r\nOne chapter at a time."},
+        {L"note-2025-06-18_09-30-00-000-001","#Welcome to the machine\r\nWelcome my son\r\nWelcome to the machine\r\nWhere have you been?"},
+        {L"note-2025-06-03_07-00-00-000-001","#Early summer\r\nA walk before breakfast.\r\nCoffee with a friend."},
+        {L"note-2025-02-07_18-00-00-000-001","#First ideas\r\nStart with a blank page."}
+    };
+    RECT bounds;
+    size_t i;
+    GetWindowRect(backdrop,&bounds);
+    for (i=0;i<sizeof(fixtures)/sizeof(fixtures[0]);++i) {
+        archive_fixture(fixtures[i].id,fixtures[i].text);
+        require(write_setting(fixtures[i].id,L"color",(int)i%COLOR_COUNT) &&
+                write_setting(fixtures[i].id,L"size",4) &&
+                write_setting(fixtures[i].id,L"x",bounds.left+760) &&
+                write_setting(fixtures[i].id,L"y",bounds.top+320),"configure isolated dated previews");
+    }
 }
 
 static void capture_frame(void) {
@@ -109,12 +178,129 @@ static void move_pointer(int x,int y) {
     require(SendInput(1,&input,sizeof(INPUT))==1,"move the actual pointer");
 }
 
+static void click_pointer(void) {
+    INPUT clicks[2]={{0},{0}};
+    clicks[0].type=clicks[1].type=INPUT_MOUSE;
+    clicks[0].mi.dwFlags=MOUSEEVENTF_LEFTDOWN; clicks[1].mi.dwFlags=MOUSEEVENTF_LEFTUP;
+    require(SendInput(2,clicks,sizeof(INPUT))==2,"click the actual application");
+}
+
+static HWND demo_archive_window(void) {
+    HWND window=NULL;
+    while ((window=FindWindowExW(NULL,window,L"PicoSlip.Archive",NULL))!=NULL)
+        if (GetWindowThreadProcessId(window,NULL)==GetCurrentThreadId()) return window;
+    return NULL;
+}
+
+static void position_demo_archive(void) {
+    RECT bounds;
+    HWND window=demo_archive_window();
+    require(window!=NULL,"locate this process's archive window");
+    GetWindowRect(backdrop,&bounds);
+    SetWindowPos(window,HWND_TOPMOST,bounds.left+35,bounds.top+45,1000,680,0);
+    SetForegroundWindow(window); UpdateWindow(window);
+}
+
+typedef struct EdgeDrag { POINT from,to; } EdgeDrag;
+static volatile LONG edge_drag_active;
+static UINT_PTR edge_frame_timer;
+
+static DWORD WINAPI drag_edge_input(void *argument) {
+    const EdgeDrag *drag=(const EdgeDrag *)argument;
+    INPUT input=pointer_input(drag->from.x,drag->from.y);
+    BOOL ok=SendInput(1,&input,sizeof(input))==1;
+    int i;
+    Sleep(60);
+    input.type=INPUT_MOUSE; input.mi.dwFlags=MOUSEEVENTF_LEFTDOWN;
+    if (ok) ok=SendInput(1,&input,sizeof(input))==1;
+    Sleep(80);
+    for (i=1;ok && i<=12;++i) {
+        input=pointer_input(drag->from.x+MulDiv(drag->to.x-drag->from.x,i,12),
+                            drag->from.y+MulDiv(drag->to.y-drag->from.y,i,12));
+        ok=SendInput(1,&input,sizeof(input))==1;
+        Sleep(55);
+    }
+    memset(&input,0,sizeof(input)); input.type=INPUT_MOUSE; input.mi.dwFlags=MOUSEEVENTF_LEFTUP;
+    if (SendInput(1,&input,sizeof(input))!=1) ok=FALSE;
+    InterlockedExchange(&edge_drag_active,0);
+    return ok ? 0 : 1;
+}
+
+static void CALLBACK capture_edge_frame(HWND window,UINT message,UINT_PTR timer,DWORD time) {
+    (void)window; (void)message; (void)time;
+    KillTimer(NULL,timer); edge_frame_timer=0;
+    capture_frame();
+    if (InterlockedCompareExchange(&edge_drag_active,0,0))
+        edge_frame_timer=SetTimer(NULL,0,90,capture_edge_frame);
+}
+
+static void record_edge_resize(Note *note,BOOL right_edge,int distance) {
+    RECT before,after;
+    EdgeDrag drag;
+    HANDLE thread;
+    DWORD result;
+    require(save_note(note),"save before the border resize demonstration");
+    SetForegroundWindow(note->window); GetWindowRect(note->window,&before);
+    drag.from.x=right_edge ? before.right-1 : (before.left+before.right)/2;
+    drag.from.y=right_edge ? (before.top+before.bottom)/2 : before.bottom-1;
+    drag.to=drag.from;
+    if (right_edge) drag.to.x+=distance;
+    else drag.to.y+=distance;
+    move_pointer(drag.from.x,drag.from.y); frame_delay=65; capture_frame();
+    frame_delay=14;
+    InterlockedExchange(&edge_drag_active,1);
+    edge_frame_timer=SetTimer(NULL,0,90,capture_edge_frame);
+    thread=CreateThread(NULL,0,drag_edge_input,&drag,0,NULL);
+    require(edge_frame_timer && thread,"record native edge resizing while the message loop runs");
+    pump(1150);
+    require(WaitForSingleObject(thread,1000)==WAIT_OBJECT_0 && GetExitCodeThread(thread,&result) && result==0,
+            "complete the real border drag");
+    CloseHandle(thread);
+    if (edge_frame_timer) { KillTimer(NULL,edge_frame_timer); edge_frame_timer=0; }
+    GetWindowRect(note->window,&after);
+    require((right_edge && after.right-before.right==distance) || (!right_edge && after.bottom-before.bottom==distance),
+            "dragging the border changes the real post-it dimensions");
+    frame_delay=80; capture_frame();
+}
+
+static void select_demo_date(HWND tree,unsigned date,BOOL expand) {
+    HTREEITEM item=find_date(tree,TreeView_GetRoot(tree),date);
+    RECT rect;
+    POINT point;
+    require(item!=NULL,"find a dated archive group");
+    TreeView_EnsureVisible(tree,item);
+    require(TreeView_GetItemRect(tree,item,&rect,TRUE),"locate the date label");
+    point.x=(rect.left+rect.right)/2; point.y=(rect.top+rect.bottom)/2;
+    ClientToScreen(tree,&point); move_pointer(point.x,point.y); frame_delay=45; capture_frame();
+    click_pointer(); pump(120);
+    require(TreeView_GetSelection(tree)==item,"the real click selects the requested date");
+    if (expand && !(TreeView_GetItemState(tree,item,TVIS_EXPANDED)&TVIS_EXPANDED)) {
+        TVHITTESTINFO hit={0};
+        int offset,indent=TreeView_GetIndent(tree);
+        hit.pt.y=(rect.top+rect.bottom)/2;
+        for (offset=1;offset<=indent;++offset) {
+            hit.pt.x=rect.left-offset;
+            if (TreeView_HitTest(tree,&hit)==item && (hit.flags&TVHT_ONITEMBUTTON)) break;
+        }
+        require(offset<=indent,"locate the native tree expansion button");
+        point=hit.pt; ClientToScreen(tree,&point); move_pointer(point.x,point.y); click_pointer(); pump(120);
+        require(TreeView_GetItemState(tree,item,TVIS_EXPANDED)&TVIS_EXPANDED,"expand the year or month with its native button");
+    }
+    frame_delay=90; capture_frame();
+}
+
 static void CALLBACK animate_menu(HWND window,UINT message,UINT_PTR timer,DWORD time) {
     RECT rect;
     INPUT click[3]={{0},{0},{0}};
     (void)window; (void)message; (void)time;
     KillTimer(NULL,timer);
     capture_frame();
+    if (menu_submenu<0) {
+        require(GetMenuItemRect(NULL,recording_menu,(UINT)menu_choice,&rect),"locate the browser menu command");
+        move_pointer((rect.left+rect.right)/2,(rect.top+rect.bottom)/2);
+        if (!menu_phase++) { require(SetTimer(NULL,0,250,animate_menu)!=0,"highlight the archive menu option"); return; }
+        click_pointer(); return;
+    }
     if (menu_phase==0) {
         require(GetMenuItemRect(NULL,recording_menu,(UINT)menu_submenu,&rect),"locate real menu item");
         move_pointer((rect.left+rect.right)/2,(rect.top+rect.bottom)/2);
@@ -153,51 +339,54 @@ static void record_menu(Note *note,int submenu,int choice,UINT expected) {
     DestroyMenu(recording_menu);
     if (selected!=expected) fprintf(stderr,"Menu selected %u, expected %u.\n",selected,expected);
     require(selected==expected,"native menu click selects the intended command");
-    note_command(note,selected); pump(220); capture_frame();
+    note_command(note,selected);
+    if (selected==CMD_BROWSE) position_demo_archive();
+    pump(220); capture_frame();
 }
 
-static void CALLBACK animate_title(HWND window,UINT message,UINT_PTR timer,DWORD time) {
-    HWND dialog=FindWindowW(L"#32770",L"Edit title");
-    RECT rect;
-    (void)window; (void)message; (void)time;
-    if (!dialog) return;
-    KillTimer(NULL,timer); capture_frame();
-    if (!menu_phase) {
-        SetDlgItemTextW(dialog,IDC_TITLE,L"Weekend");
-        SendDlgItemMessageW(dialog,IDC_TITLE,EM_SETSEL,7,7);
-        GetWindowRect(GetDlgItem(dialog,IDOK),&rect);
-        SetCursorPos((rect.left+rect.right)/2,(rect.top+rect.bottom)/2);
-        menu_phase=1; require(SetTimer(NULL,0,180,animate_title)!=0,"show edited title");
-    } else SendMessageW(dialog,WM_COMMAND,IDOK,0);
+static void record_archive_browser(Note *note) {
+    HWND window,tree,list;
+    RECT tile={0};
+    POINT point;
+    Note *reopened;
+    populate_demo_archive();
+    frame_delay=75;
+    record_menu(note,-1,1,CMD_BROWSE);
+    window=demo_archive_window(); tree=GetDlgItem(window,1); list=GetDlgItem(window,2);
+    require(tree && list,"record the actual date tree and virtual mosaic");
+    select_demo_date(tree,20260000,TRUE);
+    select_demo_date(tree,20260400,TRUE);
+    select_demo_date(tree,20260408,FALSE);
+    select_demo_date(tree,20250000,TRUE);
+    select_demo_date(tree,20250600,TRUE);
+    select_demo_date(tree,20250618,FALSE);
+    require(ListView_GetItemCount(list)==1 && ListView_GetItemRect(list,0,&tile,LVIR_ICON),"locate the archived welcome note");
+    point.x=tile.left+35; point.y=tile.top+45;
+    ClientToScreen(list,&point); move_pointer(point.x,point.y); frame_delay=65; capture_frame();
+    click_pointer(); pump(150);
+    reopened=find_note(WELCOME_ARCHIVE_ID);
+    require(reopened && !wcscmp(reopened->accepted_text,WELCOME_BODY),"clicking the archive restores the exact square-demo text");
+    frame_delay=160; capture_frame();
 }
 
 static void record_walkthrough(void) {
-    Note *note,*white,*black;
-    RECT rect;
+    Note *note;
     POINT previous;
-    clear_scene();
-    SetWindowPos(backdrop,NULL,0,0,860,620,SWP_NOMOVE|SWP_NOZORDER|SWP_NOACTIVATE);
+    clear_scene(); clear_demo_archive();
+    SetWindowPos(backdrop,NULL,0,0,1160,780,SWP_NOMOVE|SWP_NOZORDER|SWP_NOACTIVATE);
     CreateDirectoryW(L"build\\gif",NULL);
-    GetCursorPos(&previous); show_cursor=TRUE;
-    note=demo_note(0,0,1,50,50,L"Today",L"Plan the week\r\nBuy coffee\r\nFinish one thing",100);
-    record_menu(note,3,2,CMD_OPACITY+2);
-    record_menu(note,5,2,CMD_SIZE+2);
-    menu_phase=0;
-    require(SetTimer(NULL,0,100,animate_title)!=0,"open title editor demonstration");
-    note_command(note,CMD_TITLE); capture_frame();
-    record_menu(note,7,1,CMD_PALETTE+1);
-    white=new_note(); require(white && white->palette==1,"generate white note using selected palette");
-    resize_note(white,0); set_title(white,L"White"); replace_text(white,L"Train tickets\r\nPack charger");
-    GetWindowRect(backdrop,&rect);
-    SetWindowPos(white->window,HWND_TOPMOST,rect.left+430,rect.top+300,0,0,SWP_NOSIZE|SWP_NOACTIVATE);
-    ShowWindow(white->window,SW_SHOWNOACTIVATE); capture_frame();
-    black=new_note(); require(black && ink_color(black)==RGB(255,255,255),"generate contrasting black note");
-    resize_note(black,0); set_title(black,L"Black"); replace_text(black,L"Read chapter 4\r\nEmail Alex");
-    SetWindowPos(black->window,HWND_TOPMOST,rect.left+500,rect.top+350,0,0,SWP_NOSIZE|SWP_NOACTIVATE);
-    ShowWindow(black->window,SW_SHOWNOACTIVATE); capture_frame();
-    toggle_note(note); capture_frame(); capture_frame();
+    require(_wfopen_s(&frame_timing,L"build\\gif\\timing.txt",L"w")==0,"create walkthrough frame timeline");
+    GetCursorPos(&previous); show_cursor=TRUE; frame_delay=90;
+    note=demo_note(0,0,1,70,65,L"Welcome to the machine",WELCOME_BODY,100);
+    capture_frame();
+    record_menu(note,5,4,CMD_SIZE+4);
+    record_edge_resize(note,TRUE,110);
+    record_edge_resize(note,FALSE,70);
+    frame_delay=75; record_menu(note,3,2,CMD_OPACITY+2);
+    record_archive_browser(note);
+    fclose(frame_timing); frame_timing=NULL;
     SetCursorPos(previous.x,previous.y); show_cursor=FALSE;
-    puts("Recorded native menu clicks, opacity, size, title editing, palette generation and collapse.");
+    puts("Recorded square preset, real edge resizing, opacity and archived notes across 2025/2026.");
 }
 
 static void type_live(Note *note,const wchar_t *text) {
@@ -224,7 +413,6 @@ static Note *create_live_note(int x,int y) {
 }
 
 static void record_welcome(void) {
-    const wchar_t *body=L"Welcome my son\r\nWelcome to the machine\r\nWhere have you been?";
     Note *note,*second,*third;
     POINT previous;
     RECT rect;
@@ -243,7 +431,7 @@ static void record_welcome(void) {
     press_enter(note,FALSE); capture_frame();
     require(note->title && !wcscmp(note->title,L"Welcome to the machine"),"typed hash title is promoted by Enter");
     type_live(note,L"Welcome my son\rWelcome to the machine\rWhere have you been?");
-    require(!wcscmp(note->accepted_text,body),"live typing exactly matches the requested three lines");
+    require(!wcscmp(note->accepted_text,WELCOME_BODY),"live typing exactly matches the requested three lines");
     frame_delay=180; capture_frame();
     frame_delay=85; menu_offset=160;
     record_menu(note,5,4,CMD_SIZE+4);
@@ -263,27 +451,37 @@ static void record_welcome(void) {
 }
 
 int main(int argc,char **argv) {
-    wchar_t temporary[PATH_CAP],root[PATH_CAP],pattern[PATH_CAP],path[PATH_CAP];
+    wchar_t temporary[PATH_CAP],root[PATH_CAP],resolved[PATH_CAP];
     WNDCLASSW cls={0};
-    WIN32_FIND_DATAW entry;
-    HANDLE found;
-    Note *collapsed;
+    Note *collapsed,*formatted;
+    DWORD root_length;
     instance=GetModuleHandleW(NULL); testing=TRUE;
     SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
     require(GetTempPathW(PATH_CAP,temporary)!=0,"locate private demonstration folder");
-    swprintf_s(root,PATH_CAP,L"%sPicoSlip-demo-%lu",temporary,GetCurrentProcessId());
+    root_length=GetEnvironmentVariableW(L"PICOSLIP_DEMO_ROOT",root,PATH_CAP);
+    if (!root_length) swprintf_s(root,PATH_CAP,L"%sPicoSlip-demo-%lu-%llu",temporary,GetCurrentProcessId(),GetTickCount64());
+    require(root_length<PATH_CAP,"demonstration path length is valid");
+    root_length=GetFullPathNameW(root,PATH_CAP,resolved,NULL);
+    require(root_length>0 && root_length<PATH_CAP &&
+            !_wcsnicmp(resolved,temporary,wcslen(temporary)) &&
+            !wcsncmp(resolved+wcslen(temporary),L"PicoSlip-demo-",14),"demo data stays in a private temporary directory");
+    wcscpy_s(root,PATH_CAP,resolved);
     require(make_paths(root),"create private demonstration archive");
     app_icon=(HICON)LoadImageW(instance,MAKEINTRESOURCEW(IDI_APP),IMAGE_ICON,32,32,0);
     photo=(HBITMAP)LoadImageW(NULL,L"build\\screenshot-background.bmp",IMAGE_BITMAP,0,0,LR_LOADFROMFILE|LR_CREATEDIBSECTION);
     require(photo && GetObjectW(photo,sizeof(photo_info),&photo_info),"load requested screenshot photo");
     require(register_classes(),"register demonstration application");
+    controller=CreateWindowExW(WS_EX_TOOLWINDOW,APP_CLASS,L"PicoSlip documentation",WS_OVERLAPPED,
+                                0,0,0,0,NULL,NULL,instance,NULL);
+    require(controller!=NULL,"create the isolated archive owner");
     cls.hInstance=instance; cls.lpfnWndProc=backdrop_proc; cls.lpszClassName=L"PicoSlip.DemoBackdrop";
     cls.style=CS_HREDRAW|CS_VREDRAW;
     require(RegisterClassW(&cls)!=0,"register private screenshot backdrop");
     backdrop=CreateWindowExW(WS_EX_TOPMOST|WS_EX_TOOLWINDOW|WS_EX_NOACTIVATE,cls.lpszClassName,L"PicoSlip demo",WS_POPUP|WS_VISIBLE,40,40,1040,640,NULL,NULL,instance,NULL);
     require(backdrop!=NULL,"show private screenshot backdrop");
     if (argc==2 && !strcmp(argv[1],"--welcome")) { record_welcome(); goto finished; }
-    demo_note(0,0,1,55,50,L"Today",L"Buy coffee\r\nCall Maya\r\nWrite one small thing.",100);
+    formatted=demo_note(0,0,1,55,50,L"Today",L"Bold focus\r\nItalic idea\r\nUnderlined plan\r\n\x2611 Draft the outline\r\n\x2610 Finish one thing",100);
+    format_overview_note(formatted);
     demo_note(0,1,1,545,100,L"Project",L"Review the mockup\r\nSend the first draft\r\nFinish before Friday.",100);
     collapsed=demo_note(0,3,1,70,470,L"Later",L"Ideas for another day.",100);
     toggle_note(collapsed);
@@ -298,16 +496,10 @@ int main(int argc,char **argv) {
     record_walkthrough();
 finished:
     clear_scene();
+    DestroyWindow(controller);
     DestroyWindow(backdrop); if (app_icon) DestroyIcon(app_icon);
     DeleteObject(photo);
-    swprintf_s(pattern,PATH_CAP,L"%s\\*",root);
-    found=FindFirstFileW(pattern,&entry);
-    if (found!=INVALID_HANDLE_VALUE) {
-        do { if (!(entry.dwFileAttributes&FILE_ATTRIBUTE_DIRECTORY)) {
-            swprintf_s(path,PATH_CAP,L"%s\\%s",root,entry.cFileName); require(DeleteFileW(path),"remove private demo data");
-        } } while (FindNextFileW(found,&entry));
-        FindClose(found);
-    }
+    clear_demo_archive();
     require(RemoveDirectoryW(root),"remove private demo folder");
     puts(argc==2 && !strcmp(argv[1],"--welcome") ? "Captured the live-typing welcome demo." :
          "Captured overview, palettes and the native menu walkthrough.");

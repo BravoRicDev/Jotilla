@@ -730,6 +730,12 @@ static void archive_checks(void) {
     day=find_date(tree,TreeView_GetRoot(tree),20240103);
     require(year && month && day && TreeView_GetParent(tree,day)==month && TreeView_GetParent(tree,month)==year,
             "archive tree groups notes by creation year, month and day");
+    {
+        TVITEMW label={0};
+        label.mask=TVIF_TEXT; label.hItem=month; label.pszText=preview; label.cchTextMax=256;
+        require(TreeView_GetItem(tree,&label) && !wcscmp(preview,L"January"),
+                "archive month names stay English independently of the Windows locale");
+    }
     TreeView_SelectItem(tree,day); pump(40);
     require(ListView_GetItemCount(list)==1,"selecting a day filters the virtual list");
     ListView_GetItemText(list,0,0,preview,256);
