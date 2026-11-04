@@ -16,6 +16,26 @@ static FILE *frame_timing;
 static const wchar_t *WELCOME_BODY=L"Welcome my son\r\nWelcome to the machine\r\nWhere have you been?";
 static const wchar_t *WELCOME_ARCHIVE_ID=L"note-2025-06-18_09-30-00-000-001";
 
+static BOOL recording_unobstructed(const RECT *bounds) {
+    HWND window;
+    DWORD current=GetCurrentProcessId();
+    for (window=GetTopWindow(NULL); window && window!=backdrop; window=GetWindow(window,GW_HWNDNEXT)) {
+        DWORD process=0,cloaked=0;
+        RECT rect,overlap;
+        if (!IsWindowVisible(window) || IsIconic(window)) continue;
+        GetWindowThreadProcessId(window,&process);
+        if (process==current) continue;
+        if (SUCCEEDED(DwmGetWindowAttribute(window,DWMWA_CLOAKED,&cloaked,sizeof(cloaked))) && cloaked) continue;
+        if (GetWindowRect(window,&rect) && IntersectRect(&overlap,bounds,&rect)) {
+            wchar_t name[80];
+            GetClassNameW(window,name,80);
+            fprintf(stderr,"Recording obstructed by %ls at frame %d.\n",name,frame_number);
+            return FALSE;
+        }
+    }
+    return window==backdrop;
+}
+
 static LRESULT CALLBACK backdrop_proc(HWND window,UINT message,WPARAM wparam,LPARAM lparam) {
     if (message==WM_PAINT) {
         PAINTSTRUCT paint;
@@ -28,10 +48,15 @@ static LRESULT CALLBACK backdrop_proc(HWND window,UINT message,WPARAM wparam,LPA
                (photo_info.bmWidth-rect.right)/2,(photo_info.bmHeight-rect.bottom)/2,SRCCOPY);
         SelectObject(source,old); DeleteDC(source);
         if (caption) {
-            RECT footer={40,904,960,964};
+            RECT footer={40,904,960,964},shadow=footer,border=footer;
+            HBRUSH brush=(HBRUSH)GetStockObject(DC_BRUSH);
             HGDIOBJ font=SelectObject(dc,caption_font);
+            OffsetRect(&shadow,6,6);
+            SetDCBrushColor(dc,RGB(55,48,38)); FillRect(dc,&shadow,brush);
             SetDCBrushColor(dc,RGB(244,238,226));
-            FillRect(dc,&footer,(HBRUSH)GetStockObject(DC_BRUSH));
+            FillRect(dc,&footer,brush);
+            SetDCBrushColor(dc,RGB(0,0,0)); FrameRect(dc,&border,brush);
+            InflateRect(&border,-1,-1); FrameRect(dc,&border,brush);
             SetBkMode(dc,TRANSPARENT); SetTextColor(dc,RGB(58,52,43));
             DrawTextW(dc,caption,-1,&footer,DT_CENTER|DT_VCENTER|DT_SINGLELINE|DT_NOPREFIX);
             SelectObject(dc,font);
@@ -54,6 +79,7 @@ static void capture(const wchar_t *path) {
     void *pixels;
     pump(100);
     GetWindowRect(backdrop,&rect);
+    if (frame_timing) require(recording_unobstructed(&rect),"do not record windows outside the demo");
     info.bmiHeader.biSize=sizeof(BITMAPINFOHEADER);
     info.bmiHeader.biWidth=rect.right-rect.left; info.bmiHeader.biHeight=rect.top-rect.bottom;
     info.bmiHeader.biPlanes=1; info.bmiHeader.biBitCount=32;
@@ -391,7 +417,11 @@ static Note *create_live_note(int x,int y) {
     SetWindowPos(note->window,HWND_TOPMOST,rect.left+x,rect.top+y,0,0,SWP_NOSIZE|SWP_NOACTIVATE);
     ShowWindow(note->window,SW_SHOWNORMAL);
     SetForegroundWindow(note->window); SetFocus(note->edit);
-    GetWindowRect(note->edit,&edit); SetCursorPos(edit.left+12,edit.top+12);
+    GetWindowRect(note->edit,&edit);
+    /* A real click dismisses shell panels that SetForegroundWindow alone
+       may leave over the recording, even while WM_CHAR edits our note. */
+    move_pointer(edit.left+12,edit.top+12); click_pointer(); pump(100);
+    require(GetForegroundWindow()==note->window && GetFocus()==note->edit,"activate the note before recording any typing");
     capture_frame();
     return note;
 }
@@ -480,7 +510,11 @@ static void CALLBACK animate_delete(HWND window,UINT message,UINT_PTR timer,DWOR
     } else if (delete_phase==1) {
         ++delete_phase; click_pointer();
     } else if ((dialog=thread_window(L"#32770",L"PicoSlip"))!=NULL) {
+        RECT bounds,rect;
         require(GetWindow(dialog,GW_OWNER)==thread_window(L"PicoSlip.Archive",NULL),"only delete private demo notes");
+        GetWindowRect(backdrop,&bounds); GetWindowRect(dialog,&rect);
+        SetWindowPos(dialog,HWND_TOPMOST,bounds.left+(1000-(rect.right-rect.left))/2,
+                     bounds.top+(900-(rect.bottom-rect.top))/2,0,0,SWP_NOSIZE|SWP_NOACTIVATE);
         GetWindowRect(GetDlgItem(dialog,IDYES),&button);
         move_pointer((button.left+button.right)/2,(button.top+button.bottom)/2);
         frame_delay=100; capture_frame(); click_pointer(); ++delete_phase; return;
