@@ -1,4 +1,4 @@
-# PicoSlip
+# ![icon](assets/picoslip.ico) PicoSlip
 
 Tiny sticky notes for Windows. **Pure C, no dependencies.**
 
