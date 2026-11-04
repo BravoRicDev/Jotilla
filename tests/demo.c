@@ -5,10 +5,12 @@
 static HWND backdrop;
 static HBITMAP photo;
 static BITMAP photo_info;
+static HFONT caption_font;
+static const wchar_t *caption;
 static BOOL show_cursor;
-static int frame_number, menu_phase, menu_submenu, menu_choice;
+static int frame_number, menu_phase, menu_submenu, menu_choice, menu_retries;
 static HMENU recording_menu;
-static const wchar_t *frame_directory=L"build\\gif";
+static const wchar_t *frame_directory;
 static int frame_delay=85, menu_offset=200;
 static FILE *frame_timing;
 static const wchar_t *WELCOME_BODY=L"Welcome my son\r\nWelcome to the machine\r\nWhere have you been?";
@@ -25,6 +27,15 @@ static LRESULT CALLBACK backdrop_proc(HWND window,UINT message,WPARAM wparam,LPA
         BitBlt(dc,0,0,rect.right,rect.bottom,source,
                (photo_info.bmWidth-rect.right)/2,(photo_info.bmHeight-rect.bottom)/2,SRCCOPY);
         SelectObject(source,old); DeleteDC(source);
+        if (caption) {
+            RECT footer={40,904,960,964};
+            HGDIOBJ font=SelectObject(dc,caption_font);
+            SetDCBrushColor(dc,RGB(244,238,226));
+            FillRect(dc,&footer,(HBRUSH)GetStockObject(DC_BRUSH));
+            SetBkMode(dc,TRANSPARENT); SetTextColor(dc,RGB(58,52,43));
+            DrawTextW(dc,caption,-1,&footer,DT_CENTER|DT_VCENTER|DT_SINGLELINE|DT_NOPREFIX);
+            SelectObject(dc,font);
+        }
         EndPaint(window,&paint); return 0;
     }
     if (message==WM_ERASEBKGND) return 1;
@@ -152,8 +163,8 @@ static void populate_demo_archive(void) {
         archive_fixture(fixtures[i].id,fixtures[i].text);
         require(write_setting(fixtures[i].id,L"color",(int)i%COLOR_COUNT) &&
                 write_setting(fixtures[i].id,L"size",4) &&
-                write_setting(fixtures[i].id,L"x",bounds.left+760) &&
-                write_setting(fixtures[i].id,L"y",bounds.top+320),"configure isolated dated previews");
+                write_setting(fixtures[i].id,L"x",bounds.left+315) &&
+                write_setting(fixtures[i].id,L"y",bounds.top+490),"configure isolated dated previews");
     }
 }
 
@@ -162,6 +173,26 @@ static void capture_frame(void) {
     swprintf_s(path,80,L"%s\\frame-%03d.bmp",frame_directory,frame_number++);
     capture(path);
     if (frame_timing) fprintf(frame_timing,"%d|%ls\n",frame_delay,path);
+}
+
+static void set_caption(const wchar_t *text) {
+    caption=text;
+    InvalidateRect(backdrop,NULL,FALSE); UpdateWindow(backdrop);
+}
+
+static void begin_recording(const wchar_t *folder) {
+    wchar_t timeline[80];
+    clear_scene(); clear_demo_archive();
+    SetWindowPos(backdrop,NULL,20,20,1000,1000,SWP_NOZORDER|SWP_NOACTIVATE);
+    frame_directory=folder; frame_number=0; frame_delay=80; menu_offset=160; show_cursor=TRUE;
+    require(CreateDirectoryW(folder,NULL) || GetLastError()==ERROR_ALREADY_EXISTS,"create square recording directory");
+    swprintf_s(timeline,80,L"%s\\timing.txt",folder);
+    require(_wfopen_s(&frame_timing,timeline,L"w")==0,"create square recording timeline");
+}
+
+static void end_recording(void) {
+    fclose(frame_timing); frame_timing=NULL;
+    show_cursor=FALSE; caption=NULL;
 }
 
 static INPUT pointer_input(int x,int y) {
@@ -190,7 +221,7 @@ static void position_demo_archive(void) {
     HWND window=thread_window(L"PicoSlip.Archive",NULL);
     require(window!=NULL,"locate this process's archive window");
     GetWindowRect(backdrop,&bounds);
-    SetWindowPos(window,HWND_TOPMOST,bounds.left+35,bounds.top+45,1000,680,0);
+    SetWindowPos(window,HWND_TOPMOST,bounds.left+50,bounds.top+70,900,750,0);
     SetForegroundWindow(window); UpdateWindow(window);
 }
 
@@ -299,7 +330,12 @@ static void CALLBACK animate_menu(HWND window,UINT message,UINT_PTR timer,DWORD 
         move_pointer((rect.left+rect.right)/2,(rect.top+rect.bottom)/2);
         menu_phase=1; require(SetTimer(NULL,0,600,animate_menu)!=0,"wait for native submenu");
     } else if (menu_phase==1) {
-        require(GetMenuItemRect(NULL,GetSubMenu(recording_menu,menu_submenu),(UINT)menu_choice,&rect),"locate real submenu choice");
+        if (!GetMenuItemRect(NULL,GetSubMenu(recording_menu,menu_submenu),(UINT)menu_choice,&rect)) {
+            require(++menu_retries<=10 && GetMenuItemRect(NULL,recording_menu,(UINT)menu_submenu,&rect),
+                    "wait for the native submenu to open");
+            move_pointer((rect.left+rect.right)/2,(rect.top+rect.bottom)/2);
+            require(SetTimer(NULL,0,200,animate_menu)!=0,"wait for delayed native submenu layout"); return;
+        }
         move_pointer((rect.left+rect.right)/2,(rect.top+rect.bottom)/2);
         menu_phase=2; require(SetTimer(NULL,0,180,animate_menu)!=0,"highlight native menu choice");
     } else {
@@ -325,7 +361,7 @@ static void record_menu(Note *note,int submenu,int choice,UINT expected) {
     move_pointer(rect.left+menu_offset,rect.top+bar_height(note)/2);
     capture_frame();
     recording_menu=build_note_menu(note); require(recording_menu!=NULL,"build actual application menu");
-    menu_submenu=submenu; menu_choice=choice; menu_phase=0;
+    menu_submenu=submenu; menu_choice=choice; menu_phase=menu_retries=0;
     require(SetTimer(NULL,0,120,animate_menu)!=0,"schedule menu interaction");
     SetForegroundWindow(note->window);
     selected=(UINT)TrackPopupMenu(recording_menu,TPM_RETURNCMD|TPM_RIGHTBUTTON,rect.left+menu_offset,rect.top+bar_height(note)/2,0,note->window,NULL);
@@ -337,53 +373,8 @@ static void record_menu(Note *note,int submenu,int choice,UINT expected) {
     pump(220); capture_frame();
 }
 
-static void record_archive_browser(Note *note) {
-    HWND window,tree,list;
-    RECT tile={0};
-    POINT point;
-    Note *reopened;
-    populate_demo_archive();
-    frame_delay=75;
-    record_menu(note,-1,1,CMD_BROWSE);
-    window=thread_window(L"PicoSlip.Archive",NULL); tree=GetDlgItem(window,1); list=GetDlgItem(window,2);
-    require(tree && list,"record the actual date tree and virtual mosaic");
-    select_demo_date(tree,20260000,TRUE);
-    select_demo_date(tree,20260400,TRUE);
-    select_demo_date(tree,20260408,FALSE);
-    select_demo_date(tree,20250000,TRUE);
-    select_demo_date(tree,20250600,TRUE);
-    select_demo_date(tree,20250618,FALSE);
-    require(ListView_GetItemCount(list)==1 && ListView_GetItemRect(list,0,&tile,LVIR_ICON),"locate the archived welcome note");
-    point.x=tile.left+35; point.y=tile.top+45;
-    ClientToScreen(list,&point); move_pointer(point.x,point.y); frame_delay=65; capture_frame();
-    click_pointer(); pump(150);
-    reopened=find_note(WELCOME_ARCHIVE_ID);
-    require(reopened && !wcscmp(reopened->accepted_text,WELCOME_BODY),"clicking the archive restores the exact square-demo text");
-    frame_delay=160; capture_frame();
-}
-
-static void record_walkthrough(void) {
-    Note *note;
-    POINT previous;
-    clear_scene(); clear_demo_archive();
-    SetWindowPos(backdrop,NULL,0,0,1160,780,SWP_NOMOVE|SWP_NOZORDER|SWP_NOACTIVATE);
-    CreateDirectoryW(L"build\\gif",NULL);
-    require(_wfopen_s(&frame_timing,L"build\\gif\\timing.txt",L"w")==0,"create walkthrough frame timeline");
-    GetCursorPos(&previous); show_cursor=TRUE; frame_delay=90;
-    note=demo_note(0,0,1,70,65,L"Welcome to the machine",WELCOME_BODY,100);
-    capture_frame();
-    record_menu(note,5,4,CMD_SIZE+4);
-    record_edge_resize(note,TRUE,110);
-    record_edge_resize(note,FALSE,70);
-    frame_delay=75; record_menu(note,3,2,CMD_OPACITY+2);
-    record_archive_browser(note);
-    fclose(frame_timing); frame_timing=NULL;
-    SetCursorPos(previous.x,previous.y); show_cursor=FALSE;
-    puts("Recorded square preset, real edge resizing, opacity and archived notes across 2025/2026.");
-}
-
 static void type_live(Note *note,const wchar_t *text) {
-    frame_delay=10;
+    frame_delay=6;
     SetForegroundWindow(note->window); SetFocus(note->edit);
     while (*text) {
         if (*text==L'\r') press_enter(note,FALSE);
@@ -405,42 +396,176 @@ static Note *create_live_note(int x,int y) {
     return note;
 }
 
-static void record_welcome(void) {
-    Note *note,*second,*third;
-    POINT previous;
-    RECT rect;
-    clear_scene();
-    frame_directory=L"build\\welcome-gif";
-    CreateDirectoryW(frame_directory,NULL);
-    require(_wfopen_s(&frame_timing,L"build\\welcome-gif\\timing.txt",L"w")==0,"create live-typing frame timeline");
-    SetWindowPos(backdrop,NULL,0,0,1160,780,SWP_NOMOVE|SWP_NOZORDER|SWP_NOACTIVATE);
-    GetCursorPos(&previous); show_cursor=TRUE; frame_delay=80;
-    GetWindowRect(backdrop,&rect); SetCursorPos(rect.left+170,rect.top+150);
-    capture_frame();
+static void record_postits(void) {
+    Note *note;
+    POINTL checkbox;
+    POINT point;
+    CHARRANGE paragraph;
+    FINDTEXTEXW todo={{0,-1},L"\x2610 ",{0,0}};
+    RECT bounds;
+    begin_recording(L"build\\notes-gif");
     current_palette=0; next_color=0;
-    note=create_live_note(120,120);
+    set_caption(L"Create a note: Ctrl + Alt + +");
+    note=create_live_note(230,200);
+    set_caption(L"#Title + Enter");
     type_live(note,L"#Welcome to the machine");
-    frame_delay=90; capture_frame();
-    press_enter(note,FALSE); capture_frame();
-    require(note->title && !wcscmp(note->title,L"Welcome to the machine"),"typed hash title is promoted by Enter");
+    press_enter(note,FALSE); frame_delay=90; capture_frame();
+    require(note->title && !wcscmp(note->title,L"Welcome to the machine"),"live title entry works");
+    set_caption(L"Write freely; notes save automatically");
     type_live(note,L"Welcome my son\rWelcome to the machine\rWhere have you been?");
-    require(!wcscmp(note->accepted_text,WELCOME_BODY),"live typing exactly matches the requested three lines");
+    require(!wcscmp(note->accepted_text,WELCOME_BODY),"post-it demo starts with the original square-demo text");
+    set_caption(L"Right-click the bar: choose a size");
+    frame_delay=65; record_menu(note,5,4,CMD_SIZE+4);
+    set_caption(L"Drag the right or bottom edge to resize");
+    record_edge_resize(note,TRUE,110);
+    record_edge_resize(note,FALSE,70);
+    set_caption(L"Ctrl + B / I / U: format selected text");
+    paragraph_at(note->edit,0,&paragraph);
+    SendMessageW(note->edit,EM_EXSETSEL,0,(LPARAM)&paragraph); shortcut(note,'B',FALSE);
+    frame_delay=90; capture_frame(); shortcut(note,'I',FALSE);
+    SendMessageW(note->edit,EM_SETSEL,(WPARAM)-1,-1);
+    frame_delay=90; capture_frame();
+    paragraph_at(note->edit,15,&paragraph);
+    SendMessageW(note->edit,EM_EXSETSEL,0,(LPARAM)&paragraph); shortcut(note,'U',FALSE);
+    SendMessageW(note->edit,EM_SETSEL,(WPARAM)-1,-1); capture_frame();
+    set_caption(L"* + Shift + Enter starts a checklist");
+    press_enter(note,FALSE); type_live(note,L"*");
+    press_enter(note,TRUE); frame_delay=90; capture_frame();
+    type_live(note,L"Draft the outline");
+    set_caption(L"Enter adds the next checkbox");
+    press_enter(note,FALSE); type_live(note,L"Finish one thing");
+    require(SendMessageW(note->edit,EM_FINDTEXTEXW,FR_DOWN,(LPARAM)&todo)>=0,"find the first checklist item");
+    paragraph_at(note->edit,todo.chrgText.cpMin,&paragraph);
+    require(todo_marker(note->edit,&paragraph)==L'\x2610',"locate the new unchecked item");
+    set_caption(L"Click a checkbox to complete its task");
+    SendMessageW(note->edit,EM_POSFROMCHAR,(WPARAM)&checkbox,paragraph.cpMin);
+    point.x=checkbox.x+2; point.y=checkbox.y+note->line_height/2;
+    ClientToScreen(note->edit,&point); move_pointer(point.x,point.y); frame_delay=90; capture_frame();
+    click_pointer(); pump(150);
+    require(todo_marker(note->edit,&paragraph)==L'\x2611',"the actual click completes the demonstration task");
+    frame_delay=140; capture_frame();
+    set_caption(L"Collapse a note; expand it when needed");
+    GetWindowRect(note->window,&bounds);
+    point.x=bounds.right-bar_height(note)*3/2; point.y=bounds.top+bar_height(note)/2;
+    move_pointer(point.x,point.y); click_pointer(); pump(100); frame_delay=90; capture_frame();
+    require(note->collapsed,"the real collapse button folds the note");
+    pump(GetDoubleClickTime()+20);
+    click_pointer(); pump(100); frame_delay=160; capture_frame();
+    require(!note->collapsed,"the real expand button restores the note");
+    end_recording();
+    puts("Recorded square post-it demo: typing, title, edge resizing, formatting, checklist and collapse.");
+}
+
+static void send_key(WORD key,BOOL down) {
+    INPUT input={0};
+    input.type=INPUT_KEYBOARD; input.ki.wVk=key;
+    input.ki.dwFlags=down ? 0 : KEYEVENTF_KEYUP;
+    require(SendInput(1,&input,sizeof(input))==1,"deliver demonstration key");
+}
+
+static int delete_phase;
+static UINT_PTR delete_timer;
+static void CALLBACK animate_delete(HWND window,UINT message,UINT_PTR timer,DWORD time) {
+    HWND dialog,menu;
+    RECT button;
+    (void)window; (void)message; (void)time;
+    KillTimer(NULL,timer); delete_timer=0;
+    if (delete_phase==0) {
+        menu=thread_window(L"#32768",NULL);
+        if (menu) {
+            GetWindowRect(menu,&button);
+            move_pointer((button.left+button.right)/2,(button.top+button.bottom)/2);
+            frame_delay=100; capture_frame(); ++delete_phase;
+        }
+    } else if (delete_phase==1) {
+        ++delete_phase; click_pointer();
+    } else if ((dialog=thread_window(L"#32770",L"PicoSlip"))!=NULL) {
+        require(GetWindow(dialog,GW_OWNER)==thread_window(L"PicoSlip.Archive",NULL),"only delete private demo notes");
+        GetWindowRect(GetDlgItem(dialog,IDYES),&button);
+        move_pointer((button.left+button.right)/2,(button.top+button.bottom)/2);
+        frame_delay=100; capture_frame(); click_pointer(); ++delete_phase; return;
+    }
+    delete_timer=SetTimer(NULL,0,150,animate_delete);
+    require(delete_timer!=0,"continue the native delete-menu demonstration");
+}
+
+static void record_archive_browser(void) {
+    HWND window,tree,list;
+    RECT tile={0},bounds;
+    POINT point;
+    Note *note,*reopened;
+    int i;
+    INPUT right_click[2]={{0},{0}};
+    wchar_t preview[128],path[PATH_CAP];
+    begin_recording(L"build\\browser-gif");
+    DeleteObject(photo);
+    photo=(HBITMAP)LoadImageW(NULL,L"build\\browser-background.bmp",IMAGE_BITMAP,0,0,LR_LOADFROMFILE|LR_CREATEDIBSECTION);
+    require(photo && GetObjectW(photo,sizeof(photo_info),&photo_info),"load the requested browser background");
+    set_caption(L"Right-click the bar: Browse notes");
+    note=demo_note(0,0,4,230,200,L"Welcome to the machine",WELCOME_BODY,100);
+    populate_demo_archive();
+    frame_delay=75;
+    record_menu(note,-1,1,CMD_BROWSE);
+    SendMessageW(note->window,WM_CLOSE,0,0);
+    window=thread_window(L"PicoSlip.Archive",NULL); tree=GetDlgItem(window,1); list=GetDlgItem(window,2);
+    require(tree && list,"record the actual date tree and virtual mosaic");
+    set_caption(L"All notes in a mosaic, grouped by date");
+    frame_delay=150; capture_frame();
+    set_caption(L"Choose a year, a month, then a day");
+    select_demo_date(tree,20260000,TRUE);
+    select_demo_date(tree,20260400,TRUE);
+    select_demo_date(tree,20260408,FALSE);
+    select_demo_date(tree,20250000,TRUE);
+    select_demo_date(tree,20250600,TRUE);
+    select_demo_date(tree,20250618,FALSE);
+    set_caption(L"Click a preview to reopen its post-it");
+    /* Leave a band of the painting around both windows during the live edit. */
+    GetWindowRect(backdrop,&bounds);
+    TreeView_Expand(tree,find_date(tree,TreeView_GetRoot(tree),20260000),TVE_COLLAPSE);
+    SetWindowPos(window,HWND_TOPMOST,bounds.left+50,bounds.top+50,900,400,0);
+    TreeView_EnsureVisible(tree,TreeView_GetSelection(tree));
+    require(ListView_GetItemCount(list)==1 && ListView_GetItemRect(list,0,&tile,LVIR_ICON),"locate the archived welcome note");
+    point.x=tile.left+35; point.y=tile.top+45;
+    ClientToScreen(list,&point); move_pointer(point.x,point.y); frame_delay=65; capture_frame();
+    click_pointer(); pump(150);
+    reopened=find_note(WELCOME_ARCHIVE_ID);
+    require(reopened && !wcscmp(reopened->accepted_text,WELCOME_BODY),"clicking the archive restores the exact square-demo text");
+    frame_delay=140; capture_frame();
+    set_caption(L"Edit the note: its preview updates automatically");
+    SendMessageW(reopened->edit,EM_SETSEL,(WPARAM)-1,-1);
+    type_live(reopened,L"\rA live update."); pump(650);
+    require(!reopened->dirty,"the live edit autosaves before the browser preview capture");
     frame_delay=180; capture_frame();
-    frame_delay=85; menu_offset=160;
-    record_menu(note,5,4,CMD_SIZE+4);
-    require(note->width==note->height,"first note becomes square through its menu");
-    menu_offset=60;
-    second=create_live_note(560,200);
-    record_menu(second,5,4,CMD_SIZE+4);
-    third=create_live_note(640,300);
-    record_menu(third,5,4,CMD_SIZE+4);
-    require(second->size==4 && third->size==4,"both newly created notes use the real square preset");
-    require(save_note(note),"save the exact demonstration text");
-    move_pointer(rect.left+1100,rect.top+710); pump(220);
-    frame_delay=250; capture_frame();
-    fclose(frame_timing); frame_timing=NULL;
-    SetCursorPos(previous.x,previous.y); show_cursor=FALSE;
-    puts("Recorded live #title entry, exact requested text, native menus and new square notes.");
+    SendMessageW(reopened->window,WM_CLOSE,0,0);
+    position_demo_archive();
+    set_caption(L"Ctrl-click to select more than one note");
+    SetForegroundWindow(window); select_demo_date(tree,20250600,TRUE);
+    require(ListView_GetItemCount(list)==2,"June contains exactly two private demo notes");
+    send_key(VK_CONTROL,TRUE);
+    for (i=0;i<2;++i) {
+        ListView_GetItemRect(list,i,&tile,LVIR_ICON);
+        point.x=tile.left+35; point.y=tile.top+45; ClientToScreen(list,&point);
+        move_pointer(point.x,point.y); click_pointer(); pump(100); frame_delay=90; capture_frame();
+    }
+    send_key(VK_CONTROL,FALSE);
+    require(ListView_GetSelectedCount(list)==2,"real Ctrl-click selects both archive previews");
+    set_caption(L"Right-click to delete the selected notes");
+    delete_phase=0; delete_timer=SetTimer(NULL,0,150,animate_delete);
+    require(delete_timer!=0,"record deletion through the native context menu");
+    right_click[0].type=right_click[1].type=INPUT_MOUSE;
+    right_click[0].mi.dwFlags=MOUSEEVENTF_RIGHTDOWN; right_click[1].mi.dwFlags=MOUSEEVENTF_RIGHTUP;
+    require(SendInput(2,right_click,sizeof(INPUT))==2,"open the real archive context menu");
+    pump(1800);
+    if (delete_timer) { KillTimer(NULL,delete_timer); delete_timer=0; }
+    if (delete_phase!=3) fprintf(stderr,"Delete recording stopped at phase %d.\n",delete_phase);
+    require(delete_phase==3 && !find_date(tree,TreeView_GetRoot(tree),20250600),"deleting the demo selection also removes its empty month");
+    swprintf_s(path,PATH_CAP,L"%s\\%s.txt",directory,WELCOME_ARCHIVE_ID);
+    require(GetFileAttributesW(path)==INVALID_FILE_ATTRIBUTES,"the demo deletion removes the selected archive file");
+    ListView_GetItemText(list,0,0,preview,128);
+    require(!wcscmp(preview,L"Winter break"),"other archived dates remain intact");
+    frame_delay=160; capture_frame();
+    end_recording();
+    puts("Recorded square browser demo: date filters, reopening, live updates and native multi-delete.");
 }
 
 int main(int argc,char **argv) {
@@ -448,6 +573,9 @@ int main(int argc,char **argv) {
     WNDCLASSW cls={0};
     Note *collapsed,*formatted;
     DWORD root_length;
+    POINT previous_cursor;
+    BOOL browser_only=argc==2 && !strcmp(argv[1],"--browser-only");
+    BOOL gifs_only=browser_only || (argc==2 && !strcmp(argv[1],"--gifs-only"));
     instance=GetModuleHandleW(NULL); testing=TRUE;
     SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
     require(GetTempPathW(PATH_CAP,temporary)!=0,"locate private demonstration folder");
@@ -463,6 +591,9 @@ int main(int argc,char **argv) {
     app_icon=(HICON)LoadImageW(instance,MAKEINTRESOURCEW(IDI_APP),IMAGE_ICON,32,32,0);
     photo=(HBITMAP)LoadImageW(NULL,L"build\\screenshot-background.bmp",IMAGE_BITMAP,0,0,LR_LOADFROMFILE|LR_CREATEDIBSECTION);
     require(photo && GetObjectW(photo,sizeof(photo_info),&photo_info),"load requested screenshot photo");
+    caption_font=CreateFontW(-24,0,0,0,FW_SEMIBOLD,FALSE,FALSE,FALSE,DEFAULT_CHARSET,
+        OUT_DEFAULT_PRECIS,CLIP_DEFAULT_PRECIS,CLEARTYPE_QUALITY,FIXED_PITCH|FF_MODERN,L"Consolas");
+    require(caption_font!=NULL,"create the recording caption font");
     require(register_classes(),"register demonstration application");
     controller=CreateWindowExW(WS_EX_TOOLWINDOW,APP_CLASS,L"PicoSlip documentation",WS_OVERLAPPED,
                                 0,0,0,0,NULL,NULL,instance,NULL);
@@ -472,7 +603,8 @@ int main(int argc,char **argv) {
     require(RegisterClassW(&cls)!=0,"register private screenshot backdrop");
     backdrop=CreateWindowExW(WS_EX_TOPMOST|WS_EX_TOOLWINDOW|WS_EX_NOACTIVATE,cls.lpszClassName,L"PicoSlip demo",WS_POPUP|WS_VISIBLE,40,40,1040,640,NULL,NULL,instance,NULL);
     require(backdrop!=NULL,"show private screenshot backdrop");
-    if (argc==2 && !strcmp(argv[1],"--welcome")) { record_welcome(); goto finished; }
+    GetCursorPos(&previous_cursor);
+    if (gifs_only) goto animations;
     formatted=demo_note(0,0,1,55,50,L"Today",L"Bold focus\r\nItalic idea\r\nUnderlined plan\r\n\x2611 Draft the outline\r\n\x2610 Finish one thing",100);
     format_overview_note(formatted);
     demo_note(0,1,1,545,100,L"Project",L"Review the mockup\r\nSend the first draft\r\nFinish before Friday.",100);
@@ -486,15 +618,16 @@ int main(int argc,char **argv) {
     demo_note(1,1,0,370,350,L"Black",L"Sunday walk\r\nBring the camera",100);
     demo_note(2,1,0,705,350,L"Golden yellow",L"Water the plants\r\nCall home",100);
     capture(L"build\\palettes.bmp"); clear_scene();
-    record_walkthrough();
-finished:
+animations:
+    if (!browser_only) record_postits();
+    record_archive_browser();
+    SetCursorPos(previous_cursor.x,previous_cursor.y);
     clear_scene();
     DestroyWindow(controller);
     DestroyWindow(backdrop); if (app_icon) DestroyIcon(app_icon);
-    DeleteObject(photo);
+    DeleteObject(photo); DeleteObject(caption_font);
     clear_demo_archive();
     require(RemoveDirectoryW(root),"remove private demo folder");
-    puts(argc==2 && !strcmp(argv[1],"--welcome") ? "Captured the live-typing welcome demo." :
-         "Captured overview, palettes and the native menu walkthrough.");
+    puts(browser_only ? "Captured the square browser walkthrough." : "Captured the two square walkthroughs.");
     return 0;
 }

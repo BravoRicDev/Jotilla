@@ -27,7 +27,10 @@ Windows 10/11, x64. Installs for your account without administrator rights.
 | Note size | Small, medium, large, extra large or square |
 | New note palette | Pastel, black and white, or yellow only |
 
-![Native menus, border resizing and notes archive](docs/screenshots/menu-demo.gif)
+<p align="center">
+  <img src="docs/screenshots/notes-demo.gif" width="49%" alt="Post-its: writing, formatting, checklists and border resizing">
+  <img src="docs/screenshots/browser-demo.gif" width="49%" alt="Archive: date filters, reopening, live previews and multiple deletion">
+</p>
 
 ![The three palettes](docs/screenshots/palettes.png)
 
@@ -53,4 +56,4 @@ About **211 KiB** for the app, **361 KiB** for the installer. With 1–10 defaul
 
 MSVC + Windows SDK: `build.cmd` builds the app and installer; `build.cmd test` runs the tests (`--interactive` adds real keyboard/mouse input). Release binaries are unsigned.
 
-[Screenshot background](https://images.unsplash.com/photo-1578926375605-eaf7559b1458)
+Backgrounds: [post-its](https://images.unsplash.com/photo-1578926375605-eaf7559b1458) · [browser](https://illustrarch.com/wp-content/uploads/2025/05/birmingham-museums-trust-8wcoY3wcbL0-unsplash.jpg)
