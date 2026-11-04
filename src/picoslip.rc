@@ -13,8 +13,8 @@ BEGIN
     PUSHBUTTON "Cancel", IDCANCEL, 190, 58, 52, 16
 END
 1 VERSIONINFO
- FILEVERSION 1,0,0,0
- PRODUCTVERSION 1,0,0,0
+ FILEVERSION 1,0,1,0
+ PRODUCTVERSION 1,0,1,0
  FILEOS VOS_NT_WINDOWS32
  FILETYPE VFT_APP
 BEGIN
@@ -24,11 +24,11 @@ BEGIN
   BEGIN
    VALUE "CompanyName", "Alessio Garau\0"
    VALUE "FileDescription", "PicoSlip - Tiny Sticky Notes for Windows\0"
-   VALUE "FileVersion", "1.0.0\0"
+   VALUE "FileVersion", "1.0.1\0"
    VALUE "InternalName", "PicoSlip\0"
    VALUE "OriginalFilename", "PicoSlip.exe\0"
    VALUE "ProductName", "PicoSlip\0"
-   VALUE "ProductVersion", "1.0.0\0"
+   VALUE "ProductVersion", "1.0.1\0"
    VALUE "LegalCopyright", "MIT - Alessio Garau\0"
   END
  END

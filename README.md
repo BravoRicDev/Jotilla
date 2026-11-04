@@ -20,7 +20,7 @@ Windows 10/11, x64. Installs for your account without administrator rights.
 | Open notes archive | Opens the saved TXT files |
 | Opacity | 100%, 90%, 80%, 70% or 60% |
 | Edit title | Change it, or leave it empty to remove it |
-| Note size | Small, medium, large or extra large; more space holds more text |
+| Note size | Small, medium, large, extra large or square |
 | New note palette | Pastel, black and white, or yellow only |
 
 ![Right-click menu walkthrough](docs/screenshots/menu-demo.gif)
@@ -49,4 +49,4 @@ About **161 KiB** for the app, **310 KiB** for the installer. With 1–10 defaul
 
 MSVC + Windows SDK: `build.cmd` builds the app and installer; `build.cmd test` runs the tests. Release binaries are unsigned.
 
-[MIT License](LICENSE) · [Screenshot background](https://images.unsplash.com/photo-1578926375605-eaf7559b1458)
+[Screenshot background](https://images.unsplash.com/photo-1578926375605-eaf7559b1458)

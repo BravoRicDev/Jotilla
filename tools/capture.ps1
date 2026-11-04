@@ -1,4 +1,5 @@
 # Optional documentation capture; ImageMagick is a documentation tool only.
+param([switch]$Welcome)
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
 Push-Location $root
@@ -10,8 +11,25 @@ try {
     }
     & magick build/screenshot-background.jpg -resize '1800x1200^' -gravity center -extent 1800x1200 BMP3:build/screenshot-background.bmp
     if ($LASTEXITCODE -ne 0) { throw 'Background conversion failed.' }
-    & ./build.cmd screenshots-only
+    if ($Welcome) { & ./build.cmd screenshots-only --welcome }
+    else { & ./build.cmd screenshots-only }
     if ($LASTEXITCODE -ne 0) { throw 'Native application capture failed.' }
+    if ($Welcome) {
+        $timeline = @(Get-Content -LiteralPath build/welcome-gif/timing.txt | ForEach-Object {
+            $parts = $_ -split '\|',2
+            [pscustomobject]@{Delay=$parts[0];Frame=$parts[1]}
+        })
+        $sample = @($timeline[0].Frame,$timeline[[int]($timeline.Count/2)].Frame,$timeline[-3].Frame,$timeline[-1].Frame)
+        & magick @sample -append -colors 192 -unique-colors build/welcome-gif/palette.png
+        if ($LASTEXITCODE -ne 0) { throw 'Live demo palette conversion failed.' }
+        $gifArguments = @('-loop','0')
+        foreach ($frame in $timeline) { $gifArguments += @('-delay',$frame.Delay,$frame.Frame) }
+        $gifArguments += @('+dither','-remap','build/welcome-gif/palette.png','-layers','Optimize','build/welcome-typing.gif')
+        & magick @gifArguments
+        if ($LASTEXITCODE -ne 0) { throw 'Live demo GIF conversion failed.' }
+        [IO.File]::Copy((Join-Path $root 'build/welcome-typing.gif'),(Join-Path $root 'docs/screenshots/welcome-typing.gif'),$true)
+        return
+    }
     & magick build/notes.bmp -strip -define png:compression-level=9 build/readme-notes.png
     if ($LASTEXITCODE -ne 0) { throw 'Overview conversion failed.' }
     & magick build/palettes.bmp -strip -define png:compression-level=9 build/readme-palettes.png

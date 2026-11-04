@@ -18,7 +18,6 @@ Keep portable.flag beside the EXE to retain portable mode.
 Back up the whole notes folder, including notes.ini.
 
 https://github.com/GarauGarau/picoslip
-MIT License - see LICENSE.
 '@
 [IO.File]::WriteAllText((Join-Path $stage 'README.txt'), $readme, [Text.UTF8Encoding]::new($false))
 [IO.File]::WriteAllText((Join-Path $stage 'portable.flag'), '')

@@ -294,8 +294,16 @@ static void options_checks(void) {
     menu=build_note_menu(note);
     require(menu && GetMenuItemCount(menu)==7 && GetMenuItemID(menu,0)==CMD_ARCHIVE &&
             GetMenuItemID(menu,3)==CMD_TITLE && GetMenuItemCount(GetSubMenu(menu,2))==5 &&
-            GetMenuItemCount(GetSubMenu(menu,4))==4 && GetMenuItemCount(GetSubMenu(menu,6))==3,"context menu exposes all requested choices");
+            GetMenuItemCount(GetSubMenu(menu,4))==5 && GetMenuItemCount(GetSubMenu(menu,6))==3,"context menu exposes all requested choices");
     DestroyMenu(menu);
+    require(resize_note(note,4),"square preset is available");
+    GetWindowRect(note->window,&bounds);
+    require(bounds.right-bounds.left==bounds.bottom-bounds.top,"square note has equal width and height");
+    wcscpy_s(id,80,note->id);
+    require(save_note(note),"save square preset");
+    destroy_note(note); note=open_note(id,0,TRUE);
+    require(note && note->size==4 && note_width(note)==expanded_height(note),"square shape survives reopening");
+    require(resize_note(note,1),"return to default size");
     GetCursorPos(&previous); ShowWindow(note->window,SW_SHOWNOACTIVATE);
     GetWindowRect(note->window,&bounds);
     SetCursorPos(bounds.left+scaled(note,45),bounds.top+bar_height(note)/2);

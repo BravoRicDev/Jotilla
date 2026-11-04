@@ -78,7 +78,7 @@ static BOOL register_uninstaller(void) {
     BOOL ok;
     if (RegCreateKeyExW(HKEY_CURRENT_USER,UNINSTALL_KEY,0,NULL,0,KEY_WRITE,NULL,&key,NULL)!=ERROR_SUCCESS) return FALSE;
     swprintf_s(command,PATH_CAP+64,L"\"%s\"",uninstall_path);
-    ok=registry_text(key,L"DisplayName",L"PicoSlip") && registry_text(key,L"DisplayVersion",L"1.0.0") &&
+    ok=registry_text(key,L"DisplayName",L"PicoSlip") && registry_text(key,L"DisplayVersion",APP_VERSION_W) &&
        registry_text(key,L"Publisher",L"Alessio Garau") && registry_text(key,L"DisplayIcon",app_path) &&
        registry_text(key,L"InstallLocation",install_dir) && registry_text(key,L"UninstallString",command) &&
        registry_text(key,L"URLInfoAbout",L"https://github.com/GarauGarau/picoslip");

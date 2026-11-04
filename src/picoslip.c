@@ -50,8 +50,9 @@ static const COLORREF PALETTES[3][6] = {
     {RGB(255,255,255), RGB(28,28,28), RGB(255,255,255), RGB(28,28,28), RGB(255,255,255), RGB(28,28,28)},
     {RGB(255,238,151), RGB(255,224,112), RGB(255,245,184), RGB(250,218,128), RGB(255,239,105), RGB(255,250,205)}
 };
-static const SIZE NOTE_SIZES[] = {{240,180}, {NOTE_WIDTH,NOTE_HEIGHT}, {420,340}, {540,440}};
-static const wchar_t *SIZE_NAMES[] = {L"Small", L"Medium", L"Large", L"Extra large"};
+static const SIZE NOTE_SIZES[] = {{240,180}, {NOTE_WIDTH,NOTE_HEIGHT}, {420,340}, {540,440}, {300,300}};
+static const wchar_t *SIZE_NAMES[] = {L"Small", L"Medium", L"Large", L"Extra large", L"Square"};
+#define SIZE_COUNT ((int)(sizeof(NOTE_SIZES)/sizeof(NOTE_SIZES[0])))
 static const wchar_t *PALETTE_NAMES[] = {L"Pastel", L"Black and white", L"Yellow only"};
 static const int OPACITIES[] = {100,90,80,70,60};
 static HINSTANCE instance;
@@ -475,7 +476,7 @@ static void note_command(Note *note, UINT command) {
         note->opacity = OPACITIES[command - CMD_OPACITY];
         if (!apply_opacity(note)) { note->opacity = previous; apply_opacity(note); }
         save_note(note);
-    } else if (command >= CMD_SIZE && command < CMD_SIZE + 4) {
+    } else if (command >= CMD_SIZE && command < CMD_SIZE + SIZE_COUNT) {
         resize_note(note, (int)command - CMD_SIZE);
     } else if (command >= CMD_PALETTE && command < CMD_PALETTE + 3) {
         int palette = (int)command - CMD_PALETTE;
@@ -502,7 +503,7 @@ static HMENU build_note_menu(const Note *note) {
         swprintf_s(label, 64, i ? L"%d%% opacity" : L"%d%% (opaque)", OPACITIES[i]);
         AppendMenuW(opacity, MF_STRING | (note->opacity == OPACITIES[i] ? MF_CHECKED : 0), CMD_OPACITY + i, label);
     }
-    for (i = 0; i < 4; ++i)
+    for (i = 0; i < SIZE_COUNT; ++i)
         AppendMenuW(size, MF_STRING | (note->size == i ? MF_CHECKED : 0), CMD_SIZE + i, SIZE_NAMES[i]);
     for (i = 0; i < 3; ++i)
         AppendMenuW(palette, MF_STRING | (current_palette == i ? MF_CHECKED : 0), CMD_PALETTE + i, PALETTE_NAMES[i]);
@@ -694,7 +695,7 @@ static Note *open_note(const wchar_t *id, int color, BOOL restore) {
     note->palette = restore ? setting(id, L"palette", 0) : current_palette;
     if (note->palette < 0 || note->palette > 2) note->palette = 0;
     note->size = restore ? setting(id, L"size", 1) : 1;
-    if (note->size < 0 || note->size > 3) note->size = 1;
+    if (note->size < 0 || note->size >= SIZE_COUNT) note->size = 1;
     note->opacity = restore ? setting(id, L"opacity", 100) : 100;
     if (note->opacity < 60 || note->opacity > 100) note->opacity = 100;
     width = note_width(note);

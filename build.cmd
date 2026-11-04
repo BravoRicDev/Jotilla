@@ -34,7 +34,7 @@ exit /b %errorlevel%
 :screenshots
 cl /nologo /TC /std:c17 /W4 /WX /O2 /MT /utf-8 tests\demo.c /Fo"build\demo.obj" /Fe"build\demo.exe" /link build\picoslip.res /SUBSYSTEM:CONSOLE /MANIFEST:EMBED /MANIFESTINPUT:src\app.manifest user32.lib gdi32.lib shell32.lib
 if errorlevel 1 exit /b 1
-build\demo.exe
+build\demo.exe %~2
 exit /b %errorlevel%
 
 :profile
