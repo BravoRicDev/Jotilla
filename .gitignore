@@ -1,0 +1,10 @@
+build/
+dist/
+notes/
+*.obj
+*.pdb
+*.ilk
+*.exe
+*.bmp
+*.zip
+*.tmp

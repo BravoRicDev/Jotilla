@@ -1,0 +1,39 @@
+#include <windows.h>
+#include "resource.h"
+IDI_APP ICON "assets/picoslip.ico"
+IDR_LICENSE RCDATA "LICENSE"
+IDD_TITLE DIALOGEX 0, 0, 252, 84
+STYLE DS_SETFONT | DS_MODALFRAME | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "Edit title"
+FONT 9, "Segoe UI"
+BEGIN
+    LTEXT "Title (leave empty to remove):", -1, 10, 9, 230, 12
+    EDITTEXT IDC_TITLE, 10, 25, 232, 15, ES_AUTOHSCROLL
+    DEFPUSHBUTTON "Save", IDOK, 130, 58, 52, 16
+    PUSHBUTTON "Cancel", IDCANCEL, 190, 58, 52, 16
+END
+1 VERSIONINFO
+ FILEVERSION 1,0,0,0
+ PRODUCTVERSION 1,0,0,0
+ FILEOS VOS_NT_WINDOWS32
+ FILETYPE VFT_APP
+BEGIN
+ BLOCK "StringFileInfo"
+ BEGIN
+  BLOCK "040904B0"
+  BEGIN
+   VALUE "CompanyName", "Alessio Garau\0"
+   VALUE "FileDescription", "PicoSlip - Tiny Sticky Notes for Windows\0"
+   VALUE "FileVersion", "1.0.0\0"
+   VALUE "InternalName", "PicoSlip\0"
+   VALUE "OriginalFilename", "PicoSlip.exe\0"
+   VALUE "ProductName", "PicoSlip\0"
+   VALUE "ProductVersion", "1.0.0\0"
+   VALUE "LegalCopyright", "MIT - Alessio Garau\0"
+  END
+ END
+ BLOCK "VarFileInfo"
+ BEGIN
+  VALUE "Translation", 0x409, 1200
+ END
+END

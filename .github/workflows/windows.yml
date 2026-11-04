@@ -1,0 +1,33 @@
+name: Windows build and tests
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Build C17 application, installer and integration tests
+        shell: cmd
+        run: build.cmd test
+      - name: Test installation and preserve notes on uninstall
+        shell: pwsh
+        run: ./tools/test-install.ps1
+      - name: Package portable download and checksums
+        shell: pwsh
+        run: ./tools/package.ps1
+      - name: Save downloads
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: PicoSlip-windows-x64
+          path: |
+            dist/PicoSlip.exe
+            dist/PicoSlip-Setup-x64.exe
+            dist/PicoSlip-portable-x64.zip
+            dist/SHA256SUMS.txt
+          if-no-files-found: error
