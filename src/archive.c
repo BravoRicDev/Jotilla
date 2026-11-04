@@ -7,6 +7,7 @@
 #include <windowsx.h>
 #include <commctrl.h>
 #include <dwmapi.h>
+#include <uxtheme.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <limits.h>
@@ -17,9 +18,11 @@
 #define ARCHIVE_CLASS L"PicoSlip.Archive"
 #define ARCHIVE_PATH_CAP 1024
 #define DELETE_NOTES 1
+#define ARCHIVE_REFRESH (WM_APP + 1)
 #define ARCHIVE_PAPER RGB(244,238,226)
 #define ARCHIVE_SIDEBAR RGB(235,226,209)
 #define ARCHIVE_INK RGB(58,52,43)
+#define ARCHIVE_SELECTION RGB(211,194,162)
 
 static const wchar_t *MONTH_NAMES[] = {
     L"January", L"February", L"March", L"April", L"May", L"June",
@@ -30,6 +33,7 @@ typedef struct ArchiveEntry {
     wchar_t id[80];
     wchar_t *preview;
     unsigned date;
+    UINT state;
     COLORREF paper, ink;
     BOOL loaded, titled;
 } ArchiveEntry;
@@ -44,7 +48,7 @@ typedef struct Archive {
     unsigned filter;
     const wchar_t *directory, *settings;
     ArchiveActions actions;
-    BOOL rebuilding;
+    BOOL rebuilding, refresh_pending;
 } Archive;
 
 static HWND archive_window;
@@ -63,6 +67,13 @@ static int compare_entries(const void *left, const void *right) {
     return wcscmp(b->id, a->id);
 }
 
+static unsigned date_from_id(const wchar_t *id) {
+    unsigned year, month, day;
+    return swscanf_s(id + 5, L"%4u-%2u-%2u", &year, &month, &day) == 3 &&
+        year >= 1601 && year <= 9999 && month >= 1 && month <= 12 && day >= 1 && day <= 31 ?
+        year * 10000 + month * 100 + day : 0;
+}
+
 static BOOL scan_archive(Archive *archive, ArchiveEntry **result, int *total) {
     wchar_t pattern[ARCHIVE_PATH_CAP];
     WIN32_FIND_DATAW found;
@@ -78,7 +89,6 @@ static BOOL scan_archive(Archive *archive, ArchiveEntry **result, int *total) {
         size_t length = wcslen(found.cFileName);
         SYSTEMTIME time;
         FILETIME local;
-        unsigned year, month, day;
         ArchiveEntry *entry;
         if ((found.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) || (!found.nFileSizeHigh && !found.nFileSizeLow) ||
             length < 6 || length - 4 >= 80 ||
@@ -95,10 +105,8 @@ static BOOL scan_archive(Archive *archive, ArchiveEntry **result, int *total) {
         entry = &entries[count];
         memset(entry, 0, sizeof(*entry));
         wcsncpy_s(entry->id, 80, found.cFileName, length - 4);
-        if (swscanf_s(entry->id + 5, L"%4u-%2u-%2u", &year, &month, &day) == 3 &&
-            year >= 1601 && year <= 9999 && month >= 1 && month <= 12 && day >= 1 && day <= 31)
-            entry->date = year * 10000 + month * 100 + day;
-        else if (FileTimeToLocalFileTime(&found.ftCreationTime, &local) && FileTimeToSystemTime(&local, &time))
+        entry->date = date_from_id(entry->id);
+        if (!entry->date && FileTimeToLocalFileTime(&found.ftCreationTime, &local) && FileTimeToSystemTime(&local, &time))
             entry->date = time.wYear * 10000u + time.wMonth * 100u + time.wDay;
         ++count;
     } while (FindNextFileW(search, &found));
@@ -132,65 +140,108 @@ static void filter_archive(Archive *archive, unsigned date) {
         archive->visible = date_bound(archive, date - 1) - archive->first;
     }
     ListView_SetItemState(archive->list, -1, 0, LVIS_SELECTED | LVIS_FOCUSED);
-    ListView_SetItemCountEx(archive->list, archive->visible, 0);
+    ListView_SetItemCountEx(archive->list, archive->visible, LVSICF_NOSCROLL);
     ListView_Arrange(archive->list, LVA_DEFAULT);
     InvalidateRect(archive->list, NULL, TRUE);
 }
 
-static HTREEITEM date_node(Archive *archive, HTREEITEM parent, const wchar_t *label, unsigned date) {
+static HTREEITEM date_node(Archive *archive, HTREEITEM parent, HTREEITEM after, const wchar_t *label, unsigned date) {
     TVINSERTSTRUCTW insert = {0};
-    insert.hParent = parent; insert.hInsertAfter = TVI_LAST;
+    insert.hParent = parent; insert.hInsertAfter = after;
     insert.item.mask = TVIF_TEXT | TVIF_PARAM;
     insert.item.pszText = (wchar_t *)label; insert.item.lParam = date;
     return TreeView_InsertItem(archive->tree, &insert);
 }
 
-static BOOL refresh_archive(Archive *archive) {
+static unsigned node_date(HWND tree, HTREEITEM node) {
+    TVITEMW item = {0};
+    item.mask = TVIF_PARAM; item.hItem = node;
+    TreeView_GetItem(tree, &item);
+    return (unsigned)item.lParam;
+}
+
+/* Merge sorted date groups into the native tree. Unchanged nodes keep their
+   handles, expansion state and scroll position; recursion is only three levels. */
+static void sync_dates(Archive *archive, HTREEITEM parent, int first, int end,
+                       unsigned unit, HTREEITEM *selected) {
+    HTREEITEM node = TreeView_GetChild(archive->tree, parent), previous = TVI_FIRST;
+    while (first < end) {
+        unsigned date = archive->entries[first].date / unit * unit;
+        int next = first + 1;
+        wchar_t label[32];
+        while (next < end && archive->entries[next].date / unit * unit == date) ++next;
+        while (node && node_date(archive->tree, node) > date) {
+            HTREEITEM removed = node;
+            node = TreeView_GetNextSibling(archive->tree, node);
+            TreeView_DeleteItem(archive->tree, removed);
+        }
+        if (!node || node_date(archive->tree, node) != date) {
+            unsigned month = date / 100 % 100;
+            swprintf_s(label, 32, unit == 10000 ? L"%04u" : L"%02u", unit == 10000 ? date / unit : date % 100);
+            node = date_node(archive, parent, previous,
+                unit == 100 && month >= 1 && month <= 12 ? MONTH_NAMES[month - 1] : label, date);
+        }
+        if (archive->filter >= date && archive->filter - date < unit) *selected = node;
+        if (unit > 1) sync_dates(archive, node, first, next, unit / 100, selected);
+        previous = node; node = TreeView_GetNextSibling(archive->tree, node); first = next;
+    }
+    while (node) {
+        HTREEITEM removed = node;
+        node = TreeView_GetNextSibling(archive->tree, node);
+        TreeView_DeleteItem(archive->tree, removed);
+    }
+}
+
+static BOOL refresh_archive(Archive *archive, BOOL reload) {
     ArchiveEntry *entries;
-    int count, i;
-    unsigned year = UINT_MAX, month = UINT_MAX, day = UINT_MAX, filter = archive->filter;
-    HTREEITEM root, year_node = NULL, month_node = NULL, selected;
+    int count, i, old = 0;
+    HTREEITEM root = TreeView_GetRoot(archive->tree), selected;
+    TVITEMW item = {0};
     wchar_t label[64];
-    if (!archive->actions.save() || !scan_archive(archive, &entries, &count)) return FALSE;
+    BOOL initial = root == NULL;
+    archive->refresh_pending = FALSE;
     archive->rebuilding = TRUE;
+    if (!archive->actions.save() || !scan_archive(archive, &entries, &count)) {
+        archive->rebuilding = FALSE; return FALSE;
+    }
+    /* Keep cached previews and selected notes across additions/deletions.
+       Explicit refresh also rereads files edited outside PicoSlip. */
+    for (i = 0; i < count; ++i) {
+        while (old < archive->count && compare_entries(&archive->entries[old], &entries[i]) < 0) ++old;
+        if (old < archive->count && !compare_entries(&archive->entries[old], &entries[i])) {
+            if (!reload) {
+                entries[i] = archive->entries[old];
+                archive->entries[old].preview = NULL;
+            }
+            entries[i].state = old >= archive->first && old < archive->first + archive->visible ?
+                ListView_GetItemState(archive->list, old - archive->first, LVIS_SELECTED | LVIS_FOCUSED) : 0;
+        }
+    }
     SendMessageW(archive->tree, WM_SETREDRAW, FALSE, 0);
-    ListView_SetItemCountEx(archive->list, 0, 0);
     free_entries(archive->entries, archive->count);
     archive->entries = entries; archive->count = count;
-    TreeView_DeleteAllItems(archive->tree);
     swprintf_s(label, 64, L"All notes (%d)", count);
-    root = date_node(archive, TVI_ROOT, label, 0); selected = root;
-    for (i = 0; i < count; ++i) {
-        unsigned date = entries[i].date, y = date / 10000, m = date / 100;
-        HTREEITEM node;
-        if (y != year) {
-            year = y; month = day = UINT_MAX;
-            swprintf_s(label, 64, L"%04u", year);
-            year_node = date_node(archive, root, label, year * 10000);
-            if (filter == year * 10000) selected = year_node;
-        }
-        if (m != month) {
-            unsigned number = m % 100;
-            month = m; day = UINT_MAX;
-            month_node = date_node(archive, year_node, number >= 1 && number <= 12 ? MONTH_NAMES[number - 1] : L"Unknown", month * 100);
-            if (filter == month * 100) selected = month_node;
-        }
-        if (date != day) {
-            day = date; swprintf_s(label, 64, L"%02u", day % 100);
-            node = date_node(archive, month_node, label, date);
-            if (filter == date) selected = node;
-        }
+    if (!root) root = date_node(archive, TVI_ROOT, TVI_LAST, label, 0);
+    else {
+        item.mask = TVIF_TEXT; item.hItem = root; item.pszText = label;
+        TreeView_SetItem(archive->tree, &item);
     }
-    TreeView_Expand(archive->tree, root, TVE_EXPAND);
-    if (count) {
-        HTREEITEM latest_year = TreeView_GetChild(archive->tree, root);
-        TreeView_Expand(archive->tree, latest_year, TVE_EXPAND);
-        TreeView_Expand(archive->tree, TreeView_GetChild(archive->tree, latest_year), TVE_EXPAND);
+    selected = root;
+    sync_dates(archive, root, 0, count, 10000, &selected);
+    if (initial) {
+        HTREEITEM latest = TreeView_GetChild(archive->tree, root);
+        TreeView_Expand(archive->tree, root, TVE_EXPAND);
+        if (latest) {
+            TreeView_Expand(archive->tree, latest, TVE_EXPAND);
+            TreeView_Expand(archive->tree, TreeView_GetChild(archive->tree, latest), TVE_EXPAND);
+        }
     }
     TreeView_SelectItem(archive->tree, selected);
-    TreeView_EnsureVisible(archive->tree, selected);
+    filter_archive(archive, node_date(archive->tree, selected));
+    for (i = 0; i < archive->visible; ++i)
+        if (entries[archive->first + i].state)
+            ListView_SetItemState(archive->list, i, entries[archive->first + i].state, LVIS_SELECTED | LVIS_FOCUSED);
     archive->rebuilding = FALSE;
-    filter_archive(archive, selected == root ? 0 : filter);
     SendMessageW(archive->tree, WM_SETREDRAW, TRUE, 0);
     InvalidateRect(archive->tree, NULL, TRUE);
     return TRUE;
@@ -251,7 +302,7 @@ static LRESULT draw_preview(Archive *archive, NMLVCUSTOMDRAW *draw) {
     FrameRect(dc, &card, brush);
     if (ListView_GetItemState(archive->list, index, LVIS_SELECTED)) {
         RECT border = card;
-        SetDCBrushColor(dc, GetSysColor(COLOR_HIGHLIGHT)); FrameRect(dc, &border, brush);
+        SetDCBrushColor(dc, ARCHIVE_INK); FrameRect(dc, &border, brush);
         InflateRect(&border, -1, -1); FrameRect(dc, &border, brush);
     }
     title = bar; InflateRect(&title, -archive_scaled(archive, 10), 0);
@@ -318,7 +369,7 @@ static void delete_archive_selection(Archive *archive) {
     if (MessageBoxW(archive->window, message, L"PicoSlip", MB_YESNO | MB_DEFBUTTON2 | MB_ICONQUESTION) != IDYES) return;
     while ((index = ListView_GetNextItem(archive->list, index, LVNI_SELECTED)) >= 0)
         if (!archive->actions.remove(archive->entries[archive->first + index].id)) ++failures;
-    if (!refresh_archive(archive) || failures)
+    if (!refresh_archive(archive, FALSE) || failures)
         MessageBoxW(archive->window, L"Some notes could not be deleted. Check that their files are writable.",
                     L"PicoSlip", MB_OK | MB_ICONERROR);
 }
@@ -358,6 +409,7 @@ static LRESULT CALLBACK archive_proc(HWND window, UINT message, WPARAM wparam, L
             LVS_ICON | LVS_OWNERDATA | LVS_AUTOARRANGE | LVS_NOLABELWRAP | LVS_SHOWSELALWAYS | LVS_SHAREIMAGELISTS,
             0, 0, 1, 1, window, (HMENU)(INT_PTR)2, app, NULL);
         if (!archive->tree || !archive->list) return -1;
+        SetWindowTheme(archive->tree, L"", L"");
         TreeView_SetBkColor(archive->tree, ARCHIVE_SIDEBAR);
         TreeView_SetTextColor(archive->tree, ARCHIVE_INK);
         TreeView_SetLineColor(archive->tree, RGB(190,177,151));
@@ -375,6 +427,9 @@ static LRESULT CALLBACK archive_proc(HWND window, UINT message, WPARAM wparam, L
         return 1;
     }
     case WM_SIZE: archive_layout(archive); return 0;
+    case ARCHIVE_REFRESH:
+        if (archive->refresh_pending) refresh_archive(archive, FALSE);
+        return 0;
     case WM_GETMINMAXINFO: {
         MINMAXINFO *info = (MINMAXINFO *)lparam;
         info->ptMinTrackSize.x = archive_scaled(archive, 520);
@@ -390,8 +445,22 @@ static LRESULT CALLBACK archive_proc(HWND window, UINT message, WPARAM wparam, L
     }
     case WM_NOTIFY: {
         NMHDR *header = (NMHDR *)lparam;
-        if (header->hwndFrom == archive->tree && header->code == TVN_SELCHANGEDW && !archive->rebuilding)
-            filter_archive(archive, (unsigned)((NMTREEVIEWW *)header)->itemNew.lParam);
+        if (header->hwndFrom == archive->tree) {
+            if (header->code == TVN_SELCHANGEDW && !archive->rebuilding)
+                filter_archive(archive, (unsigned)((NMTREEVIEWW *)header)->itemNew.lParam);
+            if (header->code == NM_CUSTOMDRAW) {
+                NMTVCUSTOMDRAW *draw = (NMTVCUSTOMDRAW *)header;
+                if (draw->nmcd.dwDrawStage == CDDS_PREPAINT) return CDRF_NOTIFYITEMDRAW;
+                if (draw->nmcd.dwDrawStage == CDDS_ITEMPREPAINT) {
+                    draw->clrText = ARCHIVE_INK;
+                    draw->clrTextBk = (HTREEITEM)draw->nmcd.dwItemSpec == TreeView_GetSelection(archive->tree) ?
+                        ARCHIVE_SELECTION : ARCHIVE_SIDEBAR;
+                    draw->nmcd.uItemState &= ~(CDIS_SELECTED | CDIS_FOCUS);
+                    return CDRF_NEWFONT;
+                }
+            }
+            return 0;
+        }
         if (header->hwndFrom != archive->list) return 0;
         switch (header->code) {
         case NM_CUSTOMDRAW: {
@@ -431,7 +500,7 @@ static LRESULT CALLBACK archive_proc(HWND window, UINT message, WPARAM wparam, L
             WORD key = ((NMLVKEYDOWN *)header)->wVKey;
             if (key == VK_RETURN) open_archive_item(archive, ListView_GetNextItem(archive->list, -1, LVNI_FOCUSED));
             if (key == VK_DELETE) delete_archive_selection(archive);
-            if (key == VK_F5 && !refresh_archive(archive))
+            if (key == VK_F5 && !refresh_archive(archive, TRUE))
                 MessageBoxW(window, L"The archive could not be refreshed.", L"PicoSlip", MB_OK | MB_ICONERROR);
             if (key == 'A' && GetKeyState(VK_CONTROL) < 0)
                 ListView_SetItemState(archive->list, -1, LVIS_SELECTED, LVIS_SELECTED);
@@ -472,7 +541,7 @@ HWND archive_show(HWND owner, const wchar_t *directory, const wchar_t *settings,
     int dpi, width, height, x, y;
     if (archive_window) {
         archive = (Archive *)GetWindowLongPtrW(archive_window, GWLP_USERDATA);
-        if (!refresh_archive(archive)) return NULL;
+        if (!refresh_archive(archive, TRUE)) return NULL;
         ShowWindow(archive_window, SW_RESTORE); SetForegroundWindow(archive_window); return archive_window;
     }
     if (!window_class) {
@@ -500,10 +569,36 @@ HWND archive_show(HWND owner, const wchar_t *directory, const wchar_t *settings,
         WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN, x, y, width, height, owner, NULL, GetModuleHandleW(NULL), archive);
     /* WM_NCDESTROY owns the allocation once WM_NCCREATE succeeds. */
     if (!archive_window) return NULL;
-    if (!refresh_archive(archive)) { archive_close(); return NULL; }
+    if (!refresh_archive(archive, TRUE)) { archive_close(); return NULL; }
     ShowWindow(archive_window, SW_SHOWNORMAL); SetForegroundWindow(archive_window);
     SetFocus(archive->list);
     return archive_window;
+}
+
+/* Called only after a successful save/removal, on the UI thread. Editing
+   invalidates one lazy preview; membership changes share one queued refresh. */
+void archive_changed(const wchar_t *id, BOOL present) {
+    Archive *archive;
+    ArchiveEntry key = {0}, *entry = NULL;
+    int i;
+    if (!archive_window) return;
+    archive = (Archive *)GetWindowLongPtrW(archive_window, GWLP_USERDATA);
+    wcscpy_s(key.id, 80, id); key.date = date_from_id(id);
+    if (key.date && archive->count)
+        entry = (ArchiveEntry *)bsearch(&key, archive->entries, (size_t)archive->count, sizeof(key), compare_entries);
+    else if (!key.date) /* Legacy filenames use the file's creation date. */
+        for (i = 0; i < archive->count; ++i)
+            if (!wcscmp(archive->entries[i].id, id)) { entry = &archive->entries[i]; break; }
+    if (entry && present) {
+        i = (int)(entry - archive->entries);
+        free(entry->preview); entry->preview = NULL; entry->loaded = FALSE;
+        if (i >= archive->first && i < archive->first + archive->visible)
+            ListView_RedrawItems(archive->list, i - archive->first, i - archive->first);
+        return;
+    }
+    if (!entry && !present) return;
+    if (!archive->rebuilding && !archive->refresh_pending)
+        archive->refresh_pending = PostMessageW(archive_window, ARCHIVE_REFRESH, 0, 0);
 }
 
 void archive_close(void) {

@@ -5,22 +5,25 @@ if /i not "%VSCMD_ARG_TGT_ARCH%"=="x64" call :compiler
 if errorlevel 1 exit /b 1
 if not exist build mkdir build
 if not exist dist mkdir dist
-cl /nologo /TC /std:c17 /W4 /WX /O2 /MT tools\make_icon.c /Fo"build\make_icon.obj" /Fe"build\make_icon.exe"
+set "PICOSLIP_CFLAGS=/nologo /TC /std:c17 /W4 /WX /O2 /MT /utf-8"
+set "PICOSLIP_LIBS=build\archive.obj user32.lib gdi32.lib shell32.lib dwmapi.lib comctl32.lib uxtheme.lib"
+set "PICOSLIP_MANIFEST=/MANIFEST:EMBED /MANIFESTINPUT:src\app.manifest"
+cl %PICOSLIP_CFLAGS% tools\make_icon.c /Fo"build\make_icon.obj" /Fe"build\make_icon.exe"
 if errorlevel 1 exit /b 1
 build\make_icon.exe
 if errorlevel 1 exit /b 1
 rc /nologo /fo build\picoslip.res src\picoslip.rc
 if errorlevel 1 exit /b 1
-cl /nologo /TC /std:c17 /W4 /WX /O2 /MT /utf-8 /c src\archive.c /Fo"build\archive.obj"
+cl %PICOSLIP_CFLAGS% /c src\archive.c /Fo"build\archive.obj"
 if errorlevel 1 exit /b 1
 if /i "%~1"=="test-only" goto tests
 if /i "%~1"=="screenshots-only" goto screenshots
 if /i "%~1"=="profile-only" goto profile
-cl /nologo /TC /std:c17 /W4 /WX /O2 /MT /utf-8 src\picoslip.c /Fo"build\picoslip.obj" /Fe"dist\PicoSlip.exe" /link build\picoslip.res /SUBSYSTEM:WINDOWS /MANIFEST:EMBED /MANIFESTINPUT:src\app.manifest build\archive.obj user32.lib gdi32.lib shell32.lib dwmapi.lib comctl32.lib
+cl %PICOSLIP_CFLAGS% src\picoslip.c /Fo"build\picoslip.obj" /Fe"dist\PicoSlip.exe" /link build\picoslip.res /SUBSYSTEM:WINDOWS %PICOSLIP_MANIFEST% %PICOSLIP_LIBS%
 if errorlevel 1 exit /b 1
 rc /nologo /fo build\setup.res src\setup.rc
 if errorlevel 1 exit /b 1
-cl /nologo /TC /std:c17 /W4 /WX /O2 /MT /utf-8 src\setup.c /Fo"build\setup.obj" /Fe"dist\PicoSlip-Setup-x64.exe" /link build\setup.res /SUBSYSTEM:WINDOWS /MANIFEST:EMBED /MANIFESTINPUT:src\app.manifest user32.lib shell32.lib ole32.lib uuid.lib advapi32.lib
+cl %PICOSLIP_CFLAGS% src\setup.c /Fo"build\setup.obj" /Fe"dist\PicoSlip-Setup-x64.exe" /link build\setup.res /SUBSYSTEM:WINDOWS %PICOSLIP_MANIFEST% user32.lib shell32.lib ole32.lib uuid.lib advapi32.lib
 if errorlevel 1 exit /b 1
 if /i "%~1"=="test" goto tests
 if /i "%~1"=="screenshots" goto screenshots
@@ -28,19 +31,19 @@ echo Ready: %CD%\dist\PicoSlip.exe
 exit /b 0
 
 :tests
-cl /nologo /TC /std:c17 /W4 /WX /O2 /MT /utf-8 tests\tests.c /Fo"build\tests.obj" /Fe"build\tests.exe" /link build\picoslip.res /SUBSYSTEM:CONSOLE /MANIFEST:EMBED /MANIFESTINPUT:src\app.manifest build\archive.obj user32.lib gdi32.lib shell32.lib dwmapi.lib comctl32.lib
+cl %PICOSLIP_CFLAGS% tests\tests.c /Fo"build\tests.obj" /Fe"build\tests.exe" /link build\picoslip.res /SUBSYSTEM:CONSOLE %PICOSLIP_MANIFEST% %PICOSLIP_LIBS%
 if errorlevel 1 exit /b 1
 build\tests.exe %~2
 exit /b %errorlevel%
 
 :screenshots
-cl /nologo /TC /std:c17 /W4 /WX /O2 /MT /utf-8 tests\demo.c /Fo"build\demo.obj" /Fe"build\demo.exe" /link build\picoslip.res /SUBSYSTEM:CONSOLE /MANIFEST:EMBED /MANIFESTINPUT:src\app.manifest build\archive.obj user32.lib gdi32.lib shell32.lib dwmapi.lib comctl32.lib
+cl %PICOSLIP_CFLAGS% tests\demo.c /Fo"build\demo.obj" /Fe"build\demo.exe" /link build\picoslip.res /SUBSYSTEM:CONSOLE %PICOSLIP_MANIFEST% %PICOSLIP_LIBS%
 if errorlevel 1 exit /b 1
 build\demo.exe %~2
 exit /b %errorlevel%
 
 :profile
-cl /nologo /TC /std:c17 /W4 /WX /O2 /MT /utf-8 tools\profile.c /Fo"build\profile.obj" /Fe"build\profile.exe" /link user32.lib psapi.lib
+cl %PICOSLIP_CFLAGS% tools\profile.c /Fo"build\profile.obj" /Fe"build\profile.exe" /link user32.lib psapi.lib
 if errorlevel 1 exit /b 1
 build\profile.exe "%CD%\dist\PicoSlip.exe"
 exit /b %errorlevel%

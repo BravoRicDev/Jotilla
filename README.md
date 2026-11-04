@@ -21,7 +21,7 @@ Windows 10/11, x64. Installs for your account without administrator rights.
 | Option | What it does |
 |---|---|
 | Open notes archive | Opens the saved TXT files |
-| Browse notes | Monospaced post-it mosaic by year/month/day; click to reopen, Ctrl/Shift-select and right-click to delete |
+| Browse notes | Live monospaced post-it mosaic by year/month/day; click to reopen, Ctrl/Shift-select and right-click to delete |
 | Opacity | 100%, 90%, 80%, 70% or 60% |
 | Edit title | Change it, or leave it empty to remove it |
 | Note size | Small, medium, large, extra large or square |
@@ -47,7 +47,7 @@ The portable ZIP keeps `notes` beside the EXE. Back up the whole folder, includi
 
 ## Resources
 
-About **208 KiB** for the app, **358 KiB** for the installer. With 1–10 default notes: **~2.5–4 MiB private RAM**, **17–25 MiB working set**, **0–0.5% of one CPU core at idle** (10-second samples, Windows 11 x64).
+About **211 KiB** for the app, **361 KiB** for the installer. With 1–10 default notes: **~2.5–4 MiB private RAM**, **17–25 MiB working set**, **0–0.5% of one CPU core at idle** (10-second samples, Windows 11 x64).
 
 ## Build
 

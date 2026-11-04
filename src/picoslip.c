@@ -77,16 +77,14 @@ static Note *find_note(const wchar_t *id);
 
 static int scaled(const Note *note, int value) { return MulDiv(value, note->dpi, 96); }
 static int bar_height(const Note *note) { return scaled(note, 32); }
-static int note_width(const Note *note) { return note->width; }
-static int expanded_height(const Note *note) { return note->height; }
-static int note_height(const Note *note) { return note->collapsed ? bar_height(note) : expanded_height(note); }
+static int note_height(const Note *note) { return note->collapsed ? bar_height(note) : note->height; }
 static COLORREF note_color(const Note *note) { return PALETTES[note->palette][note->color]; }
 static COLORREF ink_color(const Note *note) {
     return note->palette == 1 && (note->color & 1) ? RGB(255,255,255) : RGB(0,0,0);
 }
 
 static void redraw_bar(Note *note) {
-    RECT rect = {0, 0, note_width(note), bar_height(note)};
+    RECT rect = {0, 0, note->width, bar_height(note)};
     InvalidateRect(note->window, &rect, FALSE);
 }
 
@@ -100,10 +98,12 @@ static void report_error(HWND owner, const wchar_t *message) {
 }
 
 static BOOL make_paths(const wchar_t *root) {
+    DWORD attributes;
     if (swprintf_s(directory, PATH_CAP, L"%s", root) < 0 ||
         swprintf_s(state_path, PATH_CAP, L"%s\\notes.ini", root) < 0) return FALSE;
     if (!CreateDirectoryW(directory, NULL) && GetLastError() != ERROR_ALREADY_EXISTS) return FALSE;
-    return (GetFileAttributesW(directory) & FILE_ATTRIBUTE_DIRECTORY) != 0;
+    attributes = GetFileAttributesW(directory);
+    return attributes != INVALID_FILE_ATTRIBUTES && (attributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
 }
 
 static BOOL write_setting(const wchar_t *section, const wchar_t *key, int value) {
@@ -246,6 +246,7 @@ static BOOL note_has_content(const Note *note) {
 
 static BOOL save_note(Note *note) {
     BOOL previous_failure = note->save_failed;
+    BOOL changed = note->dirty || previous_failure;
     BOOL ok;
     if (!note_has_content(note)) {
         ok = !note->persisted || remove_note_files(note->id);
@@ -253,6 +254,7 @@ static BOOL save_note(Note *note) {
     } else {
         ok = save_text(note);
         if (ok) ok = save_layout(note, TRUE);
+        if (ok && changed) archive_changed(note->id, TRUE);
     }
     note->save_failed = !ok;
     if (ok) KillTimer(note->window, SAVE_TIMER);
@@ -302,8 +304,8 @@ static BOOL load_text(Note *note) {
             note->title = (wchar_t *)calloc(end, sizeof(wchar_t));
             if (!note->title) { free(text); return FALSE; }
             wmemcpy(note->title, text + 1, end - 1);
-            if (text[body] == L'\r') ++body;
-            if (text[body] == L'\n') ++body;
+            if (body < (size_t)count && text[body] == L'\r') ++body;
+            if (body < (size_t)count && text[body] == L'\n') ++body;
             memmove(text, text + body, (wcslen(text + body) + 1) * sizeof(wchar_t));
         }
     }
@@ -412,8 +414,8 @@ static void layout(Note *note) {
     RECT rect;
     int padding = scaled(note, 10), bar = bar_height(note);
     /* A collapsed card keeps the same editor dimensions and text capacity. */
-    MoveWindow(note->edit, padding, bar + scaled(note, 6), note_width(note) - padding * 2,
-               expanded_height(note) - bar - scaled(note, 16), TRUE);
+    MoveWindow(note->edit, padding, bar + scaled(note, 6), note->width - padding * 2,
+               note->height - bar - scaled(note, 16), TRUE);
     SendMessageW(note->edit, EM_GETRECT, 0, (LPARAM)&rect);
     note->max_lines = note->line_height > 0 ? (rect.bottom - rect.top) / note->line_height : 0;
     ShowWindow(note->edit, note->collapsed ? SW_HIDE : SW_SHOW);
@@ -702,7 +704,7 @@ static INT_PTR CALLBACK title_dialog(HWND dialog, UINT message, WPARAM wparam, L
         SendDlgItemMessageW(dialog, IDC_TITLE, EM_SETSEL, 0, -1);
         GetWindowRect(note->window, &owner); GetWindowRect(dialog, &rect);
         GetMonitorInfoW(MonitorFromWindow(note->window,MONITOR_DEFAULTTONEAREST),&monitor);
-        x=owner.left+(note_width(note)-(rect.right-rect.left))/2;
+        x=owner.left+(note->width-(rect.right-rect.left))/2;
         y=owner.top+bar_height(note);
         x=max(monitor.rcWork.left,min(x,monitor.rcWork.right-(rect.right-rect.left)));
         y=max(monitor.rcWork.top,min(y,monitor.rcWork.bottom-(rect.bottom-rect.top)));
@@ -747,7 +749,7 @@ static BOOL resize_note(Note *note, int size) {
         return FALSE;
     }
     note->size = size;
-    SetWindowPos(note->window, NULL, 0, 0, note_width(note), note_height(note),
+    SetWindowPos(note->window, NULL, 0, 0, note->width, note_height(note),
                  SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
     save_note(note); return TRUE;
 }
@@ -776,7 +778,7 @@ static void wheel_resize(Note *note, int delta) {
         width = MulDiv(note->width, steps > 0 ? 110 : 100, steps > 0 ? 100 : 110);
         height = MulDiv(note->height, width, note->width);
         if (!fit_dimensions(note, width, height)) break;
-        SetWindowPos(note->window, NULL, 0, 0, note_width(note), note_height(note),
+        SetWindowPos(note->window, NULL, 0, 0, note->width, note_height(note),
                      SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
         steps += steps > 0 ? -1 : 1;
     }
@@ -915,7 +917,7 @@ static LRESULT CALLBACK note_proc(HWND window, UINT message, WPARAM wparam, LPAR
         WINDOWPOS *position = (WINDOWPOS *)lparam;
         if (!(position->flags & SWP_NOSIZE)) {
             if (!fit_dimensions(note, position->cx, note->collapsed ? note->height : position->cy)) {
-                position->cx = note_width(note);
+                position->cx = note->width;
                 position->cy = note_height(note);
                 position->flags |= SWP_NOMOVE;
             }
@@ -943,7 +945,7 @@ static LRESULT CALLBACK note_proc(HWND window, UINT message, WPARAM wparam, LPAR
     case WM_DPICHANGED: {
         RECT *rect = (RECT *)lparam;
         update_style(note);
-        SetWindowPos(window, NULL, rect->left, rect->top, note_width(note),
+        SetWindowPos(window, NULL, rect->left, rect->top, note->width,
                      note_height(note),
                      SWP_NOZORDER | SWP_NOACTIVATE);
         layout(note);
@@ -1072,8 +1074,8 @@ static Note *open_note(const wchar_t *id, int color, BOOL restore) {
     if (width != NOTE_SIZES[note->size].cx || height != NOTE_SIZES[note->size].cy) note->size = -1;
     note->opacity = restore ? setting(id, L"opacity", 100) : 100;
     if (note->opacity < 60 || note->opacity > 100) note->opacity = 100;
-    width = note_width(note);
-    height = expanded_height(note);
+    width = note->width;
+    height = note->height;
     x = restore ? setting(id, L"x", 100) : 100 + next_color % 7 * 28;
     y = restore ? setting(id, L"y", 100) : 100 + next_color % 7 * 28;
     /* Clamp stored coordinates before arithmetic and keep the whole title bar
@@ -1101,7 +1103,7 @@ static Note *open_note(const wchar_t *id, int color, BOOL restore) {
         note->persisted = TRUE;
         load_rich(note);
     }
-    SetWindowPos(window, NULL, 0, 0, note_width(note), note_height(note),
+    SetWindowPos(window, NULL, 0, 0, note->width, note_height(note),
                  SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
     layout(note);
     if (!text_fits(note) || !remember_text(note)) { destroy_note(note); return NULL; }
@@ -1226,6 +1228,7 @@ static BOOL remove_note_files(const wchar_t *id) {
     for (i = 0; i < 2; ++i) {
         if (swprintf_s(path, PATH_CAP, L"%s\\%s.%s.tmp", directory, id, extensions[i]) >= 0) DeleteFileW(path);
     }
+    archive_changed(id, FALSE);
     return TRUE;
 }
 
@@ -1296,7 +1299,7 @@ static BOOL register_classes(void) {
     return RegisterClassW(&cls) != 0;
 }
 
-int WINAPI wWinMain(HINSTANCE app, HINSTANCE previous, PWSTR command, int show) {
+int WINAPI wWinMain(_In_ HINSTANCE app, _In_opt_ HINSTANCE previous, _In_ PWSTR command, _In_ int show) {
     HANDLE mutex;
     wchar_t root[PATH_CAP], *slash;
     DWORD length;

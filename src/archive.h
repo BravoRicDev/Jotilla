@@ -10,6 +10,7 @@ typedef struct ArchiveActions {
 } ArchiveActions;
 
 HWND archive_show(HWND owner, const wchar_t *directory, const wchar_t *settings, const ArchiveActions *actions);
+void archive_changed(const wchar_t *id, BOOL present);
 void archive_close(void);
 
 #endif

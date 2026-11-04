@@ -20,6 +20,7 @@ static BOOL silent;
 
 static BOOL paths(void) {
     wchar_t root[PATH_CAP];
+    DWORD length;
     if (FAILED(SHGetFolderPathW(NULL,CSIDL_LOCAL_APPDATA,NULL,SHGFP_TYPE_CURRENT,root)) ||
         swprintf_s(install_dir,PATH_CAP,L"%s\\Programs\\PicoSlip",root)<0 ||
         swprintf_s(app_path,PATH_CAP,L"%s\\PicoSlip.exe",install_dir)<0 ||
@@ -28,7 +29,8 @@ static BOOL paths(void) {
         swprintf_s(start_link,PATH_CAP,L"%s\\PicoSlip.lnk",root)<0) return FALSE;
     if (FAILED(SHGetFolderPathW(NULL,CSIDL_DESKTOPDIRECTORY,NULL,SHGFP_TYPE_CURRENT,root)) ||
         swprintf_s(desktop_link,PATH_CAP,L"%s\\PicoSlip.lnk",root)<0) return FALSE;
-    return GetModuleFileNameW(NULL,self,PATH_CAP)>0;
+    length=GetModuleFileNameW(NULL,self,PATH_CAP);
+    return length>0 && length<PATH_CAP;
 }
 
 static int failure(const wchar_t *message) {
@@ -177,11 +179,12 @@ static int uninstall(void) {
     return 0;
 }
 
-int WINAPI wWinMain(HINSTANCE app,HINSTANCE previous,PWSTR command,int show) {
+int WINAPI wWinMain(_In_ HINSTANCE app,_In_opt_ HINSTANCE previous,_In_ PWSTR command,_In_ int show) {
     int argc,i,result;
     wchar_t **argv=CommandLineToArgvW(GetCommandLineW(),&argc), *name;
     (void)app; (void)previous; (void)command; (void)show;
-    if (!argv || !paths()) return failure(L"Windows user folders could not be located.");
+    if (!argv) return failure(L"The command line could not be read.");
+    if (!paths()) { LocalFree(argv); return failure(L"Windows user folders could not be located."); }
     for (i=1;i<argc;++i) if (!_wcsicmp(argv[i],L"/S")) silent=TRUE;
     name=wcsrchr(self,L'\\'); name=name ? name+1 : self;
     if (argc>=3 && !wcscmp(argv[1],L"--cleanup")) result=cleanup(wcstoul(argv[2],NULL,10));

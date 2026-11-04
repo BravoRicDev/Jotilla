@@ -67,6 +67,13 @@ static void pump(DWORD milliseconds) {
     } while (GetTickCount64() < end);
 }
 
+static HWND thread_window(const wchar_t *name, const wchar_t *title) {
+    HWND window=NULL;
+    while ((window=FindWindowExW(NULL,window,name,title))!=NULL)
+        if (GetWindowThreadProcessId(window,NULL)==GetCurrentThreadId()) return window;
+    return NULL;
+}
+
 static void replace_text(Note *note, const wchar_t *text) {
     SendMessageW(note->edit, EM_SETSEL, 0, -1);
     SendMessageW(note->edit, EM_REPLACESEL, TRUE, (LPARAM)text);
@@ -287,7 +294,7 @@ static void CALLBACK inspect_native_menu(HWND window,UINT message,UINT_PTR timer
     }
 }
 static void CALLBACK fill_title_dialog(HWND window,UINT message,UINT_PTR timer,DWORD time) {
-    HWND dialog=FindWindowW(L"#32770",L"Edit title");
+    HWND dialog=thread_window(L"#32770",L"Edit title");
     (void)window; (void)message; (void)time;
     if (dialog && GetWindow(dialog,GW_OWNER)==dialog_note->window) {
         KillTimer(NULL,timer);
@@ -325,7 +332,7 @@ static void options_checks(void) {
     wcscpy_s(id,80,note->id);
     require(save_note(note),"save square preset");
     destroy_note(note); note=open_note(id,0,TRUE);
-    require(note && note->size==4 && note_width(note)==expanded_height(note),"square shape survives reopening");
+    require(note && note->size==4 && note->width==note->height,"square shape survives reopening");
     require(resize_note(note,1),"return to default size");
     if (interactive_tests) {
         GetCursorPos(&previous); ShowWindow(note->window,SW_SHOWNORMAL);
@@ -686,9 +693,9 @@ static void archive_fixture(const wchar_t *id,const char *text) {
 }
 
 static void CALLBACK confirm_archive_delete(HWND window,UINT message,UINT_PTR timer,DWORD time) {
-    HWND dialog=FindWindowW(L"#32770",L"PicoSlip");
+    HWND dialog=thread_window(L"#32770",L"PicoSlip");
     (void)window; (void)message; (void)time;
-    if (dialog && GetWindow(dialog,GW_OWNER)==FindWindowW(L"PicoSlip.Archive",NULL)) {
+    if (dialog && GetWindow(dialog,GW_OWNER)==thread_window(L"PicoSlip.Archive",NULL)) {
         KillTimer(NULL,timer); SendMessageW(dialog,WM_COMMAND,IDYES,0);
     }
 }
@@ -706,6 +713,27 @@ static void CALLBACK choose_archive_delete(HWND window,UINT message,UINT_PTR tim
     SendInput(4,keys,sizeof(INPUT));
 }
 
+static void archive_selection_colors(HWND tree, HWND list, HTREEITEM selected) {
+    RECT bounds, label;
+    HDC dc=GetDC(tree), memory=CreateCompatibleDC(dc);
+    HBITMAP bitmap;
+    HGDIOBJ old;
+    int focused;
+    GetClientRect(tree,&bounds);
+    bitmap=CreateCompatibleBitmap(dc,bounds.right,bounds.bottom);
+    require(memory && bitmap,"allocate native tree rendering check");
+    old=SelectObject(memory,bitmap);
+    TreeView_SelectItem(tree,selected); TreeView_EnsureVisible(tree,selected);
+    require(TreeView_GetItemRect(tree,selected,&label,TRUE),"locate selected date label");
+    for (focused=0;focused<2;++focused) {
+        SetFocus(focused ? tree : list);
+        require(PrintWindow(tree,memory,PW_CLIENTONLY),"render the actual date tree");
+        require(GetPixel(memory,label.right-1,label.top+1)==RGB(211,194,162),
+                "focused and unfocused date selections use the beige highlight");
+    }
+    SelectObject(memory,old); DeleteObject(bitmap); DeleteDC(memory); ReleaseDC(tree,dc);
+}
+
 static void archive_checks(void) {
     const wchar_t *first=L"note-2024-01-03_08-00-00-000-001", *second=L"note-2024-02-04_09-00-00-000-001";
     const wchar_t *third=L"note-2025-03-05_10-00-00-000-001";
@@ -721,7 +749,7 @@ static void archive_checks(void) {
     archive_fixture(second,"#Viaggio\r\nPartenza domani");
     archive_fixture(third,"#Progetto\r\nUna nota di un altro anno");
     browse_notes();
-    window=FindWindowW(L"PicoSlip.Archive",NULL);
+    window=thread_window(L"PicoSlip.Archive",NULL);
     require(window!=NULL,"archive opens through the note menu command");
     tree=GetDlgItem(window,1); list=GetDlgItem(window,2);
     require(tree && list,"archive consists of a native date tree and a virtual preview list");
@@ -730,6 +758,8 @@ static void archive_checks(void) {
     day=find_date(tree,TreeView_GetRoot(tree),20240103);
     require(year && month && day && TreeView_GetParent(tree,day)==month && TreeView_GetParent(tree,month)==year,
             "archive tree groups notes by creation year, month and day");
+    archive_selection_colors(tree,list,year);
+    archive_selection_colors(tree,list,month);
     {
         TVITEMW label={0};
         label.mask=TVIF_TEXT; label.hItem=month; label.pszText=preview; label.cchTextMax=256;
@@ -752,7 +782,102 @@ static void archive_checks(void) {
     SendMessageW(window,WM_NOTIFY,2,(LPARAM)&click);
     require(find_note(first)==note && !note->collapsed && note_count()==before+1,
             "opening an existing note expands it without creating duplicates");
+    ListView_SetItemState(list,0,LVIS_SELECTED|LVIS_FOCUSED,LVIS_SELECTED|LVIS_FOCUSED);
+    require(set_title(note,L"Updated title"),"edit title while its preview is cached");
+    replace_text(note,L"Updated body"); pump(650);
+    ListView_GetItemText(list,0,0,preview,256);
+    require(!wcscmp(preview,L"Updated title"),"autosave updates the open browser without reopening or F5");
+    require(TreeView_GetSelection(tree)==day &&
+            ListView_GetItemState(list,0,LVIS_SELECTED|LVIS_FOCUSED)==(LVIS_SELECTED|LVIS_FOCUSED),
+            "updating a preview preserves date and tile selection");
+    require(set_title(note,L""),"remove title while the browser stays open"); pump(650);
+    ListView_GetItemText(list,0,0,preview,256);
+    require(!wcscmp(preview,L"Updated body"),"preview metadata updates together with the saved body");
+    replace_text(note,L"\x2610 Task"); pump(650);
+    click_checkbox(note,0); pump(650);
+    ListView_GetItemText(list,0,0,preview,256);
+    require(!wcscmp(preview,L"\x2611 Task"),"checking a task updates the cached preview");
+    {
+        Note *added;
+        HTREEITEM added_day;
+        UINT expansion;
+        TreeView_SelectItem(tree,year);
+        ListView_GetItemText(list,0,0,preview,256);
+        require(!wcscmp(preview,L"Viaggio"),"cache an unchanged neighboring preview");
+        swprintf_s(path,PATH_CAP,L"%s\\%s.txt",directory,second);
+        lock=CreateFileW(path,GENERIC_READ,0,NULL,OPEN_EXISTING,0,NULL);
+        require(lock!=INVALID_HANDLE_VALUE,"deny rereading the unchanged preview during insertion");
+        TreeView_Expand(tree,month,TVE_EXPAND);
+        expansion=TreeView_GetItemState(tree,month,TVIS_EXPANDED);
+        ListView_SetItemState(list,1,LVIS_SELECTED|LVIS_FOCUSED,LVIS_SELECTED|LVIS_FOCUSED);
+        added=open_note(L"note-2024-01-04_08-00-00-000-001",0,FALSE);
+        require(added!=NULL,"create a note while the archive is open");
+        replace_text(added,L"A new archived note"); pump(650);
+        added_day=find_date(tree,TreeView_GetRoot(tree),20240104);
+        require(added_day && ListView_GetItemCount(list)==3 && TreeView_GetSelection(tree)==year,
+                "new saved notes join the current archive filter automatically");
+        ListView_GetItemText(list,0,0,preview,256);
+        require(!wcscmp(preview,L"Viaggio"),"membership refresh reuses unaffected cached previews without disk reads");
+        CloseHandle(lock);
+        require(find_date(tree,TreeView_GetRoot(tree),20240100)==month &&
+                TreeView_GetItemState(tree,month,TVIS_EXPANDED)==expansion &&
+                ListView_GetItemState(list,2,LVIS_SELECTED|LVIS_FOCUSED)==(LVIS_SELECTED|LVIS_FOCUSED),
+                "insertion preserves existing tree nodes, expansion and the selected note's identity");
+        TreeView_SelectItem(tree,added_day);
+        replace_text(added,L""); pump(650);
+        require(!find_date(tree,TreeView_GetRoot(tree),20240104) &&
+                TreeView_GetSelection(tree)==month && ListView_GetItemCount(list)==1 && !added->persisted,
+                "clearing the last note of a day removes the date and selects its surviving month");
+        destroy_note(added);
+        TreeView_SelectItem(tree,day);
+        {
+            const wchar_t *new_month=L"note-2024-03-01_08-00-00-000-001";
+            const wchar_t *new_year=L"note-2023-07-06_08-00-00-000-001";
+            added=open_note(new_month,0,FALSE);
+            require(added!=NULL,"create a note in a new month");
+            replace_text(added,L"New month"); require(save_note(added),"save new month");
+            added=open_note(new_year,0,FALSE);
+            require(added!=NULL,"create a note in a new year");
+            replace_text(added,L"New year"); require(save_note(added),"save new year"); pump(40);
+            require(find_date(tree,TreeView_GetRoot(tree),20240300) &&
+                    find_date(tree,TreeView_GetRoot(tree),20230000) && TreeView_GetSelection(tree)==day &&
+                    ListView_GetItemCount(list)==1,"batched additions merge new months and years without disturbing the current date");
+            require(delete_archived_note(new_month) && delete_archived_note(new_year),"remove new date groups"); pump(40);
+            require(!find_date(tree,TreeView_GetRoot(tree),20240300) &&
+                    !find_date(tree,TreeView_GetRoot(tree),20230000) && TreeView_GetSelection(tree)==day,
+                    "deleting a last note prunes empty month and year branches");
+        }
+    }
+    {
+        Note *legacy=open_note(L"nota-legacy-test",0,FALSE);
+        int index, count;
+        require(legacy!=NULL,"create a legacy filename fixture");
+        replace_text(legacy,L"Legacy preview"); require(save_note(legacy),"save the legacy fixture"); pump(40);
+        TreeView_SelectItem(tree,TreeView_GetRoot(tree));
+        count=ListView_GetItemCount(list);
+        for (index=0;index<count;++index) {
+            ListView_GetItemText(list,index,0,preview,256);
+            if (!wcscmp(preview,L"Legacy preview")) break;
+        }
+        require(index<count,"legacy filenames remain browsable using their file creation date");
+        replace_text(legacy,L"Updated legacy preview"); pump(650);
+        ListView_GetItemText(list,index,0,preview,256);
+        require(!wcscmp(preview,L"Updated legacy preview"),"live invalidation also supports legacy filenames");
+        require(delete_archived_note(legacy->id),"remove the legacy fixture"); pump(40);
+        TreeView_SelectItem(tree,day);
+    }
+    require(set_title(note,L"Spesa è urgente"),"restore the fixture title");
     replace_text(note,L"Pane, caffè e latte"); require(save_note(note),"create formatting companion for deletion check");
+    ListView_GetItemText(list,0,0,preview,256);
+    lock=CreateFileW(note->path,GENERIC_READ,FILE_SHARE_READ,NULL,OPEN_EXISTING,0,NULL);
+    require(lock!=INVALID_HANDLE_VALUE && set_title(note,L"Pending title") && !save_note(note),
+            "block replacement while a changed title is pending");
+    ListView_GetItemText(list,0,0,preview,256);
+    require(!wcscmp(preview,L"Spesa è urgente"),"a failed save leaves the last saved preview intact");
+    CloseHandle(lock); pump(1150);
+    ListView_GetItemText(list,0,0,preview,256);
+    require(!wcscmp(preview,L"Pending title"),"a successful autosave retry updates the browser");
+    require(set_title(note,L"Spesa è urgente") && save_note(note),"restore saved title after the retry test");
     swprintf_s(path,PATH_CAP,L"%s\\%s.rtf",directory,first);
     lock=CreateFileW(path,GENERIC_READ,FILE_SHARE_READ,NULL,OPEN_EXISTING,0,NULL);
     require(lock!=INVALID_HANDLE_VALUE && !delete_archived_note(first),"locked formatting blocks deletion of the whole note");
@@ -818,7 +943,7 @@ static void archive_checks(void) {
     require(delete_archived_note(third),"delete a single archived note without an RTF");
     wcscpy_s(id,80,notes->id);
     browse_notes();
-    require(FindWindowW(L"PicoSlip.Archive",NULL)==window && !wcscmp(notes->id,id),"archive refresh reuses its window without changing notes");
+    require(thread_window(L"PicoSlip.Archive",NULL)==window && !wcscmp(notes->id,id),"archive refresh reuses its window without changing notes");
     archive_close();
     {
         wchar_t empty[PATH_CAP];
@@ -829,7 +954,7 @@ static void archive_checks(void) {
         require(window && ListView_GetItemCount(GetDlgItem(window,2))==0,"empty archives open normally");
         archive_close(); require(RemoveDirectoryW(empty),"remove empty archive fixture");
     }
-    puts("PASS: archive tree, virtual Unicode previews, reopening, duplicate prevention, locked-file safety and multi-delete.");
+    puts("PASS: live archive previews, date-tree reconciliation, stable selection, Unicode, reopening and safe multi-delete.");
 }
 
 static void empty_note_checks(void) {
@@ -854,6 +979,11 @@ static void empty_note_checks(void) {
     SendMessageW(other->window,WM_CLOSE,0,0);
     require(!find_note(id) && GetFileAttributesW(path)==INVALID_FILE_ATTRIBUTES,"closing a blank note leaves no archive entry");
     require(delete_archived_note(note->id),"remove the isolated empty-note test fixture");
+    archive_fixture(L"note-2020-01-01_00-00-00-000-001","");
+    note=open_note(L"note-2020-01-01_00-00-00-000-001",0,TRUE);
+    require(note && !note->persisted && GetFileAttributesW(note->path)==INVALID_FILE_ATTRIBUTES,
+            "restoring a legacy empty file removes its saved entry");
+    destroy_note(note);
     puts("PASS: blank and whitespace notes stay unsaved, title-only notes persist, cleared notes remove TXT/RTF/metadata.");
 }
 
@@ -950,7 +1080,7 @@ int main(int argc, char **argv) {
     require(rect.right - rect.left == 340 && rect.bottom - rect.top == 270,
             "post-it accepts arbitrary dimensions");
     SendMessageW(first->window, WM_EXITSIZEMOVE, 0, 0);
-    saved_width = note_width(first); saved_height = expanded_height(first); color = first->color;
+    saved_width = first->width; saved_height = first->height; color = first->color;
     screenshot(first, L"build\\expanded.bmp");
     click_button(first, 1);
     GetWindowRect(first->window, &rect);
@@ -980,7 +1110,7 @@ int main(int argc, char **argv) {
     first = notes;
     require(note_count() == 1 && !wcscmp(first->id, id), "restart restores only notes left open");
     GetWindowTextW(first->edit, text, 256);
-    require(first->collapsed && first->color == color && expanded_height(first) == saved_height && !wcscmp(text, sample),
+    require(first->collapsed && first->color == color && first->height == saved_height && !wcscmp(text, sample),
             "restart restores collapsed state, color, height and Unicode text");
     GetWindowRect(first->window, &rect);
     require(rect.left == 110 && rect.top == 130 && rect.right - rect.left == saved_width,

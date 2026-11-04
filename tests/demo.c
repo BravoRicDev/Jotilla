@@ -185,16 +185,9 @@ static void click_pointer(void) {
     require(SendInput(2,clicks,sizeof(INPUT))==2,"click the actual application");
 }
 
-static HWND demo_archive_window(void) {
-    HWND window=NULL;
-    while ((window=FindWindowExW(NULL,window,L"PicoSlip.Archive",NULL))!=NULL)
-        if (GetWindowThreadProcessId(window,NULL)==GetCurrentThreadId()) return window;
-    return NULL;
-}
-
 static void position_demo_archive(void) {
     RECT bounds;
-    HWND window=demo_archive_window();
+    HWND window=thread_window(L"PicoSlip.Archive",NULL);
     require(window!=NULL,"locate this process's archive window");
     GetWindowRect(backdrop,&bounds);
     SetWindowPos(window,HWND_TOPMOST,bounds.left+35,bounds.top+45,1000,680,0);
@@ -352,7 +345,7 @@ static void record_archive_browser(Note *note) {
     populate_demo_archive();
     frame_delay=75;
     record_menu(note,-1,1,CMD_BROWSE);
-    window=demo_archive_window(); tree=GetDlgItem(window,1); list=GetDlgItem(window,2);
+    window=thread_window(L"PicoSlip.Archive",NULL); tree=GetDlgItem(window,1); list=GetDlgItem(window,2);
     require(tree && list,"record the actual date tree and virtual mosaic");
     select_demo_date(tree,20260000,TRUE);
     select_demo_date(tree,20260400,TRUE);
@@ -435,7 +428,7 @@ static void record_welcome(void) {
     frame_delay=180; capture_frame();
     frame_delay=85; menu_offset=160;
     record_menu(note,5,4,CMD_SIZE+4);
-    require(note_width(note)==expanded_height(note),"first note becomes square through its menu");
+    require(note->width==note->height,"first note becomes square through its menu");
     menu_offset=60;
     second=create_live_note(560,200);
     record_menu(second,5,4,CMD_SIZE+4);
