@@ -23,6 +23,7 @@
 #define PATH_CAP 1024
 #define TEXT_LIMIT (16 * 1024 * 1024)
 #define SAVE_TIMER 1
+#define TRAY_CLICK_TIMER 2
 #define TRAY_MESSAGE (WM_APP + 1)
 #define NEW_NOTE_MESSAGE (WM_APP + 2)
 #define EXIT_COMMAND 1
@@ -1246,6 +1247,7 @@ static void browse_notes(void) {
 }
 
 static LRESULT CALLBACK controller_proc(HWND window, UINT message, WPARAM wparam, LPARAM lparam) {
+    static enum { TRAY_IDLE, TRAY_PENDING, TRAY_DOUBLE } tray_click;
     if (taskbar_created && message == taskbar_created) { tray(TRUE); return 0; }
     switch (message) {
     case WM_HOTKEY:
@@ -1253,10 +1255,28 @@ static LRESULT CALLBACK controller_proc(HWND window, UINT message, WPARAM wparam
         if (!new_note()) report_error(NULL, L"A new note could not be created. Check the notes folder.");
         return 0;
     case TRAY_MESSAGE:
-        if (lparam == WM_LBUTTONUP) PostMessageW(window, NEW_NOTE_MESSAGE, 0, 0);
+        if (lparam == WM_LBUTTONDOWN && tray_click == TRAY_DOUBLE) tray_click = TRAY_IDLE;
+        if (lparam == WM_LBUTTONUP) {
+            if (tray_click == TRAY_DOUBLE) tray_click = TRAY_IDLE;
+            else {
+                /* Wait for Windows to distinguish a single click from a double click. */
+                tray_click = TRAY_PENDING;
+                if (!SetTimer(window, TRAY_CLICK_TIMER, GetDoubleClickTime(), NULL)) {
+                    tray_click = TRAY_IDLE;
+                    PostMessageW(window, NEW_NOTE_MESSAGE, 0, 0);
+                }
+            }
+        }
+        if (lparam == WM_LBUTTONDBLCLK) {
+            KillTimer(window, TRAY_CLICK_TIMER);
+            tray_click = TRAY_DOUBLE;
+            browse_notes();
+        }
         if (lparam == WM_RBUTTONUP || lparam == WM_CONTEXTMENU) {
             POINT point;
             HMENU menu = CreatePopupMenu();
+            KillTimer(window, TRAY_CLICK_TIMER);
+            tray_click = TRAY_IDLE;
             GetCursorPos(&point);
             AppendMenuW(menu, MF_STRING, EXIT_COMMAND, L"Exit");
             SetForegroundWindow(window);
@@ -1264,6 +1284,13 @@ static LRESULT CALLBACK controller_proc(HWND window, UINT message, WPARAM wparam
                 PostMessageW(window, WM_CLOSE, 0, 0);
             PostMessageW(window, WM_NULL, 0, 0);
             DestroyMenu(menu);
+        }
+        return 0;
+    case WM_TIMER:
+        if (wparam == TRAY_CLICK_TIMER && tray_click == TRAY_PENDING) {
+            KillTimer(window, TRAY_CLICK_TIMER);
+            tray_click = TRAY_IDLE;
+            PostMessageW(window, NEW_NOTE_MESSAGE, 0, 0);
         }
         return 0;
     case WM_CLOSE:
@@ -1279,6 +1306,8 @@ static LRESULT CALLBACK controller_proc(HWND window, UINT message, WPARAM wparam
         if (wparam) save_all();
         return 0;
     case WM_DESTROY:
+        KillTimer(window, TRAY_CLICK_TIMER);
+        tray_click = TRAY_IDLE;
         tray(FALSE);
         UnregisterHotKey(window, 1); UnregisterHotKey(window, 2); UnregisterHotKey(window, 3);
         PostQuitMessage(0);

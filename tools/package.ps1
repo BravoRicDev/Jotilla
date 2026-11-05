@@ -9,6 +9,7 @@ $readme = @'
 PicoSlip - Tiny Sticky Notes for Windows
 
 Run PicoSlip.exe. Ctrl+Alt++ creates a note.
+Single-click the tray icon for a new note; double-click to browse notes.
 Drag the bar to move it; use - to collapse and X to close.
 Right-click the bar for the archive, opacity, title, size and palette.
 #Title + Enter makes a title; Shift+Enter keeps it as text.

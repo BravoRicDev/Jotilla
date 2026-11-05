@@ -74,6 +74,56 @@ static HWND thread_window(const wchar_t *name, const wchar_t *title) {
     return NULL;
 }
 
+static void tray_checks(void) {
+    DWORD wait = GetDoubleClickTime() + 80;
+    int count = note_count();
+    HWND browser;
+    SendMessageW(controller, TRAY_MESSAGE, 1, WM_LBUTTONDOWN);
+    SendMessageW(controller, TRAY_MESSAGE, 1, WM_LBUTTONUP);
+    require(note_count() == count && !thread_window(L"PicoSlip.Archive", NULL),
+            "first tray click waits without creating a note or opening the browser");
+    pump(wait);
+    require(note_count() == count + 1 && !thread_window(L"PicoSlip.Archive", NULL),
+            "single tray click creates exactly one note after the Windows interval");
+    pump(wait);
+    require(note_count() == count + 1, "single tray click timer does not repeat");
+    destroy_note(notes);
+
+    /* Shell notification order: down, up, double-click, up. */
+    SendMessageW(controller, TRAY_MESSAGE, 1, WM_LBUTTONDOWN);
+    SendMessageW(controller, TRAY_MESSAGE, 1, WM_LBUTTONUP);
+    SendMessageW(controller, TRAY_MESSAGE, 1, WM_LBUTTONDBLCLK);
+    browser = thread_window(L"PicoSlip.Archive", NULL);
+    require(browser && IsWindowVisible(browser) && note_count() == count,
+            "double tray click opens the browser immediately without creating a note");
+    SendMessageW(controller, TRAY_MESSAGE, 1, WM_LBUTTONUP);
+    /* KillTimer can leave an already queued WM_TIMER behind. */
+    SendMessageW(controller, WM_TIMER, TRAY_CLICK_TIMER, 0);
+    pump(wait);
+    require(note_count() == count, "double-click release and stale timer cannot create a stray note");
+
+    SendMessageW(controller, TRAY_MESSAGE, 1, WM_LBUTTONDOWN);
+    SendMessageW(controller, TRAY_MESSAGE, 1, WM_LBUTTONUP);
+    pump(wait);
+    require(note_count() == count + 1, "single tray click still works after a complete double click");
+    destroy_note(notes);
+
+    ShowWindow(browser, SW_MINIMIZE);
+    SendMessageW(controller, TRAY_MESSAGE, 1, WM_LBUTTONDOWN);
+    SendMessageW(controller, TRAY_MESSAGE, 1, WM_LBUTTONUP);
+    SendMessageW(controller, TRAY_MESSAGE, 1, WM_LBUTTONDBLCLK);
+    require(thread_window(L"PicoSlip.Archive", NULL) == browser && !IsIconic(browser),
+            "another double tray click restores and reuses the browser");
+    /* Opening a window can divert the final release away from the tray icon. */
+    SendMessageW(controller, TRAY_MESSAGE, 1, WM_LBUTTONDOWN);
+    SendMessageW(controller, TRAY_MESSAGE, 1, WM_LBUTTONUP);
+    pump(wait);
+    require(note_count() == count + 1, "a missing double-click release cannot swallow the next single click");
+    destroy_note(notes);
+    archive_close();
+    puts("PASS: tray single/double clicks, cancelled timers, browser reuse and subsequent clicks.");
+}
+
 static void replace_text(Note *note, const wchar_t *text) {
     SendMessageW(note->edit, EM_SETSEL, 0, -1);
     SendMessageW(note->edit, EM_REPLACESEL, TRUE, (LPARAM)text);
@@ -1029,6 +1079,7 @@ int main(int argc, char **argv) {
         archive_checks();
         goto cleanup;
     }
+    tray_checks();
     first = new_note();
     require(first != NULL, "create first note");
     require(RegisterHotKey(controller, 1, MOD_CONTROL | MOD_ALT | MOD_NOREPEAT,

@@ -34,7 +34,7 @@ Windows 10/11, x64. Installs for your account without administrator rights.
 
 ![The three palettes](docs/screenshots/palettes.png)
 
-Notes stay on top, with a subtle shadow. Text never scrolls; a smaller size is refused if the text would not fit. The tray icon creates notes; right-click it to exit.
+Notes stay on top, with a subtle shadow. Text never scrolls; a smaller size is refused if the text would not fit. Single-click the tray icon to create a note; double-click it to browse notes; right-click it to exit. Single clicks wait for the Windows double-click interval.
 
 ## Your notes
 
