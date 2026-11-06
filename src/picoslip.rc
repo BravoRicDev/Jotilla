@@ -12,9 +12,21 @@ BEGIN
     DEFPUSHBUTTON "Save", IDOK, 130, 58, 52, 16
     PUSHBUTTON "Cancel", IDCANCEL, 190, 58, 52, 16
 END
+IDD_TAGS DIALOGEX 0, 0, 292, 180
+STYLE DS_SETFONT | DS_MODALFRAME | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "Edit tags"
+FONT 9, "Consolas"
+BEGIN
+    LTEXT "Tags (separate with ;):", -1, 10, 9, 270, 12
+    EDITTEXT IDC_TAGS, 10, 25, 272, 16, ES_AUTOHSCROLL
+    LTEXT "Used tags - Down to choose, Enter to add:", -1, 10, 49, 272, 12
+    LISTBOX IDC_TAG_SUGGESTIONS, 10, 64, 272, 72, LBS_NOTIFY | LBS_NOINTEGRALHEIGHT | WS_VSCROLL | WS_TABSTOP
+    DEFPUSHBUTTON "Save", IDOK, 170, 153, 52, 16
+    PUSHBUTTON "Cancel", IDCANCEL, 230, 153, 52, 16
+END
 1 VERSIONINFO
- FILEVERSION 1,0,1,0
- PRODUCTVERSION 1,0,1,0
+ FILEVERSION 1,2,0,0
+ PRODUCTVERSION 1,2,0,0
  FILEOS VOS_NT_WINDOWS32
  FILETYPE VFT_APP
 BEGIN
@@ -24,11 +36,11 @@ BEGIN
   BEGIN
    VALUE "CompanyName", "Alessio Garau\0"
    VALUE "FileDescription", "PicoSlip - Tiny Sticky Notes for Windows\0"
-   VALUE "FileVersion", "1.0.1\0"
+   VALUE "FileVersion", "1.2.0\0"
    VALUE "InternalName", "PicoSlip\0"
    VALUE "OriginalFilename", "PicoSlip.exe\0"
    VALUE "ProductName", "PicoSlip\0"
-   VALUE "ProductVersion", "1.0.1\0"
+   VALUE "ProductVersion", "1.2.0\0"
    VALUE "LegalCopyright", "MIT - Alessio Garau\0"
   END
  END

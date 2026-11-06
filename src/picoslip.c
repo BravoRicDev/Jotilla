@@ -8,6 +8,7 @@
 #include <shlobj.h>
 #include <richedit.h>
 #include <commdlg.h>
+#include <commctrl.h>
 #include <tom.h>
 #include <dwmapi.h>
 #include <stdio.h>
@@ -17,6 +18,8 @@
 #include "resource.h"
 #include "archive.h"
 #include "colors.h"
+#include "tags.h"
+#include "location.h"
 
 #define APP_CLASS APP_CONTROLLER
 #define NOTE_CLASS APP_NOTE
@@ -35,6 +38,7 @@
 #define CMD_ARCHIVE 100
 #define CMD_TITLE 101
 #define CMD_BROWSE 102
+#define CMD_TAGS 103
 #define CMD_OPACITY 200
 #define CMD_SIZE 300
 #define CMD_PALETTE 400
@@ -48,14 +52,14 @@ struct Note {
     HBRUSH brush;
     HFONT font;
     HPEN pen;
-    wchar_t *accepted_text, *title;
+    wchar_t *accepted_text, *title, *tags;
     size_t text_capacity;
     wchar_t id[80], path[PATH_CAP];
     int color, palette, size, opacity, dpi, line_height, max_lines, hover, pressed;
     int width, height, wheel_delta;
     int saved_layout[11];
     DWORD selection_start, selection_end;
-    BOOL collapsed, ready, dirty, save_failed, validating, layout_saved, persisted;
+    BOOL collapsed, ready, dirty, tags_dirty, save_failed, validating, layout_saved, persisted;
 };
 static const SIZE NOTE_SIZES[] = {{240,180}, {NOTE_WIDTH,NOTE_HEIGHT}, {420,340}, {540,440}, {300,300}};
 static const wchar_t *SIZE_NAMES[] = {L"Small", L"Medium", L"Large", L"Extra large", L"Square"};
@@ -67,6 +71,7 @@ static HWND controller;
 static HICON app_icon;
 static Note *notes;
 static wchar_t directory[PATH_CAP], state_path[PATH_CAP];
+static wchar_t location_config[PATH_CAP];
 static UINT taskbar_created;
 static int next_color;
 static int current_palette;
@@ -75,6 +80,9 @@ static HMODULE rich_edit;
 static const IID TEXT_DOCUMENT_IID = {0x8cc497c0, 0xa1df, 0x11ce, {0x80,0x98,0x00,0xaa,0x00,0x47,0xbe,0x5d}};
 static BOOL remove_note_files(const wchar_t *id);
 static Note *find_note(const wchar_t *id);
+static void note_command(Note *note, UINT command);
+static HWND browse_notes(void);
+static void choose_archive(HWND owner);
 
 static int scaled(const Note *note, int value) { return MulDiv(value, note->dpi, 96); }
 static int bar_height(const Note *note) { return scaled(note, 32); }
@@ -163,7 +171,9 @@ static BOOL save_rich(Note *note) {
     SendMessageW(note->edit, EM_STREAMOUT, SF_RTF, (LPARAM)&stream);
     ok = !stream.dwError && FlushFileBuffers(file);
     if (!CloseHandle(file)) ok = FALSE;
-    return ok && MoveFileExW(temporary, path, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH);
+    if (ok) ok = MoveFileExW(temporary, path, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH);
+    if (!ok) DeleteFileW(temporary);
+    return ok;
 }
 
 static void load_rich(Note *note) {
@@ -235,6 +245,7 @@ static BOOL save_text(Note *note) {
     if (ok) ok = save_rich(note);
     if (ok) ok = MoveFileExW(temporary, note->path, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH);
     if (ok) { note->dirty = FALSE; note->persisted = TRUE; }
+    else DeleteFileW(temporary);
     return ok;
 }
 
@@ -247,15 +258,23 @@ static BOOL note_has_content(const Note *note) {
 
 static BOOL save_note(Note *note) {
     BOOL previous_failure = note->save_failed;
-    BOOL changed = note->dirty || previous_failure;
+    BOOL changed = note->dirty || note->tags_dirty || previous_failure;
+    BOOL tags_changed = note->tags_dirty || !note->persisted || previous_failure;
     BOOL ok;
     if (!note_has_content(note)) {
         ok = !note->persisted || remove_note_files(note->id);
-        if (ok) { note->dirty = note->persisted = note->layout_saved = FALSE; }
+        if (ok) {
+            note->dirty = note->persisted = note->layout_saved = FALSE;
+            note->tags_dirty = note->tags != NULL;
+        }
     } else {
         ok = save_text(note);
         if (ok) ok = save_layout(note, TRUE);
-        if (ok && changed) archive_changed(note->id, TRUE);
+        if (ok && note->tags_dirty) {
+            ok = tags_write(state_path, note->id, note->tags);
+            if (ok) note->tags_dirty = FALSE;
+        }
+        if (ok && changed) archive_changed(note->id, TRUE, tags_changed);
     }
     note->save_failed = !ok;
     if (ok) KillTimer(note->window, SAVE_TIMER);
@@ -482,6 +501,12 @@ static void paint_note(Note *note) {
             MoveToEx(dc, cx - s - 1, cy, NULL); LineTo(dc, cx + s + 2, cy);
         }
     }
+    {
+        HBRUSH black = (HBRUSH)GetStockObject(BLACK_BRUSH);
+        RECT divider = {0, bar - 1, rect.right, bar};
+        FrameRect(dc, &rect, black);
+        FillRect(dc, &divider, black);
+    }
     SelectObject(dc, old_pen);
     EndPaint(note->window, &ps);
 }
@@ -660,6 +685,8 @@ static LRESULT CALLBACK edit_proc(HWND window, UINT message, WPARAM wparam, LPAR
                        wparam == 'U' ? CFM_UNDERLINE :
                        wparam == 'X' && GetKeyState(VK_SHIFT) < 0 ? CFM_STRIKEOUT : 0;
         if (effect) { toggle_format(note, effect); return 0; }
+        if (wparam == 'T') { note_command(note, CMD_TAGS); return 0; }
+        if (wparam == 'F' && GetKeyState(VK_SHIFT) < 0) { browse_notes(); archive_search(); return 0; }
         if (wparam == 'Z' || wparam == 'Y') {
             SendMessageW(window, wparam == 'Y' || GetKeyState(VK_SHIFT) < 0 ? EM_REDO : EM_UNDO, 0, 0);
             return 0;
@@ -667,7 +694,8 @@ static LRESULT CALLBACK edit_proc(HWND window, UINT message, WPARAM wparam, LPAR
         if (wparam == 'A') { SendMessageW(window, EM_SETSEL, 0, -1); return 0; }
     }
     if (message == WM_CHAR && GetKeyState(VK_CONTROL) < 0 &&
-        (wparam == 2 || wparam == 9 || wparam == 21 || wparam == 25 || wparam == 26 ||
+        (wparam == 2 || wparam == 9 || wparam == 20 || wparam == 21 || wparam == 25 || wparam == 26 ||
+         (wparam == 6 && GetKeyState(VK_SHIFT) < 0) ||
          (wparam == 24 && GetKeyState(VK_SHIFT) < 0))) return 0;
     if (message == WM_PASTE) return SendMessageW(window, EM_PASTESPECIAL, CF_UNICODETEXT, 0);
     if (message == WM_LBUTTONDOWN && note->ready && click_todo(note, lparam)) return 0;
@@ -727,6 +755,137 @@ static INT_PTR CALLBACK title_dialog(HWND dialog, UINT message, WPARAM wparam, L
     return FALSE;
 }
 
+typedef struct TagEditor {
+    Note *note;
+    TagCatalog catalog;
+    const TagCount *suggestions[8];
+    int count;
+    HBRUSH background;
+} TagEditor;
+
+static BOOL set_tags(Note *note, const wchar_t *input) {
+    wchar_t normal[TAGS_CAP], *copy = NULL;
+    if (!tags_normalize(input, normal)) return FALSE;
+    if (!wcscmp(note->tags ? note->tags : L"", normal)) return TRUE;
+    if (*normal && !(copy = _wcsdup(normal))) return FALSE;
+    free(note->tags); note->tags = copy; note->tags_dirty = TRUE;
+    SetTimer(note->window, SAVE_TIMER, 400, NULL);
+    return TRUE;
+}
+
+static void suggest_tags(HWND dialog, TagEditor *editor) {
+    wchar_t text[TAGS_CAP], assigned[TAGS_CAP], prefix[TAGS_CAP], *start, label[96];
+    HWND list = GetDlgItem(dialog, IDC_TAG_SUGGESTIONS);
+    int i;
+    GetDlgItemTextW(dialog, IDC_TAGS, text, TAGS_CAP);
+    start = wcsrchr(text, L';');
+    if (start) { *start++ = 0; } else start = text;
+    if (!tags_normalize(start, prefix)) prefix[0] = 0;
+    if (start == text || !tags_normalize(text, assigned)) assigned[0] = 0;
+    editor->count = tags_suggest(&editor->catalog, prefix, assigned, editor->suggestions, 8);
+    SendMessageW(list, WM_SETREDRAW, FALSE, 0); SendMessageW(list, LB_RESETCONTENT, 0, 0);
+    for (i = 0; i < editor->count; ++i) {
+        swprintf_s(label, 96, L"%s  (%u)", editor->suggestions[i]->name, editor->suggestions[i]->uses);
+        SendMessageW(list, LB_ADDSTRING, 0, (LPARAM)label);
+    }
+    SendMessageW(list, WM_SETREDRAW, TRUE, 0); InvalidateRect(list, NULL, TRUE);
+}
+
+static void accept_tag(HWND dialog, TagEditor *editor) {
+    HWND edit = GetDlgItem(dialog, IDC_TAGS), list = GetDlgItem(dialog, IDC_TAG_SUGGESTIONS);
+    int selection = (int)SendMessageW(list, LB_GETCURSEL, 0, 0);
+    wchar_t text[TAGS_CAP], insert[TAG_NAME_CAP + 3], *start;
+    if (selection < 0 || selection >= editor->count) return;
+    GetWindowTextW(edit, text, TAGS_CAP); start = wcsrchr(text, L';');
+    start = start ? start + 1 : text;
+    while (*start == L' ') ++start;
+    swprintf_s(insert, TAG_NAME_CAP + 3, L"%s; ", editor->suggestions[selection]->name);
+    SendMessageW(edit, EM_SETSEL, (WPARAM)(start - text), (LPARAM)wcslen(text));
+    SendMessageW(edit, EM_REPLACESEL, TRUE, (LPARAM)insert); SetFocus(edit);
+}
+
+static LRESULT CALLBACK tag_input_proc(HWND window, UINT message, WPARAM wparam, LPARAM lparam,
+                                      UINT_PTR subclass, DWORD_PTR data) {
+    TagEditor *editor = (TagEditor *)data;
+    HWND dialog = GetParent(window), list = GetDlgItem(dialog, IDC_TAG_SUGGESTIONS);
+    (void)subclass;
+    if (message == WM_GETDLGCODE && lparam) {
+        MSG *key = (MSG *)lparam;
+        if (key->wParam == VK_RETURN || key->wParam == VK_DOWN || key->wParam == VK_UP)
+            return DLGC_WANTMESSAGE;
+    }
+    if (message == WM_KEYDOWN) {
+        if (wparam == VK_RETURN) {
+            if (SendMessageW(list, LB_GETCURSEL, 0, 0) != LB_ERR) accept_tag(dialog, editor);
+            else SendMessageW(dialog, WM_COMMAND, IDOK, 0);
+            return 0;
+        }
+        if (wparam == VK_DOWN || wparam == VK_UP) {
+            int selected = (int)SendMessageW(list, LB_GETCURSEL, 0, 0);
+            selected += wparam == VK_DOWN ? 1 : -1;
+            if (editor->count) SendMessageW(list, LB_SETCURSEL, max(0, min(selected, editor->count - 1)), 0);
+            return 0;
+        }
+    }
+    if (message == WM_CHAR && wparam == L'\r') return 0;
+    return DefSubclassProc(window, message, wparam, lparam);
+}
+
+static INT_PTR CALLBACK tags_dialog(HWND dialog, UINT message, WPARAM wparam, LPARAM lparam) {
+    TagEditor *editor = (TagEditor *)GetWindowLongPtrW(dialog, DWLP_USER);
+    if (message == WM_INITDIALOG) {
+        TagStore store;
+        RECT owner, rect;
+        MONITORINFO monitor = {sizeof(monitor)};
+        editor = (TagEditor *)lparam;
+        SetWindowLongPtrW(dialog, DWLP_USER, lparam);
+        editor->background = CreateSolidBrush(RGB(244,238,226));
+        if (tags_store_load(directory, state_path, &store)) {
+            tags_catalog_build(&store, &editor->catalog); tags_store_free(&store);
+        }
+        SetDlgItemTextW(dialog, IDC_TAGS, editor->note->tags ? editor->note->tags : L"");
+        SendDlgItemMessageW(dialog, IDC_TAGS, EM_SETLIMITTEXT, TAGS_CAP - 1, 0);
+        SendDlgItemMessageW(dialog, IDC_TAGS, EM_SETSEL, (WPARAM)-1, (LPARAM)-1);
+        SetWindowSubclass(GetDlgItem(dialog, IDC_TAGS), tag_input_proc, 1, (DWORD_PTR)editor);
+        SetWindowSubclass(GetDlgItem(dialog, IDC_TAG_SUGGESTIONS), tag_input_proc, 1, (DWORD_PTR)editor);
+        suggest_tags(dialog, editor);
+        GetWindowRect(editor->note->window, &owner); GetWindowRect(dialog, &rect);
+        GetMonitorInfoW(MonitorFromWindow(editor->note->window, MONITOR_DEFAULTTONEAREST), &monitor);
+        SetWindowPos(dialog, HWND_TOPMOST,
+            max(monitor.rcWork.left, min(owner.left, monitor.rcWork.right - (rect.right - rect.left))),
+            max(monitor.rcWork.top, min(owner.top + bar_height(editor->note), monitor.rcWork.bottom - (rect.bottom - rect.top))),
+            0, 0, SWP_NOSIZE);
+        return TRUE;
+    }
+    if (!editor) return FALSE;
+    if (message == WM_CTLCOLORDLG || message == WM_CTLCOLORSTATIC ||
+        message == WM_CTLCOLOREDIT || message == WM_CTLCOLORLISTBOX) {
+        SetTextColor((HDC)wparam, RGB(58,52,43)); SetBkColor((HDC)wparam, RGB(244,238,226));
+        return (INT_PTR)editor->background;
+    }
+    if (message == WM_COMMAND) {
+        if (LOWORD(wparam) == IDC_TAGS && HIWORD(wparam) == EN_CHANGE) suggest_tags(dialog, editor);
+        if (LOWORD(wparam) == IDC_TAG_SUGGESTIONS && HIWORD(wparam) == LBN_DBLCLK) accept_tag(dialog, editor);
+        if (LOWORD(wparam) == IDOK) {
+            wchar_t text[TAGS_CAP];
+            GetDlgItemTextW(dialog, IDC_TAGS, text, TAGS_CAP);
+            if (!set_tags(editor->note, text)) {
+                report_error(dialog, L"Use up to 24 tags of 63 characters, separated by ;. Quotes, # and line breaks are not allowed in a name.");
+            } else if (!save_note(editor->note)) {
+                report_error(dialog, L"Tags could not be saved. Check that the notes folder is writable.");
+            } else EndDialog(dialog, IDOK);
+            return TRUE;
+        }
+        if (LOWORD(wparam) == IDCANCEL) { EndDialog(dialog, IDCANCEL); return TRUE; }
+    }
+    if (message == WM_CLOSE) { EndDialog(dialog, IDCANCEL); return TRUE; }
+    if (message == WM_DESTROY) {
+        tags_catalog_free(&editor->catalog);
+        if (editor->background) DeleteObject(editor->background);
+    }
+    return FALSE;
+}
+
 static BOOL apply_opacity(Note *note) {
     LONG_PTR style = GetWindowLongPtrW(note->window, GWL_EXSTYLE);
     if (note->opacity < 100) {
@@ -741,7 +900,7 @@ static BOOL apply_opacity(Note *note) {
 }
 
 static BOOL fit_dimensions(Note *note, int width, int height);
-static void browse_notes(void);
+static HWND browse_notes(void);
 
 static BOOL resize_note(Note *note, int size) {
     int width = scaled(note, NOTE_SIZES[size].cx), height = scaled(note, NOTE_SIZES[size].cy);
@@ -794,6 +953,10 @@ static void note_command(Note *note, UINT command) {
             report_error(note->window, L"The notes archive could not be opened.");
     } else if (command == CMD_TITLE) {
         DialogBoxParamW(instance, MAKEINTRESOURCEW(IDD_TITLE), note->window, title_dialog, (LPARAM)note);
+    } else if (command == CMD_TAGS) {
+        TagEditor editor = {0};
+        editor.note = note;
+        DialogBoxParamW(instance, MAKEINTRESOURCEW(IDD_TAGS), note->window, tags_dialog, (LPARAM)&editor);
     } else if (command >= CMD_OPACITY && command < CMD_OPACITY + 5) {
         int previous = note->opacity;
         note->opacity = OPACITIES[command - CMD_OPACITY];
@@ -821,7 +984,7 @@ static HMENU build_note_menu(const Note *note) {
         return NULL;
     }
     AppendMenuW(menu, MF_STRING, CMD_ARCHIVE, L"Open notes archive");
-    AppendMenuW(menu, MF_STRING, CMD_BROWSE, L"Browse notes...");
+    AppendMenuW(menu, MF_STRING, CMD_BROWSE, L"Browse notes");
     AppendMenuW(menu, MF_SEPARATOR, 0, NULL);
     for (i = 0; i < 5; ++i) {
         swprintf_s(label, 64, i ? L"%d%% opacity" : L"%d%% (opaque)", OPACITIES[i]);
@@ -832,10 +995,12 @@ static HMENU build_note_menu(const Note *note) {
     for (i = 0; i < 3; ++i)
         AppendMenuW(palette, MF_STRING | (current_palette == i ? MF_CHECKED : 0), CMD_PALETTE + i, PALETTE_NAMES[i]);
     AppendMenuW(menu, MF_POPUP, (UINT_PTR)opacity, L"Opacity");
-    AppendMenuW(menu, MF_STRING, CMD_TITLE, L"Edit title...");
+    AppendMenuW(menu, MF_STRING, CMD_TITLE, L"Edit title");
     AppendMenuW(menu, MF_POPUP, (UINT_PTR)size, L"Note size");
     AppendMenuW(menu, MF_SEPARATOR, 0, NULL);
     AppendMenuW(menu, MF_POPUP, (UINT_PTR)palette, L"New note palette");
+    AppendMenuW(menu, MF_SEPARATOR, 0, NULL);
+    AppendMenuW(menu, MF_STRING, CMD_TAGS, L"Tags\tCtrl+T");
     return menu;
 }
 
@@ -859,6 +1024,14 @@ static LRESULT CALLBACK note_proc(HWND window, UINT message, WPARAM wparam, LPAR
     }
     if (!note) return DefWindowProcW(window, message, wparam, lparam);
     switch (message) {
+    case WM_KEYDOWN:
+        if (wparam == 'T' && GetKeyState(VK_CONTROL) < 0 && GetKeyState(VK_MENU) >= 0) {
+            note_command(note, CMD_TAGS); return 0;
+        }
+        if (wparam == 'F' && GetKeyState(VK_CONTROL) < 0 && GetKeyState(VK_SHIFT) < 0) {
+            browse_notes(); archive_search(); return 0;
+        }
+        break;
     case WM_NCCALCSIZE: return 0;
     case WM_NCPAINT: return 0;
     case WM_NCACTIVATE: return TRUE;
@@ -1043,6 +1216,7 @@ static LRESULT CALLBACK note_proc(HWND window, UINT message, WPARAM wparam, LPAR
         if (note->document) note->document->lpVtbl->Release(note->document);
         free(note->accepted_text);
         free(note->title);
+        free(note->tags);
         SetWindowLongPtrW(window, GWLP_USERDATA, 0);
         free(note);
         break;
@@ -1100,7 +1274,7 @@ static Note *open_note(const wchar_t *id, int color, BOOL restore) {
         return NULL;
     }
     if (restore) {
-        if (!load_text(note)) { destroy_note(note); return NULL; }
+        if (!load_text(note) || !tags_read(state_path, note->id, &note->tags)) { destroy_note(note); return NULL; }
         note->persisted = TRUE;
         load_rich(note);
     }
@@ -1223,13 +1397,15 @@ static BOOL remove_note_files(const wchar_t *id) {
             if (files[i] != INVALID_HANDLE_VALUE)
                 SetFileInformationByHandle(files[i], FileDispositionInfo, &disposition, sizeof(disposition));
     }
-    for (i = 0; i < 2; ++i) if (files[i] != INVALID_HANDLE_VALUE) CloseHandle(files[i]);
+    for (i = 0; i < 2; ++i) if (files[i] && files[i] != INVALID_HANDLE_VALUE) {
+        CloseHandle(files[i]); files[i] = INVALID_HANDLE_VALUE;
+    }
     if (!ok) return FALSE;
     WritePrivateProfileStringW(id, NULL, NULL, state_path);
     for (i = 0; i < 2; ++i) {
         if (swprintf_s(path, PATH_CAP, L"%s\\%s.%s.tmp", directory, id, extensions[i]) >= 0) DeleteFileW(path);
     }
-    archive_changed(id, FALSE);
+    archive_changed(id, FALSE, TRUE);
     return TRUE;
 }
 
@@ -1240,10 +1416,79 @@ static BOOL delete_archived_note(const wchar_t *id) {
     return TRUE;
 }
 
-static void browse_notes(void) {
-    static const ArchiveActions actions = {save_all, open_archived_note, delete_archived_note};
-    if (!archive_show(controller, directory, state_path, &actions))
+static HWND browse_notes(void) {
+    static const ArchiveActions actions = {save_all, open_archived_note, delete_archived_note, choose_archive};
+    HWND browser = archive_show(controller, directory, state_path, &actions);
+    if (!browser)
         report_error(controller, L"The notes archive could not be opened.");
+    return browser;
+}
+
+static void load_preferences(void) {
+    next_color = setting(L"app", L"next_color", 0);
+    if (next_color < 0 || next_color >= COLOR_COUNT) next_color = 0;
+    current_palette = setting(L"app", L"palette", 0);
+    if (current_palette < 0 || current_palette > 2) current_palette = 0;
+}
+
+static BOOL switch_archive(const wchar_t *target, BOOL move, BOOL *copies_left) {
+    wchar_t selected[PATH_CAP];
+    if (!save_all()) return FALSE;
+    /* This cache-flush form returns zero even on success. Actual writes were
+       checked by save_all; migration validates every file handle separately. */
+    WritePrivateProfileStringW(NULL, NULL, NULL, state_path);
+    /* A successful transfer is durable before any window changes ownership. */
+    if (!location_change(location_config, directory, target, move, selected, copies_left)) return FALSE;
+    archive_close();
+    while (notes) destroy_note(notes);
+    wcscpy_s(directory, PATH_CAP, selected);
+    swprintf_s(state_path, PATH_CAP, L"%s\\notes.ini", directory);
+    load_preferences();
+    if (!restore_notes()) report_error(controller, L"Some notes could not be opened. Their original files are still in the selected archive.");
+    return TRUE;
+}
+
+static void choose_archive(HWND owner) {
+    const TASKDIALOG_BUTTON buttons[] = {
+        {100, L"Move current archive\nMove notes, formatting and tags to an empty folder."},
+        {101, L"Open or create archive\nUse another folder. Keep the current archive where it is."}
+    };
+    TASKDIALOGCONFIG dialog = {0};
+    WINDOWPLACEMENT placement = {sizeof(placement)};
+    wchar_t target[PATH_CAP];
+    int choice = 0;
+    BOOL copies_left, move;
+    HRESULT result;
+    dialog.cbSize = sizeof(dialog); dialog.hwndParent = owner;
+    dialog.dwFlags = TDF_USE_COMMAND_LINKS | TDF_ALLOW_DIALOG_CANCELLATION | TDF_SIZE_TO_CONTENT;
+    dialog.dwCommonButtons = TDCBF_CANCEL_BUTTON;
+    dialog.pszWindowTitle = L"Archive";
+    dialog.pszMainInstruction = L"Choose where your notes live";
+    dialog.pszContent = L"The selected folder becomes the default for future starts.";
+    dialog.pszFooter = directory;
+    dialog.cButtons = 2; dialog.pButtons = buttons;
+    if (FAILED(TaskDialogIndirect(&dialog, &choice, NULL, NULL)) || (choice != 100 && choice != 101)) return;
+    move = choice == 100;
+    result = location_pick(owner, directory, move, target);
+    if (result == HRESULT_FROM_WIN32(ERROR_CANCELLED)) return;
+    if (FAILED(result)) { report_error(owner, L"The folder chooser could not be opened."); return; }
+    GetWindowPlacement(owner, &placement);
+    SetCursor(LoadCursorW(NULL, IDC_WAIT));
+    if (!switch_archive(target, move, &copies_left)) {
+        DWORD error = GetLastError();
+        SetCursor(LoadCursorW(NULL, IDC_ARROW));
+        report_error(owner, error == ERROR_DIR_NOT_EMPTY ?
+            L"To move the archive, choose an empty folder. To use an existing archive, choose Open or create archive." :
+            error == ERROR_INVALID_PARAMETER ? L"Choose a separate folder, outside the current archive and its parent folders." :
+            L"The archive could not be changed. Check folder permissions and close programs using the files. The current archive has been kept.");
+        return;
+    }
+    SetCursor(LoadCursorW(NULL, IDC_ARROW));
+    {
+        HWND browser = browse_notes();
+        if (browser) SetWindowPlacement(browser, &placement);
+    }
+    if (copies_left) report_error(controller, L"The new archive is active. Some original files could not be removed and remain in the previous folder as backup copies.");
 }
 
 static LRESULT CALLBACK controller_proc(HWND window, UINT message, WPARAM wparam, LPARAM lparam) {
@@ -1275,13 +1520,20 @@ static LRESULT CALLBACK controller_proc(HWND window, UINT message, WPARAM wparam
         if (lparam == WM_RBUTTONUP || lparam == WM_CONTEXTMENU) {
             POINT point;
             HMENU menu = CreatePopupMenu();
+            UINT command;
             KillTimer(window, TRAY_CLICK_TIMER);
             tray_click = TRAY_IDLE;
+            if (!menu) return 0;
             GetCursorPos(&point);
+            AppendMenuW(menu, MF_STRING, CMD_BROWSE, L"Browse notes");
+            AppendMenuW(menu, MF_STRING, NEW_NOTE_MESSAGE, L"New note");
+            AppendMenuW(menu, MF_SEPARATOR, 0, NULL);
             AppendMenuW(menu, MF_STRING, EXIT_COMMAND, L"Exit");
             SetForegroundWindow(window);
-            if (TrackPopupMenu(menu, TPM_RETURNCMD | TPM_RIGHTBUTTON, point.x, point.y, 0, window, NULL) == EXIT_COMMAND)
-                PostMessageW(window, WM_CLOSE, 0, 0);
+            command = (UINT)TrackPopupMenu(menu, TPM_RETURNCMD | TPM_RIGHTBUTTON, point.x, point.y, 0, window, NULL);
+            if (command == CMD_BROWSE) browse_notes();
+            else if (command == NEW_NOTE_MESSAGE) PostMessageW(window, NEW_NOTE_MESSAGE, 0, 0);
+            else if (command == EXIT_COMMAND) PostMessageW(window, WM_CLOSE, 0, 0);
             PostMessageW(window, WM_NULL, 0, 0);
             DestroyMenu(menu);
         }
@@ -1318,7 +1570,7 @@ static LRESULT CALLBACK controller_proc(HWND window, UINT message, WPARAM wparam
 
 static BOOL register_classes(void) {
     WNDCLASSW cls = {0};
-    rich_edit = LoadLibraryW(L"Msftedit.dll");
+    rich_edit = LoadLibraryExW(L"Msftedit.dll", NULL, LOAD_LIBRARY_SEARCH_SYSTEM32);
     if (!rich_edit) return FALSE;
     cls.hInstance = instance; cls.hCursor = LoadCursorW(NULL, IDC_ARROW);
     cls.hIcon = app_icon; cls.lpszClassName = NOTE_CLASS;
@@ -1330,7 +1582,7 @@ static BOOL register_classes(void) {
 
 int WINAPI wWinMain(_In_ HINSTANCE app, _In_opt_ HINSTANCE previous, _In_ PWSTR command, _In_ int show) {
     HANDLE mutex;
-    wchar_t root[PATH_CAP], *slash;
+    wchar_t root[PATH_CAP], selected[PATH_CAP], *slash;
     DWORD length;
     MSG message;
     int result;
@@ -1353,22 +1605,23 @@ int WINAPI wWinMain(_In_ HINSTANCE app, _In_opt_ HINSTANCE previous, _In_ PWSTR 
     if (!slash) { CloseHandle(mutex); return 1; }
     wcscpy_s(slash + 1, PATH_CAP - (size_t)(slash + 1 - root), L"portable.flag");
     if (GetFileAttributesW(root) != INVALID_FILE_ATTRIBUTES) {
+        *slash = 0;
+        swprintf_s(location_config, PATH_CAP, L"%s\\archive.path", root);
         wcscpy_s(slash + 1, PATH_CAP - (size_t)(slash + 1 - root), L"notes");
+        *slash = L'\\';
     } else {
         wchar_t local[PATH_CAP];
         if (FAILED(SHGetFolderPathW(NULL, CSIDL_LOCAL_APPDATA, NULL, SHGFP_TYPE_CURRENT, local)) ||
             swprintf_s(root, PATH_CAP, L"%s\\PicoSlip", local) < 0 ||
-            (!CreateDirectoryW(root, NULL) && GetLastError() != ERROR_ALREADY_EXISTS) ||
-            wcscat_s(root, PATH_CAP, L"\\notes")) { CloseHandle(mutex); return 1; }
+            (!CreateDirectoryW(root, NULL) && GetLastError() != ERROR_ALREADY_EXISTS)) { CloseHandle(mutex); return 1; }
+        swprintf_s(location_config, PATH_CAP, L"%s\\archive.path", root);
+        if (wcscat_s(root, PATH_CAP, L"\\notes")) { CloseHandle(mutex); return 1; }
     }
-    if (!make_paths(root)) {
-        report_error(NULL, L"The notes folder could not be created. Check that the archive location is writable.");
+    if (!location_load(location_config, root, selected) || !make_paths(selected)) {
+        report_error(NULL, L"The notes archive is unavailable. Reconnect its drive or check the saved archive.path setting. Your archive location has not been changed.");
         CloseHandle(mutex); return 1;
     }
-    next_color = setting(L"app", L"next_color", 0);
-    if (next_color < 0 || next_color >= COLOR_COUNT) next_color = 0;
-    current_palette = setting(L"app", L"palette", 0);
-    if (current_palette < 0 || current_palette > 2) current_palette = 0;
+    load_preferences();
     app_icon = (HICON)LoadImageW(instance, MAKEINTRESOURCEW(IDI_APP), IMAGE_ICON, 32, 32, LR_DEFAULTCOLOR);
     if (!register_classes()) { CloseHandle(mutex); return 1; }
     controller = CreateWindowExW(WS_EX_TOOLWINDOW, APP_CLASS, L"PicoSlip", WS_OVERLAPPED,

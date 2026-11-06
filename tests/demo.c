@@ -92,8 +92,11 @@ static void capture(const wchar_t *path) {
         CURSORINFO cursor={sizeof(cursor)};
         ICONINFO icon;
         if (GetCursorInfo(&cursor) && (cursor.flags&CURSOR_SHOWING) && GetIconInfo(cursor.hCursor,&icon)) {
-            DrawIconEx(memory,cursor.ptScreenPos.x-rect.left-(int)icon.xHotspot,
-                       cursor.ptScreenPos.y-rect.top-(int)icon.yHotspot,cursor.hCursor,0,0,0,NULL,DI_NORMAL);
+            /* Monochrome XOR cursors do not survive bitmap encoding reliably.
+               The actual RichEdit caret already marks the insertion point. */
+            if (icon.hbmColor && cursor.hCursor != LoadCursorW(NULL, IDC_IBEAM))
+                DrawIconEx(memory,cursor.ptScreenPos.x-rect.left-(int)icon.xHotspot,
+                           cursor.ptScreenPos.y-rect.top-(int)icon.yHotspot,cursor.hCursor,0,0,0,NULL,DI_NORMAL);
             if (icon.hbmColor) DeleteObject(icon.hbmColor);
             if (icon.hbmMask) DeleteObject(icon.hbmMask);
         }
@@ -191,6 +194,8 @@ static void populate_demo_archive(void) {
                 write_setting(fixtures[i].id,L"size",4) &&
                 write_setting(fixtures[i].id,L"x",bounds.left+315) &&
                 write_setting(fixtures[i].id,L"y",bounds.top+490),"configure isolated dated previews");
+        require(tags_write(state_path, fixtures[i].id, i % 2 ? L"ideas;personal" : L"plans;work"),
+                "tag the demonstration archive");
     }
 }
 
@@ -204,6 +209,14 @@ static void capture_frame(void) {
 static void set_caption(const wchar_t *text) {
     caption=text;
     InvalidateRect(backdrop,NULL,FALSE); UpdateWindow(backdrop);
+}
+
+static void set_background(const wchar_t *path) {
+    HBITMAP next = (HBITMAP)LoadImageW(NULL, path, IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
+    require(next && GetObjectW(next, sizeof(photo_info), &photo_info), "load the local artwork for this capture");
+    if (photo) DeleteObject(photo);
+    photo = next;
+    if (backdrop) RedrawWindow(backdrop, NULL, NULL, RDW_INVALIDATE | RDW_UPDATENOW);
 }
 
 static void begin_recording(const wchar_t *folder) {
@@ -434,6 +447,7 @@ static void record_postits(void) {
     FINDTEXTEXW todo={{0,-1},L"\x2610 ",{0,0}};
     RECT bounds;
     begin_recording(L"build\\notes-gif");
+    set_background(L"build\\notes-gif-background.bmp");
     current_palette=0; next_color=0;
     set_caption(L"Create a note: Ctrl + Alt + +");
     note=create_live_note(230,200);
@@ -523,6 +537,22 @@ static void CALLBACK animate_delete(HWND window,UINT message,UINT_PTR timer,DWOR
     require(delete_timer!=0,"continue the native delete-menu demonstration");
 }
 
+static BOOL archive_choices_recorded;
+static void CALLBACK record_archive_choices(HWND window, UINT message, UINT_PTR timer, DWORD tick) {
+    HWND dialog = thread_window(L"#32770", L"Archive");
+    RECT bounds, rect;
+    (void)window; (void)message; (void)tick;
+    if (!dialog) return;
+    KillTimer(NULL, timer);
+    require(GetWindow(dialog, GW_OWNER) == thread_window(L"PicoSlip.Archive", NULL),
+            "record only the private archive chooser");
+    GetWindowRect(backdrop, &bounds); GetWindowRect(dialog, &rect);
+    SetWindowPos(dialog, HWND_TOPMOST, bounds.left + (1000 - (rect.right - rect.left)) / 2,
+                 bounds.top + (900 - (rect.bottom - rect.top)) / 2, 0, 0, SWP_NOSIZE | SWP_NOACTIVATE);
+    frame_delay = 260; capture_frame(); archive_choices_recorded = TRUE;
+    SendMessageW(dialog, TDM_CLICK_BUTTON, IDCANCEL, 0);
+}
+
 static void record_archive_browser(void) {
     HWND window,tree,list;
     RECT tile={0},bounds;
@@ -532,9 +562,7 @@ static void record_archive_browser(void) {
     INPUT right_click[2]={{0},{0}};
     wchar_t preview[128],path[PATH_CAP];
     begin_recording(L"build\\browser-gif");
-    DeleteObject(photo);
-    photo=(HBITMAP)LoadImageW(NULL,L"build\\browser-background.bmp",IMAGE_BITMAP,0,0,LR_LOADFROMFILE|LR_CREATEDIBSECTION);
-    require(photo && GetObjectW(photo,sizeof(photo_info),&photo_info),"load the requested browser background");
+    set_background(L"build\\browser-background.bmp");
     set_caption(L"Right-click the bar: Browse notes");
     note=demo_note(0,0,4,230,200,L"Welcome to the machine",WELCOME_BODY,100);
     populate_demo_archive();
@@ -545,6 +573,31 @@ static void record_archive_browser(void) {
     require(tree && list,"record the actual date tree and virtual mosaic");
     set_caption(L"All notes in a mosaic, grouped by date");
     frame_delay=150; capture_frame();
+    set_caption(L"Minimize to the tray beside the clock");
+    SendMessageW(window, WM_SYSCOMMAND, SC_MINIMIZE, 0); pump(150);
+    require(!IsWindowVisible(window), "the real archive hides when minimized");
+    frame_delay=120; capture_frame();
+    set_caption(L"Double-click PicoSlip's tray icon to return");
+    SendMessageW(controller, TRAY_MESSAGE, 1, WM_LBUTTONDBLCLK);
+    SendMessageW(controller, TRAY_MESSAGE, 1, WM_LBUTTONUP); pump(150);
+    require(IsWindowVisible(window), "tray activation restores the existing archive");
+    frame_delay=120; capture_frame();
+    set_caption(L"Archive: move your notes or choose another folder");
+    GetWindowRect(GetDlgItem(window, 9), &tile);
+    move_pointer((tile.left + tile.right) / 2, (tile.top + tile.bottom) / 2);
+    frame_delay=100; capture_frame();
+    require(SetTimer(NULL, 0, 120, record_archive_choices) != 0, "record the two archive location choices");
+    SendMessageW(GetDlgItem(window, 9), BM_CLICK, 0, 0);
+    require(archive_choices_recorded, "the native archive chooser is included in the walkthrough");
+    set_caption(L"Tags show how many notes share a subject");
+    SendMessageW(GetDlgItem(window, 7), BM_CLICK, 0, 0); pump(150);
+    frame_delay=150; capture_frame();
+    set_caption(L"Search text and tags together");
+    SetWindowTextW(GetDlgItem(window, 3), L"#work"); wait_search_ui(window);
+    require(ListView_GetItemCount(list)==5, "the demonstration search shows five work notes");
+    frame_delay=160; capture_frame();
+    SetWindowTextW(GetDlgItem(window, 3), L"");
+    SendMessageW(GetDlgItem(window, 8), BM_CLICK, 0, 0); pump(150);
     set_caption(L"Choose a year, a month, then a day");
     select_demo_date(tree,20260000,TRUE);
     select_demo_date(tree,20260400,TRUE);
@@ -599,7 +652,7 @@ static void record_archive_browser(void) {
     require(!wcscmp(preview,L"Winter break"),"other archived dates remain intact");
     frame_delay=160; capture_frame();
     end_recording();
-    puts("Recorded square browser demo: date filters, reopening, live updates and native multi-delete.");
+    puts("Recorded square browser demo: tray, archive locations, tags, search, date filters, live updates and multi-delete.");
 }
 
 int main(int argc,char **argv) {
@@ -609,7 +662,8 @@ int main(int argc,char **argv) {
     DWORD root_length;
     POINT previous_cursor;
     BOOL browser_only=argc==2 && !strcmp(argv[1],"--browser-only");
-    BOOL gifs_only=browser_only || (argc==2 && !strcmp(argv[1],"--gifs-only"));
+    BOOL notes_only=argc==2 && !strcmp(argv[1],"--notes-only");
+    BOOL gifs_only=browser_only || notes_only || (argc==2 && !strcmp(argv[1],"--gifs-only"));
     instance=GetModuleHandleW(NULL); testing=TRUE;
     SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
     require(GetTempPathW(PATH_CAP,temporary)!=0,"locate private demonstration folder");
@@ -623,8 +677,7 @@ int main(int argc,char **argv) {
     wcscpy_s(root,PATH_CAP,resolved);
     require(make_paths(root),"create private demonstration archive");
     app_icon=(HICON)LoadImageW(instance,MAKEINTRESOURCEW(IDI_APP),IMAGE_ICON,32,32,0);
-    photo=(HBITMAP)LoadImageW(NULL,L"build\\screenshot-background.bmp",IMAGE_BITMAP,0,0,LR_LOADFROMFILE|LR_CREATEDIBSECTION);
-    require(photo && GetObjectW(photo,sizeof(photo_info),&photo_info),"load requested screenshot photo");
+    set_background(L"build\\notes-background.bmp");
     caption_font=CreateFontW(-24,0,0,0,FW_SEMIBOLD,FALSE,FALSE,FALSE,DEFAULT_CHARSET,
         OUT_DEFAULT_PRECIS,CLIP_DEFAULT_PRECIS,CLEARTYPE_QUALITY,FIXED_PITCH|FF_MODERN,L"Consolas");
     require(caption_font!=NULL,"create the recording caption font");
@@ -645,6 +698,7 @@ int main(int argc,char **argv) {
     collapsed=demo_note(0,3,1,70,470,L"Later",L"Ideas for another day.",100);
     toggle_note(collapsed);
     capture(L"build\\notes.bmp"); clear_scene();
+    set_background(L"build\\palettes-background.bmp");
     demo_note(0,1,0,35,35,L"Pastel",L"Pick up flowers\r\nDinner at 7:30",100);
     demo_note(1,0,0,370,35,L"White",L"Read chapter 4\r\nEmail Alex",100);
     demo_note(2,2,0,705,35,L"Soft yellow",L"Train at 8:15\r\nPack charger",100);
@@ -654,7 +708,7 @@ int main(int argc,char **argv) {
     capture(L"build\\palettes.bmp"); clear_scene();
 animations:
     if (!browser_only) record_postits();
-    record_archive_browser();
+    if (!notes_only) record_archive_browser();
     SetCursorPos(previous_cursor.x,previous_cursor.y);
     clear_scene();
     DestroyWindow(controller);
@@ -662,6 +716,7 @@ animations:
     DeleteObject(photo); DeleteObject(caption_font);
     clear_demo_archive();
     require(RemoveDirectoryW(root),"remove private demo folder");
-    puts(browser_only ? "Captured the square browser walkthrough." : "Captured the two square walkthroughs.");
+    puts(browser_only ? "Captured the square browser walkthrough." :
+         notes_only ? "Captured the square post-it walkthrough." : "Captured the two square walkthroughs.");
     return 0;
 }

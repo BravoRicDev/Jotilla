@@ -6,6 +6,7 @@
 #include <windows.h>
 #include <stdlib.h>
 #include <commctrl.h>
+#include "../src/search.h"
 
 static unsigned metadata_writes, metric_queries, graphic_creations, heap_requests;
 /* Physical input checks are opt-in so ordinary runs do not type on the user's desktop. */
@@ -109,10 +110,11 @@ static void tray_checks(void) {
     destroy_note(notes);
 
     ShowWindow(browser, SW_MINIMIZE);
+    require(!IsWindowVisible(browser), "minimized browser is hidden in the notification area");
     SendMessageW(controller, TRAY_MESSAGE, 1, WM_LBUTTONDOWN);
     SendMessageW(controller, TRAY_MESSAGE, 1, WM_LBUTTONUP);
     SendMessageW(controller, TRAY_MESSAGE, 1, WM_LBUTTONDBLCLK);
-    require(thread_window(L"PicoSlip.Archive", NULL) == browser && !IsIconic(browser),
+    require(thread_window(L"PicoSlip.Archive", NULL) == browser && IsWindowVisible(browser) && !IsIconic(browser),
             "another double tray click restores and reuses the browser");
     /* Opening a window can divert the final release away from the tray icon. */
     SendMessageW(controller, TRAY_MESSAGE, 1, WM_LBUTTONDOWN);
@@ -120,6 +122,13 @@ static void tray_checks(void) {
     pump(wait);
     require(note_count() == count + 1, "a missing double-click release cannot swallow the next single click");
     destroy_note(notes);
+    ShowWindow(browser, SW_MAXIMIZE);
+    browse_notes();
+    require(IsZoomed(browser), "opening the visible browser preserves its maximized placement");
+    SendMessageW(browser, WM_SYSCOMMAND, SC_MINIMIZE, 0);
+    require(!IsWindowVisible(browser), "system minimize hides a maximized browser too");
+    browse_notes();
+    require(IsWindowVisible(browser) && IsZoomed(browser), "tray restore retains maximized placement");
     archive_close();
     puts("PASS: tray single/double clicks, cancelled timers, browser reuse and subsequent clicks.");
 }
@@ -292,6 +301,39 @@ static void efficiency_checks(BOOL enforce) {
     SendMessageW(note->window, WM_CLOSE, 0, 0);
 }
 
+static void border_checks(void) {
+    Note *note = new_note();
+    int collapsed, hover;
+    require(note != NULL, "create border check note");
+    for (collapsed = 0; collapsed < 2; ++collapsed) {
+        for (hover = 0; hover < 3; ++hover) {
+            HDC dc;
+            RECT rect;
+            int bar = bar_height(note), x;
+            COLORREF bar_color = hover == 2 ? RGB(235,161,151) :
+                RGB(GetRValue(note_color(note)) * 94 / 100, GetGValue(note_color(note)) * 94 / 100,
+                    GetBValue(note_color(note)) * 94 / 100);
+            note->hover = hover;
+            ShowWindow(note->window, SW_SHOWNOACTIVATE);
+            RedrawWindow(note->window, NULL, NULL, RDW_INVALIDATE | RDW_UPDATENOW);
+            GetClientRect(note->window, &rect);
+            dc = GetDC(note->window); x = rect.right - 8;
+            require(GetPixel(dc, x, 0) == RGB(0,0,0) && GetPixel(dc, x, 1) == bar_color,
+                    "top outline is exactly one black pixel, including hover");
+            require(GetPixel(dc, 0, bar / 2) == RGB(0,0,0) && GetPixel(dc, 1, bar / 2) != RGB(0,0,0) &&
+                    GetPixel(dc, rect.right - 2, bar / 2) != RGB(0,0,0) &&
+                    GetPixel(dc, rect.right - 1, bar / 2) == RGB(0,0,0), "both outer edges stay black");
+            require(GetPixel(dc, x, bar - 2) == bar_color && GetPixel(dc, x, bar - 1) == RGB(0,0,0) &&
+                    GetPixel(dc, x, rect.bottom - 1) == RGB(0,0,0), "title bar and note bottom are outlined");
+            if (!collapsed) require(GetPixel(dc, x, bar) == note_color(note), "divider leaves the body intact");
+            ReleaseDC(note->window, dc);
+        }
+        if (!collapsed) toggle_note(note);
+    }
+    destroy_note(note);
+    puts("PASS: one-pixel black outlines on expanded, collapsed and hovered notes.");
+}
+
 static void serialization_checks(void) {
     Note *note = new_note();
     wchar_t body[128];
@@ -371,7 +413,7 @@ static void options_checks(void) {
     require(swscanf_s(note->id,L"note-%4u-%2u-%2u_%2u-%2u-%2u-%3u-%u",&year,&month,&day,&hour,&minute,&second,&millisecond,&suffix)==8,
             "archive names expose sortable creation date and time");
     menu=build_note_menu(note);
-    require(menu && GetMenuItemCount(menu)==8 && GetMenuItemID(menu,0)==CMD_ARCHIVE && GetMenuItemID(menu,1)==CMD_BROWSE &&
+    require(menu && GetMenuItemCount(menu)==10 && GetMenuItemID(menu,9)==CMD_TAGS && GetMenuItemID(menu,0)==CMD_ARCHIVE && GetMenuItemID(menu,1)==CMD_BROWSE &&
             GetMenuItemID(menu,4)==CMD_TITLE && GetMenuItemCount(GetSubMenu(menu,3))==5 &&
             GetMenuItemCount(GetSubMenu(menu,5))==5 && GetMenuItemCount(GetSubMenu(menu,7))==3,"context menu exposes all requested choices");
     DestroyMenu(menu);
@@ -997,7 +1039,7 @@ static void archive_checks(void) {
     archive_close();
     {
         wchar_t empty[PATH_CAP];
-        const ArchiveActions actions={save_all,open_archived_note,delete_archived_note};
+        const ArchiveActions actions={save_all,open_archived_note,delete_archived_note,choose_archive};
         swprintf_s(empty,PATH_CAP,L"%s\\empty",directory);
         require(CreateDirectoryW(empty,NULL),"create an empty archive fixture");
         window=archive_show(controller,empty,state_path,&actions);
@@ -1005,6 +1047,397 @@ static void archive_checks(void) {
         archive_close(); require(RemoveDirectoryW(empty),"remove empty archive fixture");
     }
     puts("PASS: live archive previews, date-tree reconciliation, stable selection, Unicode, reopening and safe multi-delete.");
+}
+
+static SearchResult *wait_search(SearchWorker *worker) {
+    ULONGLONG deadline = GetTickCount64() + 10000;
+    SearchResult *result;
+    do {
+        result = search_take(worker);
+        if (result) return result;
+        pump(5);
+    } while (GetTickCount64() < deadline);
+    require(FALSE, "search worker completes without blocking the UI"); return NULL;
+}
+
+static void wait_search_ui(HWND window) {
+    ULONGLONG deadline = GetTickCount64() + 10000;
+    wchar_t status[128];
+    do {
+        pump(10); GetWindowTextW(window, status, 128);
+        if (!wcsstr(status, L"Searching")) return;
+    } while (GetTickCount64() < deadline);
+    require(FALSE, "archive search completes");
+}
+
+static HTREEITEM tag_label(HWND tree, const wchar_t *label) {
+    HTREEITEM node = TreeView_GetChild(tree, TreeView_GetRoot(tree));
+    while (node) {
+        wchar_t text[128];
+        TVITEMW item = {0};
+        item.mask = TVIF_TEXT; item.hItem = node; item.pszText = text; item.cchTextMax = 128;
+        require(TreeView_GetItem(tree, &item) && !wcschr(text, L'#'), "sidebar tag labels contain names and counts without hash prefixes");
+        if (!wcscmp(text, label)) return node;
+        node = TreeView_GetNextSibling(tree, node);
+    }
+    return NULL;
+}
+
+static void sidebar_checks(HWND window, Note *note) {
+    HWND dates = GetDlgItem(window, 1), list = GetDlgItem(window, 2), edit = GetDlgItem(window, 3);
+    HWND tags = GetDlgItem(window, 6), tag_button = GetDlgItem(window, 7), date_button = GetDlgItem(window, 8);
+    HTREEITEM month = find_date(dates, TreeView_GetRoot(dates), 20310200), work;
+    BYTE previous[256], keys[256];
+    RECT button, tree, card, bounds;
+    int dpi = (int)GetDpiForWindow(window), i;
+    Note view = {0};
+    require(tags && tag_button && date_button && !GetDlgItem(window, 5), "sidebar mode selectors replace the search description");
+    SetWindowTextW(edit, L""); TreeView_SelectItem(dates, month);
+    require(ListView_GetItemCount(list) == 2, "remember a date range before changing sidebar mode");
+    SendMessageW(tag_button, BM_CLICK, 0, 0);
+    require(IsWindowVisible(tags) && !IsWindowVisible(dates), "Tags displays its native tag list");
+    work = tag_label(tags, L"work (2)");
+    require(work && tag_label(tags, L"café (1)") && tag_label(tags, L"project alpha (1)"),
+            "sidebar counts include open and closed notes across all dates");
+    TreeView_SelectItem(tags, work); wait_search_ui(window);
+    require(ListView_GetItemCount(list) == 2 && GetWindowTextLengthW(edit) == 0, "tag selection filters without changing the query field");
+    SetWindowTextW(edit, L"budget"); wait_search_ui(window);
+    require(ListView_GetItemCount(list) == 1, "sidebar tag and free text intersect");
+    {
+        HANDLE metadata = CreateFileW(state_path, GENERIC_READ, 0, NULL, OPEN_EXISTING, 0, NULL);
+        require(metadata != INVALID_HANDLE_VALUE, "lock cached tag metadata against rereading");
+        replace_text(note, L"Updated budget for the November release.");
+        require(save_note(note), "body-only autosave does not touch tag metadata");
+        wait_search_ui(window);
+        {
+            wchar_t title[192]; GetWindowTextW(window, title, 192);
+            require(!wcscmp(title, L"Notes archive") && ListView_GetItemCount(list) == 1 &&
+                    TreeView_GetSelection(tags) == work,
+                    "body updates reuse cached tags and preserve the sidebar without reopening metadata");
+        }
+        CloseHandle(metadata);
+    }
+    require(set_tags(note, L"café") && save_note(note), "change a sidebar tag's membership");
+    wait_search_ui(window);
+    require(tag_label(tags, L"work (1)") && ListView_GetItemCount(list) == 0, "sidebar counts and active results update after a tag save");
+    require(set_tags(note, L"café;work") && save_note(note), "restore sidebar tag membership");
+    wait_search_ui(window);
+    require(TreeView_GetSelection(tags) == tag_label(tags, L"work (2)") && ListView_GetItemCount(list) == 1,
+            "rebuilding tag counts preserves selection by name");
+    SetWindowTextW(edit, L""); wait_search_ui(window);
+    SendMessageW(date_button, BM_CLICK, 0, 0);
+    require(IsWindowVisible(dates) && !IsWindowVisible(tags) && TreeView_GetSelection(dates) == month &&
+            ListView_GetItemCount(list) == 2, "Date restores the same date nodes and selection");
+    SendMessageW(tag_button, BM_CLICK, 0, 0); wait_search_ui(window);
+    require(TreeView_GetSelection(tags) == tag_label(tags, L"work (2)") && ListView_GetItemCount(list) == 2,
+            "returning to Tags restores its independent filter");
+    GetKeyboardState(previous); memcpy(keys, previous, sizeof(keys)); keys[VK_CONTROL] = 0x80;
+    SetKeyboardState(keys);
+    {
+        HWND controls[] = {window, tags, tag_button, date_button, edit, GetDlgItem(window, 4), list, GetDlgItem(window, 9)};
+        for (i = 0; i < (int)(sizeof(controls) / sizeof(controls[0])); ++i) {
+            SetFocus(controls[i]); SendMessageW(controls[i], WM_KEYDOWN, 'F', 0);
+            require(GetFocus() == edit, "Ctrl+F focuses search from every archive surface");
+        }
+    }
+    SetKeyboardState(previous);
+    GetWindowRect(tag_button, &button); GetWindowRect(tags, &tree);
+    require(tree.top - button.bottom >= MulDiv(8, dpi, 96), "sidebar has deliberate spacing below its selectors");
+    {
+        HDC dc = GetDC(list), memory = CreateCompatibleDC(dc);
+        HBITMAP bitmap;
+        HGDIOBJ old;
+        GetClientRect(list, &bounds); ListView_GetItemRect(list, 0, &card, LVIR_ICON);
+        bitmap = CreateCompatibleBitmap(dc, bounds.right, bounds.bottom); old = SelectObject(memory, bitmap);
+        require(bitmap && PrintWindow(list, memory, PW_CLIENTONLY), "render tag footers");
+        {
+            int x = card.left + MulDiv(4, dpi, 96), y = card.top + MulDiv(4, dpi, 96);
+            require(GetPixel(memory, x, y + 10) != RGB(0,0,0) &&
+                    GetPixel(memory, x + 1, y + 10) != RGB(0,0,0) &&
+                    GetPixel(memory, x + 10, y + MulDiv(28, dpi, 96) - 1) != RGB(0,0,0),
+                    "archive previews omit the note's black outline and divider");
+        }
+        require(GetPixel(memory, card.left + MulDiv(14, dpi, 96), card.bottom - MulDiv(22, dpi, 96)) == RGB(0,0,0),
+                "tag footer has a vertical black marker");
+        SelectObject(memory, old); DeleteObject(bitmap); DeleteDC(memory); ReleaseDC(list, dc);
+    }
+    view.window = window; screenshot(&view, L"build\\sidebar-tags.bmp"); ShowWindow(window, SW_SHOWNORMAL);
+    SetWindowTextW(edit, L"budget"); wait_search_ui(window);
+    {
+        NMITEMACTIVATE click = {0};
+        wchar_t query[32];
+        ListView_GetItemRect(list, 0, &card, LVIR_ICON);
+        click.hdr.hwndFrom = list; click.hdr.code = NM_CLICK; click.iItem = 0;
+        click.ptAction.x = card.left + MulDiv(26, dpi, 96); click.ptAction.y = card.bottom - MulDiv(22, dpi, 96);
+        SendMessageW(window, WM_NOTIFY, 2, (LPARAM)&click); wait_search_ui(window);
+        GetWindowTextW(edit, query, 32);
+        require(TreeView_GetSelection(tags) == tag_label(tags, L"café (1)") && !wcscmp(query, L"budget") &&
+                ListView_GetItemCount(list) == 1, "plain tag footer hit testing selects its sidebar filter and preserves free text");
+    }
+    SetWindowTextW(edit, L""); wait_search_ui(window);
+    {
+        RECT original;
+        GetWindowRect(window, &original);
+        SetWindowPos(window, NULL, 0, 0, MulDiv(520, dpi, 96), MulDiv(360, dpi, 96), SWP_NOMOVE | SWP_NOZORDER);
+        screenshot(&view, L"build\\sidebar-compact.bmp"); ShowWindow(window, SW_SHOWNORMAL);
+        SetWindowPos(window, NULL, 0, 0, original.right - original.left, original.bottom - original.top, SWP_NOMOVE | SWP_NOZORDER);
+    }
+    require(set_tags(note, L"café;temporary;work") && save_note(note), "create a single-use sidebar tag");
+    pump(30); TreeView_SelectItem(tags, tag_label(tags, L"temporary (1)")); wait_search_ui(window);
+    require(ListView_GetItemCount(list) == 1, "single-use tag selects its note");
+    require(set_tags(note, L"café;work") && save_note(note), "remove the final use of the selected tag");
+    wait_search_ui(window);
+    require(!tag_label(tags, L"temporary (1)") && TreeView_GetSelection(tags) == TreeView_GetRoot(tags),
+            "removing the last use prunes the tag and returns to All notes");
+    SendMessageW(date_button, BM_CLICK, 0, 0);
+    TreeView_SelectItem(dates, TreeView_GetRoot(dates));
+    GetKeyboardState(previous); memcpy(keys, previous, sizeof(keys)); keys[VK_CONTROL] = 0x80; SetKeyboardState(keys);
+    SetFocus(dates); SendMessageW(dates, WM_KEYDOWN, 'F', 0);
+    require(GetFocus() == edit, "Ctrl+F also works in date mode"); SetKeyboardState(previous);
+    view.window = window; screenshot(&view, L"build\\sidebar-date.bmp"); ShowWindow(window, SW_SHOWNORMAL);
+}
+
+static void CALLBACK fill_tags_dialog(HWND unused, UINT message, UINT_PTR timer, DWORD tick) {
+    HWND dialog = thread_window(L"#32770", L"Edit tags"), edit, list;
+    wchar_t text[TAGS_CAP];
+    Note view = {0};
+    (void)unused; (void)message; (void)tick;
+    if (!dialog) return;
+    KillTimer(NULL, timer);
+    edit = GetDlgItem(dialog, IDC_TAGS); list = GetDlgItem(dialog, IDC_TAG_SUGGESTIONS);
+    SetWindowTextW(edit, L"wo");
+    require(SendMessageW(list, LB_GETCOUNT, 0, 0) >= 1, "tag editor suggests names already used in the archive");
+    SendMessageW(edit, WM_KEYDOWN, VK_DOWN, 0); SendMessageW(edit, WM_KEYDOWN, VK_RETURN, 0);
+    GetWindowTextW(edit, text, TAGS_CAP);
+    require(!wcscmp(text, L"work; "), "Down and Enter complete a tag without closing the editor");
+    SetWindowTextW(edit, L"work; urgent; café");
+    view.window = dialog; screenshot(&view, L"build\\tags.bmp");
+    SendMessageW(dialog, WM_COMMAND, IDOK, 0);
+}
+
+static void tags_search_checks(void) {
+    Note *note = new_note();
+    wchar_t normalized[TAGS_CAP], id[80], path[PATH_CAP], *saved;
+    const wchar_t *long_id = L"note-2031-02-03_10-00-00-000-001";
+    const wchar_t *other_id = L"note-2031-02-04_10-00-00-000-001";
+    TagStore store;
+    TagCatalog catalog;
+    const TagCount *suggestions[8];
+    SearchWorker *worker;
+    SearchItem items[3] = {0};
+    SearchResult *result;
+    char *long_text = (char *)malloc(20001);
+    HANDLE lock;
+    HWND window, edit, list, tree;
+    int i;
+    BYTE previous[256], keyboard[256];
+    require(note && long_text, "allocate tag/search fixtures");
+    wcscpy_s(id, 80, note->id);
+    replace_text(note, L"Budget for the November release.");
+    require(save_note(note), "save tag/search note");
+    require(tags_normalize(L" Work; CAFÉ; cafe\x0301; work; ", normalized) && !wcscmp(normalized, L"café;work"),
+            "tags normalize composed/decomposed Unicode, case, whitespace, duplicates and order");
+    {
+        wchar_t repeated[TAGS_CAP] = L"", name[16];
+        for (i = 0; i < TAGS_MAX; ++i) {
+            swprintf_s(name, 16, L"tag%02d;", i); wcscat_s(repeated, TAGS_CAP, name);
+        }
+        wcscat_s(repeated, TAGS_CAP, L"TAG00;tag23");
+        require(tags_normalize(repeated, normalized), "duplicate names do not consume the 24-tag limit");
+        wcscat_s(repeated, TAGS_CAP, L";another");
+        require(!tags_normalize(repeated, normalized), "a 25th distinct tag is still rejected");
+    }
+    require(!tags_normalize(L"bad\"tag", normalized), "tag names reject query delimiters");
+    require(set_tags(note, L"Work; Café") && save_note(note), "save Unicode tags and migrate metadata");
+    require(tags_read(state_path, note->id, &saved) && saved && !wcscmp(saved, L"café;work"), "Unicode tags round trip");
+    free(saved);
+    require(setting(note->id, L"open", -1) == TRUE && setting(note->id, L"color", -1) == note->color,
+            "Unicode INI migration preserves existing note layout");
+    {
+        wchar_t bom = 0;
+        DWORD read;
+        lock = CreateFileW(state_path, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
+        require(lock != INVALID_HANDLE_VALUE && ReadFile(lock, &bom, 2, &read, NULL) && read == 2 && bom == 0xfeff,
+                "metadata has an explicit UTF-16 BOM");
+        require(set_tags(note, L"work; urgent") && !save_note(note) && note->tags_dirty,
+                "failed tag writes retain dirty metadata for retry");
+        CloseHandle(lock);
+        require(save_note(note) && !note->tags_dirty, "tag writes retry successfully");
+    }
+    lock = CreateFileW(note->path, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
+    require(lock != INVALID_HANDLE_VALUE && set_tags(note, L"work; café") && save_note(note),
+            "changing tags never rewrites the locked TXT or RTF");
+    CloseHandle(lock);
+    memset(long_text, 'x', 20000); long_text[20000] = 0;
+    memcpy(long_text, "#Long document\r\n", 16);
+    memcpy(long_text + 8185, "cross-boundary CAFÉ finish", strlen("cross-boundary CAFÉ finish"));
+    memcpy(long_text + 16383, "è😀 needle", strlen("è😀 needle"));
+    archive_fixture(long_id, long_text); free(long_text);
+    archive_fixture(other_id, "#Other\r\nUnrelated travel plans.");
+    require(tags_write(state_path, long_id, L"project alpha;work"), "save tags on a closed archive note");
+    require(tags_store_load(directory, state_path, &store) && tags_catalog_build(&store, &catalog), "build derived tag catalog");
+    require(tags_suggest(&catalog, L"wo", L"", suggestions, 8) == 1 &&
+            !wcscmp(suggestions[0]->name, L"work") && suggestions[0]->uses == 2, "suggestions count notes, including closed notes");
+    require(tags_suggest(&catalog, L"wo", L"work", suggestions, 8) == 0, "suggestions exclude assigned tags");
+    tags_catalog_free(&catalog); tags_store_free(&store);
+    require(SetTimer(NULL, 0, 40, fill_tags_dialog) != 0, "schedule native tag editor input");
+    GetKeyboardState(previous); memcpy(keyboard, previous, sizeof(keyboard)); keyboard[VK_CONTROL] = 0x80;
+    require(SetKeyboardState(keyboard), "set Ctrl modifier for tag shortcut");
+    SendMessageW(note->edit, WM_KEYDOWN, 'T', 0); SetKeyboardState(previous);
+    require(note->tags && !wcscmp(note->tags, L"café;urgent;work"), "Ctrl+T opens and saves the real tag editor");
+    worker = search_create(controller, WM_APP + 99);
+    require(worker != NULL, "create one on-demand search worker");
+    wcscpy_s(items[0].id, 80, note->id); items[0].index = 0;
+    wcscpy_s(items[1].id, 80, long_id); items[1].index = 1;
+    wcscpy_s(items[2].id, 80, other_id); items[2].index = 2;
+    require(search_submit(worker, directory, state_path, L"#WORK", items, 3), "submit tag-only search");
+    result = wait_search(worker);
+    require(!result->error && result->count == 2 && result->files_read == 0 && result->bytes_read == 0,
+            "exact tag filtering reads no note bodies"); search_result_free(result);
+    require(search_submit_filtered(worker, directory, state_path, L"", L"work", items, 3), "submit independent sidebar tag filter");
+    result = wait_search(worker);
+    require(result->count == 2 && !result->files_read, "sidebar tag-only filtering never reads note bodies"); search_result_free(result);
+    require(search_submit(worker, directory, state_path, L"-#", items, 3), "submit untagged filter");
+    result = wait_search(worker);
+    require(result->count == 1 && result->hits[0].index == 2 && !result->files_read,
+            "untagged filter uses metadata alone"); search_result_free(result);
+    require(search_submit(worker, directory, state_path, L"#cafe", items, 3), "submit exact accented-tag distinction");
+    result = wait_search(worker);
+    require(result->count == 0 && result->files_read == 0, "tag identity retains accents even though text search ignores them");
+    search_result_free(result);
+    require(search_submit(worker, directory, state_path, L"cafe budget", items, 3), "submit unified tag and text search");
+    result = wait_search(worker);
+    require(!result->error && result->count == 1 && result->hits[0].index == 0,
+            "plain words match tags and body with AND and accent-insensitive semantics"); search_result_free(result);
+    require(search_submit(worker, directory, state_path, L"#\"project alpha\" \"cross-boundary cafe\" needle", items, 3), "submit streaming phrase search");
+    result = wait_search(worker);
+    require(!result->error && !result->unreadable && result->count == 1 && result->hits[0].index == 1 &&
+            result->hits[0].offset == 8185 && result->files_read == 1,
+            "KMP finds accent-insensitive phrases across blocks beyond previews and filters tags before file reads");
+    search_result_free(result);
+    require(search_submit(worker, directory, state_path, L"è😀 needle", items, 3), "submit split UTF-8 search");
+    result = wait_search(worker);
+    require(!result->error && result->count == 1 && result->hits[0].index == 1 && !result->unreadable,
+            "streaming decoder preserves split UTF-8 scalars and supplementary characters"); search_result_free(result);
+    {
+        char repeated[20001];
+        wchar_t query[SEARCH_CAP];
+        memset(repeated, 'a', 20000); repeated[19999] = 'b'; repeated[20000] = 0;
+        for (i = 0; i < SEARCH_CAP - 2; ++i) query[i] = L'a';
+        query[SEARCH_CAP - 2] = L'b'; query[SEARCH_CAP - 1] = 0;
+        require(remove_note_files(other_id), "replace isolated overlap fixture");
+        archive_fixture(other_id, repeated);
+        require(search_submit(worker, directory, state_path, query, items + 2, 1), "submit overlapping-prefix adversarial query");
+        result = wait_search(worker);
+        require(!result->error && result->count == 1 && result->hits[0].offset == 20000 - (SEARCH_CAP - 1),
+                "KMP handles long overlapping prefixes without backtracking through the input");
+        search_result_free(result);
+        require(remove_note_files(other_id), "replace isolated malformed UTF-8 fixture");
+        archive_fixture(other_id, "\xc3");
+        require(search_submit(worker, directory, state_path, L"absent", items + 2, 1), "submit malformed UTF-8 fixture");
+        result = wait_search(worker);
+        require(result->unreadable == 1 && !result->count, "incomplete UTF-8 at EOF is reported"); search_result_free(result);
+        require(remove_note_files(other_id), "restore isolated travel fixture");
+        archive_fixture(other_id, "#Other\r\nUnrelated travel plans.");
+        require(search_submit(worker, directory, state_path, L"a b c d e f g h i j k l m n o p q", items, 3), "submit excessive query terms");
+        result = wait_search(worker);
+        require(result->error != NULL, "query limits produce an explicit error"); search_result_free(result);
+    }
+    for (i = 0; i < 30; ++i)
+        require(search_submit(worker, directory, state_path, i == 29 ? L"travel" : L"missing", items, 3), "supersede queued search");
+    result = wait_search(worker);
+    require(result->count == 1 && result->hits[0].index == 2, "only the latest search generation is published"); search_result_free(result);
+    lock = CreateFileW(note->path, GENERIC_READ, 0, NULL, OPEN_EXISTING, 0, NULL);
+    require(lock != INVALID_HANDLE_VALUE && search_submit(worker, directory, state_path, L"budget", items, 1), "search a locked note");
+    result = wait_search(worker);
+    require(result->unreadable == 1 && result->count == 0, "unreadable notes are reported rather than silently omitted");
+    search_result_free(result); CloseHandle(lock); search_destroy(worker);
+    browse_notes(); window = thread_window(L"PicoSlip.Archive", NULL);
+    edit = GetDlgItem(window, 3); list = GetDlgItem(window, 2); tree = GetDlgItem(window, 1);
+    require(edit && list, "archive has a native unified search field");
+    SetWindowTextW(edit, L"#work budget"); wait_search_ui(window);
+    require(ListView_GetItemCount(list) == 1, "unified archive query filters virtual cards");
+    {
+        wchar_t query[SEARCH_CAP];
+        ListView_SetItemState(list, 0, LVIS_FOCUSED, LVIS_SELECTED | LVIS_FOCUSED);
+        ShowWindow(window, SW_MINIMIZE);
+        require(!IsWindowVisible(window), "filtered browser minimizes into the tray");
+        browse_notes(); wait_search_ui(window);
+        GetWindowTextW(edit, query, SEARCH_CAP);
+        require(IsWindowVisible(window) && !wcscmp(query, L"#work budget") && ListView_GetItemCount(list) == 1 &&
+                ListView_GetItemState(list, 0, LVIS_SELECTED | LVIS_FOCUSED) == LVIS_FOCUSED,
+                "tray restore preserves query, result identity and unselected focus");
+    }
+    {
+        NMITEMACTIVATE click = {0};
+        click.hdr.hwndFrom = list; click.hdr.code = NM_CLICK; click.iItem = 0;
+        SendMessageW(window, WM_NOTIFY, 2, (LPARAM)&click);
+        require(find_note(id) == note, "filtered row maps to the correct open note");
+    }
+    require(set_tags(note, L"café") && save_note(note), "remove a matching tag while searching");
+    wait_search_ui(window); require(ListView_GetItemCount(list) == 0, "saved metadata updates active search membership");
+    require(set_tags(note, L"café;work") && save_note(note), "restore a matching tag while searching");
+    wait_search_ui(window); require(ListView_GetItemCount(list) == 1, "saved tags can add a note back to results");
+    TreeView_SelectItem(tree, find_date(tree, TreeView_GetRoot(tree), 20310200)); wait_search_ui(window);
+    require(ListView_GetItemCount(list) == 0, "date and unified query filters intersect");
+    TreeView_SelectItem(tree, TreeView_GetRoot(tree));
+    SetWindowTextW(edit, L"#work cafe"); wait_search_ui(window);
+    require(ListView_GetItemCount(list) == 2, "query matches tags in one note and full text in another");
+    swprintf_s(path, PATH_CAP, L"%s\\%s.txt", directory, long_id);
+    lock = CreateFileW(path, GENERIC_READ, 0, NULL, OPEN_EXISTING, 0, NULL);
+    require(lock != INVALID_HANDLE_VALUE, "lock an unaffected search result against rereading");
+    ListView_SetItemState(list, 1, LVIS_SELECTED | LVIS_FOCUSED, LVIS_SELECTED | LVIS_FOCUSED);
+    replace_text(note, L"Updated budget for the November release."); require(save_note(note), "save one result during search");
+    wait_search_ui(window);
+    {
+        wchar_t status[128]; GetWindowTextW(window, status, 128);
+        require(ListView_GetItemCount(list) == 2 && !wcsstr(status, L"unreadable") &&
+                ListView_GetItemState(list, 1, LVIS_SELECTED | LVIS_FOCUSED) == (LVIS_SELECTED | LVIS_FOCUSED),
+                "live updates reevaluate one note, preserve unaffected results and retain selection by identity");
+    }
+    CloseHandle(lock);
+    {
+        WIN32_FILE_ATTRIBUTE_DATA metadata;
+        HANDLE attributes;
+        require(GetFileAttributesExW(state_path, GetFileExInfoStandard, &metadata), "record metadata cache identity");
+        require(tags_write(state_path, long_id, L"project alpha;home"), "simulate an external tag edit");
+        attributes = CreateFileW(state_path, FILE_WRITE_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE,
+                                 NULL, OPEN_EXISTING, 0, NULL);
+        require(attributes != INVALID_HANDLE_VALUE && SetFileTime(attributes, NULL, NULL, &metadata.ftLastWriteTime),
+                "preserve timestamp on the same-size external edit");
+        CloseHandle(attributes);
+        SendMessageW(edit, WM_KEYDOWN, VK_F5, 0); wait_search_ui(window);
+        require(ListView_GetItemCount(list) == 1, "F5 forcibly reloads metadata even when size and timestamp are unchanged");
+        require(tags_write(state_path, long_id, L"project alpha;work"), "restore external tag fixture");
+        SendMessageW(edit, WM_KEYDOWN, VK_F5, 0); wait_search_ui(window);
+        require(ListView_GetItemCount(list) == 2, "F5 restores refreshed tag matches");
+    }
+    {
+        Note view = {0}; view.window = window; screenshot(&view, L"build\\search.bmp");
+        ShowWindow(window, SW_SHOWNORMAL);
+    }
+    sidebar_checks(window, note);
+    SetWindowTextW(edit, L"travel"); wait_search_ui(window);
+    require(ListView_GetItemCount(list) == 1, "select a noncontiguous filtered deletion target");
+    ListView_SetItemState(list, 0, LVIS_SELECTED | LVIS_FOCUSED, LVIS_SELECTED | LVIS_FOCUSED);
+    {
+        NMLVKEYDOWN key = {0}; key.hdr.hwndFrom = list; key.hdr.code = LVN_KEYDOWN; key.wVKey = VK_DELETE;
+        require(SetTimer(NULL, 0, 40, confirm_archive_delete) != 0, "confirm filtered deletion");
+        SendMessageW(window, WM_NOTIFY, 2, (LPARAM)&key); wait_search_ui(window);
+    }
+    swprintf_s(path, PATH_CAP, L"%s\\%s.txt", directory, other_id);
+    require(GetFileAttributesW(path) == INVALID_FILE_ATTRIBUTES && find_note(id) == note,
+            "filtered deletion removes exactly its source note");
+    SetWindowTextW(edit, L"missing"); SetWindowTextW(edit, L"#work"); wait_search_ui(window);
+    require(ListView_GetItemCount(list) == 2, "rapid query edits cannot publish stale UI results");
+    SendMessageW(edit, WM_KEYDOWN, VK_ESCAPE, 0);
+    require(GetWindowTextLengthW(edit) == 0 && ListView_GetItemCount(list) >= 2, "Escape restores the ordinary archive");
+    archive_close();
+    SendMessageW(note->window, WM_CLOSE, 0, 0);
+    note = open_note(id, 0, TRUE);
+    require(note && note->tags && !wcscmp(note->tags, L"café;work"), "tag persistence survives reopening");
+    require(delete_archived_note(id) && delete_archived_note(long_id), "remove isolated tag/search fixtures");
+    puts("PASS: Unicode tags, metadata-only saves, Ctrl+T suggestions, streaming KMP, sidebar modes/counts, Ctrl+F, live search and filtered deletion.");
 }
 
 static void empty_note_checks(void) {
@@ -1035,6 +1468,161 @@ static void empty_note_checks(void) {
             "restoring a legacy empty file removes its saved entry");
     destroy_note(note);
     puts("PASS: blank and whitespace notes stay unsaved, title-only notes persist, cleared notes remove TXT/RTF/metadata.");
+}
+
+static BOOL location_dialog_seen, location_picker_seen;
+
+static BOOL CALLBACK inspect_location_button(HWND window, LPARAM flags) {
+    wchar_t text[256];
+    GetWindowTextW(window, text, 256);
+    if (!wcsncmp(text, L"Move current archive", 20)) *(unsigned *)flags |= 1;
+    if (!wcsncmp(text, L"Open or create archive", 22)) *(unsigned *)flags |= 2;
+    require(!wcsstr(text, L"..."), "location actions have no ellipsis");
+    return TRUE;
+}
+
+static void CALLBACK cancel_location_dialog(HWND window, UINT message, UINT_PTR timer, DWORD tick) {
+    HWND dialog = thread_window(L"#32770", L"Archive");
+    unsigned actions = 0;
+    (void)window; (void)message; (void)tick;
+    if (!dialog) return;
+    KillTimer(NULL, timer);
+    EnumChildWindows(dialog, inspect_location_button, (LPARAM)&actions);
+    require(actions == 3, "archive dialog offers move and open/create");
+    location_dialog_seen = TRUE;
+    SendMessageW(dialog, TDM_CLICK_BUTTON, IDCANCEL, 0);
+}
+
+static void CALLBACK cancel_location_picker(HWND window, UINT message, UINT_PTR timer, DWORD tick) {
+    HWND dialog = thread_window(L"#32770", L"Open or create archive");
+    (void)window; (void)message; (void)tick;
+    if (!dialog) return;
+    KillTimer(NULL, timer); location_picker_seen = TRUE;
+    SendMessageW(dialog, WM_CLOSE, 0, 0);
+}
+
+static void remove_location_fixture(const wchar_t *folder) {
+    wchar_t path[PATH_CAP], pattern[PATH_CAP];
+    WIN32_FIND_DATAW entry;
+    HANDLE scan;
+    swprintf_s(pattern, PATH_CAP, L"%s\\*", folder);
+    scan = FindFirstFileW(pattern, &entry);
+    if (scan != INVALID_HANDLE_VALUE) {
+        do {
+            if (!wcscmp(entry.cFileName, L".") || !wcscmp(entry.cFileName, L"..")) continue;
+            require(!(entry.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY), "location fixture cleanup never recurses");
+            swprintf_s(path, PATH_CAP, L"%s\\%s", folder, entry.cFileName);
+            require(DeleteFileW(path), "remove private location fixture file");
+        } while (FindNextFileW(scan, &entry));
+        FindClose(scan);
+    }
+    require(RemoveDirectoryW(folder), "remove private location fixture directory");
+}
+
+static void location_checks(void) {
+    wchar_t original[PATH_CAP], base[PATH_CAP], first[PATH_CAP], second[PATH_CAP], third[PATH_CAP];
+    wchar_t path[PATH_CAP], target[PATH_CAP], loaded[PATH_CAP], id[80], second_id[80];
+    const wchar_t *legacy = L"nota-legacy-location";
+    Note *note;
+    BOOL copies;
+    HANDLE lock, file;
+    DWORD written;
+    WIN32_FILE_ATTRIBUTE_DATA before, after;
+    HWND browser, button;
+    RECT search_rect, button_rect;
+    wcscpy_s(original, PATH_CAP, directory);
+    swprintf_s(base, PATH_CAP, L"%s\\locations", original);
+    swprintf_s(first, PATH_CAP, L"%s\\first", base);
+    swprintf_s(second, PATH_CAP, L"%s\\second", base);
+    swprintf_s(third, PATH_CAP, L"%s\\移動 café", base);
+    swprintf_s(location_config, PATH_CAP, L"%s\\archive.path", base);
+    require(CreateDirectoryW(base, NULL), "create isolated location fixture");
+    require(location_load(location_config, original, loaded) && !wcscmp(loaded, original),
+            "missing location setting preserves the legacy default");
+    require(switch_archive(first, FALSE, &copies) && !notes && !wcscmp(directory, first), "create and activate an empty archive");
+    note = new_note(); require(note != NULL, "create a note in the first archive");
+    wcscpy_s(id, 80, note->id);
+    replace_text(note, L"Notes travel safely. 😀");
+    require(set_title(note, L"Archive move") && set_tags(note, L"café;work"), "prepare title and Unicode tags");
+    SendMessageW(note->edit, EM_SETSEL, 0, 5); shortcut(note, 'I', FALSE);
+    toggle_note(note); require(save_note(note), "persist source note and formatting");
+    archive_fixture(legacy, "Legacy creation date");
+    swprintf_s(path, PATH_CAP, L"%s\\%s.txt", first, legacy);
+    require(GetFileAttributesExW(path, GetFileExInfoStandard, &before), "record the legacy creation date");
+    swprintf_s(path, PATH_CAP, L"%s\\keep.txt", first);
+    file = CreateFileW(path, GENERIC_WRITE, 0, NULL, CREATE_NEW, 0, NULL);
+    require(file != INVALID_HANDLE_VALUE && WriteFile(file, "unrelated", 9, &written, NULL), "create unrelated file beside notes");
+    CloseHandle(file);
+    require(switch_archive(second, FALSE, &copies) && !notes, "switching creates a separate empty archive");
+    swprintf_s(path, PATH_CAP, L"%s\\%s.txt", first, id);
+    expect_file(path, "#Archive move\r\nNotes travel safely. 😀");
+    require(location_load(location_config, original, loaded) && !wcscmp(loaded, second), "new default survives reloading configuration");
+    note = new_note(); require(note != NULL, "create independent second-archive note");
+    wcscpy_s(second_id, 80, note->id); replace_text(note, L"Independent archive"); require(save_note(note), "save second archive");
+    require(switch_archive(first, FALSE, &copies), "reopen the first archive");
+    note = find_note(id);
+    require(note && !find_note(second_id) && note->collapsed && !wcscmp(note->tags, L"café;work") &&
+            (effects_at(note, 1) & CFE_ITALIC), "switching restores open state, tags and rich formatting without mixing archives");
+    require(!switch_archive(second, TRUE, &copies) && GetLastError() == ERROR_DIR_NOT_EMPTY && find_note(id) == note,
+            "move refuses to overwrite a populated destination and retains open windows");
+    swprintf_s(target, PATH_CAP, L"%s\\nested", first);
+    require(!switch_archive(target, TRUE, &copies) && GetLastError() == ERROR_INVALID_PARAMETER,
+            "move rejects nested archive paths");
+    require(RemoveDirectoryW(target), "remove empty rejected destination");
+    lock = CreateFileW(location_config, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
+    require(lock != INVALID_HANDLE_VALUE && !switch_archive(third, TRUE, &copies), "failure to commit the default rolls back the move");
+    CloseHandle(lock);
+    swprintf_s(path, PATH_CAP, L"%s\\%s.txt", third, id);
+    require(GetFileAttributesW(path) == INVALID_FILE_ATTRIBUTES && !wcscmp(directory, first) && find_note(id) == note,
+            "rollback removes copied files while preserving originals and active windows");
+    require(location_load(location_config, original, loaded) && !wcscmp(loaded, first), "failed move preserves previous default");
+    swprintf_s(path, PATH_CAP, L"%s\\%s.txt", first, id);
+    lock = CreateFileW(path, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
+    require(lock != INVALID_HANDLE_VALUE && !switch_archive(third, TRUE, &copies), "a locked source refuses migration");
+    CloseHandle(lock);
+    require(switch_archive(third, TRUE, &copies) && !copies && !wcscmp(directory, third), "move to Unicode location succeeds");
+    require(GetFileAttributesW(path) == INVALID_FILE_ATTRIBUTES, "successful move removes the original TXT only after committing");
+    note = find_note(id);
+    require(note && note->collapsed && !wcscmp(note->tags, L"café;work") && (effects_at(note, 1) & CFE_ITALIC),
+            "migration retains restored windows, tags and formatting");
+    expect_file(note->path, "#Archive move\r\nNotes travel safely. 😀");
+    require(location_load(location_config, original, loaded) && !wcscmp(loaded, third), "Unicode default round trips as UTF-8");
+    swprintf_s(path, PATH_CAP, L"%s\\%s.txt", third, legacy);
+    require(GetFileAttributesExW(path, GetFileExInfoStandard, &after) &&
+            !CompareFileTime(&before.ftCreationTime, &after.ftCreationTime), "legacy archive dates survive migration");
+    swprintf_s(path, PATH_CAP, L"%s\\keep.txt", first); expect_file(path, "unrelated");
+    swprintf_s(path, PATH_CAP, L"%s\\notes.ini", second);
+    require(SetFileAttributesW(path, FILE_ATTRIBUTE_READONLY) && !switch_archive(second, FALSE, &copies),
+            "opening an archive requires writable metadata");
+    require(SetFileAttributesW(path, FILE_ATTRIBUTE_NORMAL), "restore metadata fixture permissions");
+    browser = browse_notes(); button = GetDlgItem(browser, 9);
+    GetWindowTextW(button, loaded, PATH_CAP);
+    require(button && !wcscmp(loaded, L"Archive"), "integrated Archive button has no ellipsis");
+    GetWindowRect(GetDlgItem(browser, 3), &search_rect); GetWindowRect(button, &button_rect);
+    require(search_rect.right < button_rect.left && search_rect.top >= button_rect.top && search_rect.bottom <= button_rect.bottom,
+            "compact search and Archive button share the top row without overlap");
+    require(SetTimer(NULL, 0, 40, cancel_location_dialog) != 0, "inspect native archive chooser");
+    SendMessageW(button, BM_CLICK, 0, 0);
+    require(location_dialog_seen && !wcscmp(directory, third), "cancelling the native choice leaves the archive unchanged");
+    require(SetTimer(NULL, 0, 80, cancel_location_picker) != 0, "cancel native folder picker");
+    require(location_pick(browser, directory, FALSE, loaded) == HRESULT_FROM_WIN32(ERROR_CANCELLED) && location_picker_seen,
+            "native folder picker cancellation has no side effects");
+    require(switch_archive(original, FALSE, &copies), "restore the outer test archive");
+    /* A missing configured folder must never silently become a new archive. */
+    require(location_change(location_config, original, second, FALSE, loaded, &copies), "prepare unavailable-archive fixture");
+    swprintf_s(target, PATH_CAP, L"%s\\offline", base);
+    require(MoveFileExW(second, target, 0) && !location_load(location_config, original, loaded),
+            "unavailable configured archive does not silently fall back");
+    require(MoveFileExW(target, second, 0), "restore temporarily unavailable fixture");
+    file = CreateFileW(location_config, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, 0, NULL);
+    require(file != INVALID_HANDLE_VALUE && WriteFile(file, ".\\relative", 10, &written, NULL),
+            "prepare a malformed saved location");
+    CloseHandle(file);
+    require(!location_load(location_config, original, loaded) && GetLastError() == ERROR_INVALID_DATA,
+            "a relative saved path is rejected without selecting the fallback");
+    location_config[0] = 0;
+    remove_location_fixture(first); remove_location_fixture(second); remove_location_fixture(third); remove_location_fixture(base);
+    puts("PASS: archive locations, Unicode defaults, isolated switching, locked-file rollback, durable moves, native chooser and cancellation.");
 }
 
 int main(int argc, char **argv) {
@@ -1077,6 +1665,14 @@ int main(int argc, char **argv) {
     if (argc==2 && !strcmp(argv[1],"--archive-only")) {
         require(new_note()!=NULL,"create archive test owner");
         archive_checks();
+        goto cleanup;
+    }
+    if (argc==2 && !strcmp(argv[1],"--search-only")) {
+        tags_search_checks();
+        goto cleanup;
+    }
+    if (argc==2 && !strcmp(argv[1],"--location-only")) {
+        location_checks();
         goto cleanup;
     }
     tray_checks();
@@ -1169,14 +1765,17 @@ int main(int argc, char **argv) {
     expect_file(path, expected);
     puts("PASS: restart restores layout and active notes, preserves closed TXT archives.");
     title_checks();
+    border_checks();
     serialization_checks();
     options_checks();
     if (interactive_tests) keyboard_checks();
     editing_checks();
     resizing_checks();
     archive_checks();
+    tags_search_checks();
     empty_note_checks();
     efficiency_checks(!(argc == 2 && !strcmp(argv[1], "--measure")));
+    location_checks();
 
 cleanup:
     archive_close();

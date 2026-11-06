@@ -15,6 +15,9 @@ jobs:
       - name: Build C17 application, installer and integration tests
         shell: cmd
         run: build.cmd test
+      - name: Analyze native C sources
+        shell: cmd
+        run: build.cmd analyze
       - name: Test installation and preserve notes on uninstall
         shell: pwsh
         run: ./tools/test-install.ps1

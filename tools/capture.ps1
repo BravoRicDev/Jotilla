@@ -1,12 +1,24 @@
 # Optional documentation capture; ImageMagick is a documentation tool only.
-param([switch]$GifsOnly, [switch]$BrowserOnly)
+param(
+    [switch]$GifsOnly,
+    [switch]$BrowserOnly,
+    [switch]$NotesOnly,
+    [string]$BackgroundRoot = (Join-Path $env:USERPROFILE 'Downloads/StillTyping/Selection')
+)
 $ErrorActionPreference = 'Stop'
+if ($BrowserOnly -and $NotesOnly) { throw 'Choose one walkthrough, or omit both switches to capture both.' }
 $root = Split-Path -Parent $PSScriptRoot
 $demoRoot = Join-Path ([IO.Path]::GetTempPath()) ('PicoSlip-demo-' + [guid]::NewGuid().ToString('N'))
 $previousDemoRoot = $env:PICOSLIP_DEMO_ROOT
 $env:PICOSLIP_DEMO_ROOT = $demoRoot
-$recordings = if ($BrowserOnly) { @('browser') } else { @('notes', 'browser') }
+$recordings = if ($BrowserOnly) { @('browser') } elseif ($NotesOnly) { @('notes') } else { @('notes', 'browser') }
 $finished = $false
+$backgrounds = [ordered]@{
+    'notes-background' = '1915P100 Night with her Train of Stars.jpg'
+    'palettes-background' = 'birmingham-museums-trust-0ZbwwI6VV3E-unsplash.jpg'
+    'notes-gif-background' = '1914P308  February Fill Dyke.jpg'
+    'browser-background' = '1915P97 Walton-on-the-Naze.jpg'
+}
 
 function Clear-Frames([string]$name) {
     if ($name -notin $recordings) { throw 'Unknown recording directory.' }
@@ -23,18 +35,18 @@ function Clear-Frames([string]$name) {
 Push-Location $root
 try {
     New-Item -ItemType Directory -Path build,docs/screenshots -Force | Out-Null
-    if (!(Test-Path -LiteralPath build/screenshot-background.jpg)) {
-        Invoke-WebRequest -Uri 'https://images.unsplash.com/photo-1578926375605-eaf7559b1458?fm=jpg&q=60&w=3000&auto=format&fit=crop' -OutFile build/screenshot-background.jpg
+    foreach ($entry in $backgrounds.GetEnumerator()) {
+        $source = Join-Path $BackgroundRoot $entry.Value
+        if (!(Test-Path -LiteralPath $source -PathType Leaf)) { throw "Missing local background: $source" }
     }
-    if (!(Test-Path -LiteralPath build/browser-background.jpg)) {
-        Invoke-WebRequest -Uri 'https://illustrarch.com/wp-content/uploads/2025/05/birmingham-museums-trust-8wcoY3wcbL0-unsplash.jpg' -OutFile build/browser-background.jpg
+    foreach ($entry in $backgrounds.GetEnumerator()) {
+        $size = if ($entry.Key -in @('notes-background', 'palettes-background')) { '1040x640' } else { '1000x1000' }
+        & magick (Join-Path $BackgroundRoot $entry.Value) -auto-orient -resize "$size^" -gravity center -extent $size "BMP3:build/$($entry.Key).bmp"
+        if ($LASTEXITCODE -ne 0) { throw 'Background conversion failed.' }
     }
-    & magick build/screenshot-background.jpg -resize '1800x1200^' -gravity center -extent 1800x1200 BMP3:build/screenshot-background.bmp
-    if ($LASTEXITCODE -ne 0) { throw 'Background conversion failed.' }
-    & magick build/browser-background.jpg -resize '1000x1000^' -gravity center -extent 1000x1000 BMP3:build/browser-background.bmp
-    if ($LASTEXITCODE -ne 0) { throw 'Browser background conversion failed.' }
     foreach ($name in $recordings) { Clear-Frames $name }
     if ($BrowserOnly) { & ./build.cmd screenshots-only --browser-only }
+    elseif ($NotesOnly) { & ./build.cmd screenshots-only --notes-only }
     elseif ($GifsOnly) { & ./build.cmd screenshots-only --gifs-only }
     else { & ./build.cmd screenshots-only }
     if ($LASTEXITCODE -ne 0) { throw 'Native application capture failed.' }
@@ -54,7 +66,7 @@ try {
         & magick @gifArguments
         if ($LASTEXITCODE -ne 0) { throw 'GIF conversion failed.' }
     }
-    if (!$GifsOnly -and !$BrowserOnly) {
+    if (!$GifsOnly -and !$BrowserOnly -and !$NotesOnly) {
         foreach ($name in @('notes','palettes')) {
             & magick "build/$name.bmp" -strip -define png:compression-level=9 "docs/screenshots/$name.png"
             if ($LASTEXITCODE -ne 0) { throw 'Screenshot conversion failed.' }
@@ -74,7 +86,7 @@ try {
     }
     if ($finished) {
         foreach ($name in $recordings) { Clear-Frames $name }
-        Remove-Item -LiteralPath build/screenshot-background.bmp,build/browser-background.bmp
+        foreach ($name in $backgrounds.Keys) { Remove-Item -LiteralPath "build/$name.bmp" }
     }
     Pop-Location
 }

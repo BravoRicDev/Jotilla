@@ -1,5 +1,6 @@
 build/
 dist/
+backups/
 notes/
 *.obj
 *.pdb

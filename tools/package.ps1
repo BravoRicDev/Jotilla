@@ -10,13 +10,17 @@ PicoSlip - Tiny Sticky Notes for Windows
 
 Run PicoSlip.exe. Ctrl+Alt++ creates a note.
 Single-click the tray icon for a new note; double-click to browse notes.
+Minimizing the browser hides it beside the clock; double-click restores it.
 Drag the bar to move it; use - to collapse and X to close.
 Right-click the bar for the archive, opacity, title, size and palette.
 #Title + Enter makes a title; Shift+Enter keeps it as text.
 
-Notes save automatically in the notes folder beside the EXE.
+Notes initially save in the notes folder beside the EXE.
+The Archive button beside search can move the archive to an empty folder,
+or open/create another archive while leaving the previous one intact.
+The chosen folder becomes the default; archive.path stores its location.
 Keep portable.flag beside the EXE to retain portable mode.
-Back up the whole notes folder, including notes.ini.
+Back up the entire archive, including notes.ini and RTF formatting files.
 
 https://github.com/GarauGarau/picoslip
 '@

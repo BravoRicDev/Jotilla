@@ -108,7 +108,9 @@ static BOOL extract_resource(int id,const wchar_t *path) {
     if (file==INVALID_HANDLE_VALUE) return FALSE;
     ok=WriteFile(file,bytes,size,&written,NULL) && written==size && FlushFileBuffers(file);
     if (!CloseHandle(file)) ok=FALSE;
-    return ok && MoveFileExW(temporary,path,MOVEFILE_REPLACE_EXISTING|MOVEFILE_WRITE_THROUGH);
+    if (ok) ok=MoveFileExW(temporary,path,MOVEFILE_REPLACE_EXISTING|MOVEFILE_WRITE_THROUGH);
+    if (!ok) DeleteFileW(temporary);
+    return ok;
 }
 
 static int install(void) {
@@ -119,7 +121,7 @@ static int install(void) {
     if (!silent && MessageBoxW(NULL,
         L"Install PicoSlip for this Windows account?\n\n"
         L"Adds Start menu and desktop shortcuts. No administrator rights needed.\n"
-        L"Your notes are kept in LocalAppData\\PicoSlip\\notes, separate from the program.",
+        L"Your notes and chosen archive location are kept separate from the program.",
         L"PicoSlip Setup",MB_YESNO|MB_ICONQUESTION)!=IDYES) return 0;
     if (!close_app()) return failure(L"PicoSlip could not save and close. Close it and run Setup again.");
     directory_result=SHCreateDirectoryExW(NULL,install_dir,NULL);
@@ -150,7 +152,7 @@ static int cleanup(DWORD parent_pid) {
         if (result!=WAIT_OBJECT_0) return failure(L"The uninstaller is still running. Please try again.");
     }
     /* Only these exact per-user program files are removed. Never recurse and
-       never touch LocalAppData\PicoSlip\notes or a portable note archive. */
+       never touch notes, archive.path or a portable note archive. */
     swprintf_s(license,PATH_CAP,L"%s\\LICENSE.txt",install_dir);
     if (!remove_file(app_path) || !remove_file(uninstall_path) || !remove_file(license)) return failure(L"PicoSlip could not be removed. Close the application and try again.");
     remove_file(start_link); remove_file(desktop_link);
