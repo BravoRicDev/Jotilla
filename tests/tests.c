@@ -15,6 +15,10 @@ static BOOL trace_profile(LPCWSTR section, LPCWSTR key, LPCWSTR value, LPCWSTR p
     ++metadata_writes;
     return WritePrivateProfileStringW(section, key, value, path);
 }
+static BOOL trace_section(LPCWSTR section, LPCWSTR values, LPCWSTR path) {
+    ++metadata_writes;
+    return WritePrivateProfileSectionW(section, values, path);
+}
 static BOOL trace_metrics(HDC dc, LPTEXTMETRICW metrics) {
     ++metric_queries; return GetTextMetricsW(dc, metrics);
 }
@@ -28,6 +32,7 @@ static void *trace_malloc(size_t size) { ++heap_requests; return malloc(size); }
 static void *trace_calloc(size_t count, size_t size) { ++heap_requests; return calloc(count, size); }
 static void *trace_realloc(void *memory, size_t size) { ++heap_requests; return realloc(memory, size); }
 #define WritePrivateProfileStringW trace_profile
+#define WritePrivateProfileSectionW trace_section
 #define GetTextMetricsW trace_metrics
 #define CreatePen trace_pen
 #define CreateSolidBrush trace_brush
@@ -36,6 +41,7 @@ static void *trace_realloc(void *memory, size_t size) { ++heap_requests; return 
 #define realloc trace_realloc
 #include "../src/picoslip.c"
 #undef WritePrivateProfileStringW
+#undef WritePrivateProfileSectionW
 #undef GetTextMetricsW
 #undef CreatePen
 #undef CreateSolidBrush
@@ -299,6 +305,65 @@ static void efficiency_checks(BOOL enforce) {
     printf("MEASURE: 20 clean saves: %u metadata calls; 50 typed characters: %u allocations, %u font queries; "
            "100 repaints: %u graphic creations.\n", clean_writes, typing_allocations, typing_metrics, repaint_objects);
     SendMessageW(note->window, WM_CLOSE, 0, 0);
+}
+
+static void storage_checks(void) {
+    Note *note;
+    wchar_t id[80], rich_path[PATH_CAP], custom[2500], actual[2500], *tags = NULL;
+    HANDLE lock;
+    int i, old_opacity;
+    metadata_writes = 0; note = new_note();
+    require(note && metadata_writes == 0, "creating a blank note does not write preferences");
+    wcscpy_s(id, 80, note->id);
+    replace_text(note, L"First line\r\nCaffè 😀");
+    metadata_writes = 0;
+    require(save_note(note) && metadata_writes == 1, "first save writes all layout properties in one operation");
+    destroy_note(note); metadata_writes = 0;
+    note = open_note(id, 0, TRUE);
+    require(note && metadata_writes == 0, "restoring an open note does not rewrite unchanged metadata");
+    require(editor_matches_text(note), "streaming text comparison preserves CRLF and supplementary Unicode");
+    require(set_tags(note, L"café;work") && save_note(note), "prepare Unicode tags for a layout update");
+    for (i = 0; i < 2499; ++i) custom[i] = L'v';
+    custom[2499] = 0;
+    require(WritePrivateProfileStringW(id, L"custom", custom, state_path), "prepare an unfamiliar metadata field larger than the initial buffer");
+    old_opacity = note->opacity; note->opacity = 80;
+    lock = CreateFileW(state_path, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
+    require(lock != INVALID_HANDLE_VALUE && !save_layout(note, FALSE), "locked metadata refuses the whole layout update");
+    require(setting(id, L"opacity", -1) == old_opacity && setting(id, L"open", -1) == TRUE,
+            "a failed layout update does not leave partially changed properties");
+    CloseHandle(lock); metadata_writes = 0;
+    require(save_layout(note, FALSE) && metadata_writes == 1, "retry batches all changed layout properties");
+    GetPrivateProfileStringW(id, L"custom", L"", actual, 2500, state_path);
+    require(!wcscmp(actual, custom) && tags_read(state_path, id, &tags) && tags && !wcscmp(tags, L"café;work"),
+            "batched layout writes retain Unicode tags and unfamiliar long fields");
+    free(tags); destroy_note(note); metadata_writes = 0;
+    note = open_note(id, 0, TRUE);
+    require(note && metadata_writes == 1 && setting(id, L"open", -1) == TRUE,
+            "reopening a closed note only writes its open flag");
+    lock = CreateFileW(note->path, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
+    require(lock != INVALID_HANDLE_VALUE, "lock TXT while changing formatting");
+    SendMessageW(note->edit, EM_SETSEL, 0, -1); toggle_format(note, CFE_ITALIC);
+    require(note->dirty == DIRTY_RICH && save_note(note), "format-only changes save while TXT cannot be replaced");
+    SendMessageW(note->edit, EM_UNDO, 0, 0);
+    require(note->dirty == DIRTY_RICH && save_note(note), "format-only undo does not rewrite TXT");
+    SendMessageW(note->edit, EM_REDO, 0, 0);
+    require(note->dirty == DIRTY_RICH && save_note(note), "format-only redo does not rewrite TXT");
+    CloseHandle(lock);
+    swprintf_s(rich_path, PATH_CAP, L"%s\\%s.rtf", directory, id);
+    lock = CreateFileW(rich_path, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
+    require(lock != INVALID_HANDLE_VALUE && set_title(note, L"Titolo è") && save_note(note),
+            "title-only changes save while RTF cannot be replaced");
+    require(set_title(note, L"Titolo è") && !note->dirty, "accepting an unchanged title leaves content clean");
+    replace_text(note, L"Changed body");
+    require(!save_note(note) && note->dirty, "a body change still requires its RTF companion");
+    expect_file(note->path, "#Titolo è\r\nFirst line\r\nCaffè 😀");
+    CloseHandle(lock); require(save_note(note), "retry persists both body representations");
+    destroy_note(note); note = open_note(id, 0, TRUE);
+    require(note && note->title && !wcscmp(note->title, L"Titolo è") && !wcscmp(note->accepted_text, L"Changed body"),
+            "selective saves preserve title and body on restart");
+    SendMessageW(note->window, WM_CLOSE, 0, 0);
+    require(save_all() && setting(L"app", L"next_color", -1) == next_color, "save-all persists the deferred color preference");
+    puts("PASS: batched metadata, unchanged reopen, preserved unknown fields, selective TXT/RTF saves, format undo/redo and deferred preferences.");
 }
 
 static void border_checks(void) {
@@ -826,6 +891,71 @@ static void archive_selection_colors(HWND tree, HWND list, HTREEITEM selected) {
     SelectObject(memory,old); DeleteObject(bitmap); DeleteDC(memory); ReleaseDC(tree,dc);
 }
 
+/* A resize must paint exactly the same toolbar as a subsequent full repaint.
+   Capture the existing pixels first: PrintWindow would hide stale paint bugs. */
+static void archive_resize_checks(HWND window) {
+    const int widths[] = {740, 960, 520, 820};
+    HWND edit = GetDlgItem(window, 3), list = GetDlgItem(window, 2);
+    wchar_t query[SEARCH_CAP], actual[SEARCH_CAP];
+    RECT original;
+    int dpi = (int)GetDpiForWindow(window), mode, step;
+    GetWindowTextW(edit, query, SEARCH_CAP); GetWindowRect(window, &original);
+    SetFocus(list);
+    for (mode = 0; mode < 2; ++mode) {
+        const wchar_t *input = mode ? L"Resize: café and tags" : L"";
+        SetWindowTextW(edit, input); pump(200);
+        for (step = 0; step < 7; ++step) {
+            RECT strip, list_rect;
+            BITMAPINFO info = {0};
+            HDC dc, memory;
+            HBITMAP bitmap;
+            HGDIOBJ previous;
+            void *pixels, *before;
+            size_t bytes;
+            BOOL same;
+            if (step < 4) SetWindowPos(window, NULL, 0, 0, MulDiv(widths[step], dpi, 96), MulDiv(440, dpi, 96),
+                                       SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
+            else if (step < 6) ShowWindow(window, step == 4 ? SW_MAXIMIZE : SW_RESTORE);
+            else {
+                int width, pass;
+                /* Coalesce repeated size changes without pumping WM_PAINT,
+                   first from the right edge, then from the left edge. */
+                for (pass = 0; pass < 2; ++pass)
+                    for (width = 520; width <= 960; width += 11) {
+                        int pixels_wide = MulDiv(pass ? 1480 - width : width, dpi, 96);
+                        SetWindowPos(window, NULL, pass ? original.right - pixels_wide : original.left, original.top,
+                                     pixels_wide, MulDiv(440, dpi, 96), SWP_NOZORDER | SWP_NOACTIVATE);
+                    }
+            }
+            pump(50);
+            GetClientRect(window, &strip); GetWindowRect(list, &list_rect);
+            MapWindowPoints(NULL, window, (POINT *)&list_rect, 2); strip.bottom = list_rect.top;
+            info.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+            info.bmiHeader.biWidth = strip.right; info.bmiHeader.biHeight = -strip.bottom;
+            info.bmiHeader.biPlanes = 1; info.bmiHeader.biBitCount = 32;
+            bytes = (size_t)strip.right * (size_t)strip.bottom * 4;
+            dc = GetDC(window); memory = CreateCompatibleDC(dc);
+            bitmap = CreateDIBSection(dc, &info, DIB_RGB_COLORS, &pixels, NULL, 0);
+            before = malloc(bytes);
+            require(memory && bitmap && before, "allocate toolbar repaint comparison");
+            previous = SelectObject(memory, bitmap);
+            require(BitBlt(memory, 0, 0, strip.right, strip.bottom, dc, 0, 0, SRCCOPY), "capture resized toolbar");
+            GdiFlush(); memcpy(before, pixels, bytes);
+            RedrawWindow(window, &strip, NULL, RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN | RDW_UPDATENOW);
+            require(BitBlt(memory, 0, 0, strip.right, strip.bottom, dc, 0, 0, SRCCOPY), "capture fully repainted toolbar");
+            GdiFlush(); same = !memcmp(before, pixels, bytes);
+            SelectObject(memory, previous); DeleteObject(bitmap); DeleteDC(memory); ReleaseDC(window, dc); free(before);
+            require(same, "resizing, maximizing and restoring leave no stale search-bar pixels");
+            GetWindowTextW(edit, actual, SEARCH_CAP);
+            require(!wcscmp(actual, input), "resizing preserves empty and Unicode search text");
+        }
+    }
+    SetWindowPos(window, NULL, original.left, original.top, original.right - original.left, original.bottom - original.top,
+                 SWP_NOZORDER | SWP_NOACTIVATE);
+    SetWindowTextW(edit, query); pump(200);
+    puts("PASS: search toolbar repaint after narrowing, widening, maximizing, restoring and rapid resize bursts, with empty and Unicode queries.");
+}
+
 static void archive_checks(void) {
     const wchar_t *first=L"note-2024-01-03_08-00-00-000-001", *second=L"note-2024-02-04_09-00-00-000-001";
     const wchar_t *third=L"note-2025-03-05_10-00-00-000-001";
@@ -995,6 +1125,7 @@ static void archive_checks(void) {
         ListView_GetItemRect(list,0,&row,LVIR_ICON); ListView_GetItemRect(list,1,&other,LVIR_ICON);
         require(row.top==other.top && row.right<=other.left,"post-it previews form a native mosaic");
     }
+    archive_resize_checks(window);
     {
         Note view={0};
         view.window=window;
@@ -1775,6 +1906,7 @@ int main(int argc, char **argv) {
     tags_search_checks();
     empty_note_checks();
     efficiency_checks(!(argc == 2 && !strcmp(argv[1], "--measure")));
+    storage_checks();
     location_checks();
 
 cleanup:

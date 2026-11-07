@@ -560,28 +560,47 @@ static LRESULT draw_preview(Archive *archive, NMLVCUSTOMDRAW *draw) {
     return CDRF_SKIPDEFAULT;
 }
 
+static RECT search_bounds(const Archive *archive, const RECT *client) {
+    int gap = archive_scaled(archive, 8);
+    RECT field = {archive_scaled(archive, 174) + gap * 2, gap,
+                  client->right - gap * 2 - archive_scaled(archive, 100), gap + archive_scaled(archive, 34)};
+    return field;
+}
+
 static void archive_layout(Archive *archive) {
-    RECT rect;
+    RECT rect, field;
     int gap = archive_scaled(archive, 8), tree_width = archive_scaled(archive, 174);
-    GetClientRect(archive->window, &rect);
-    int navigation_top = gap + archive_scaled(archive, 34) + gap;
     int inset = archive_scaled(archive, 6), button_width = (tree_width - inset * 3) / 2;
-    MoveWindow(archive->tag_button, gap + inset, gap + archive_scaled(archive, 3),
-               button_width, archive_scaled(archive, 28), TRUE);
-    MoveWindow(archive->date_button, gap + inset * 2 + button_width, gap + archive_scaled(archive, 3),
-               button_width, archive_scaled(archive, 28), TRUE);
-    MoveWindow(archive->tree, gap, navigation_top, tree_width, max(1, rect.bottom - navigation_top - gap), TRUE);
-    MoveWindow(archive->tag_tree, gap, navigation_top, tree_width, max(1, rect.bottom - navigation_top - gap), TRUE);
+    int navigation_top, height, i;
+    HDWP batch;
+    GetClientRect(archive->window, &rect);
+    field = search_bounds(archive, &rect);
+    navigation_top = field.bottom + gap; height = field.bottom - field.top;
     {
-        int left = tree_width + gap * 2, width = max(1, rect.right - left - gap);
-        int height = archive_scaled(archive, 34), top = navigation_top;
-        int button = archive_scaled(archive, 100), search_width = max(1, width - button - gap);
-        MoveWindow(archive->search, left + archive_scaled(archive, 30), gap + archive_scaled(archive, 8),
-                   max(1, search_width - archive_scaled(archive, 68)), archive_scaled(archive, 22), TRUE);
-        MoveWindow(archive->clear, left + search_width - height + 2, gap + 2, height - 4, height - 4, TRUE);
-        MoveWindow(archive->location, rect.right - gap - button, gap, button, height, TRUE);
-        MoveWindow(archive->list, left, top, width, max(1, rect.bottom - top - gap), TRUE);
+        const struct { HWND window; int x, y, width, height; } positions[] = {
+            {archive->tag_button, gap + inset, gap + archive_scaled(archive, 3), button_width, archive_scaled(archive, 28)},
+            {archive->date_button, gap + inset * 2 + button_width, gap + archive_scaled(archive, 3), button_width, archive_scaled(archive, 28)},
+            {archive->tree, gap, navigation_top, tree_width, max(1, rect.bottom - navigation_top - gap)},
+            {archive->tag_tree, gap, navigation_top, tree_width, max(1, rect.bottom - navigation_top - gap)},
+            {archive->search, field.left + archive_scaled(archive, 30), gap + archive_scaled(archive, 8),
+                max(1, field.right - field.left - archive_scaled(archive, 68)), archive_scaled(archive, 22)},
+            {archive->clear, field.right - height + 2, gap + 2, height - 4, height - 4},
+            {archive->location, field.right + gap, gap, archive_scaled(archive, 100), height},
+            {archive->list, field.left, navigation_top, max(1, rect.right - field.left - gap), max(1, rect.bottom - navigation_top - gap)}
+        };
+        batch = BeginDeferWindowPos(8);
+        for (i = 0; batch && i < 8; ++i)
+            batch = DeferWindowPos(batch, positions[i].window, NULL, positions[i].x, positions[i].y,
+                                   positions[i].width, positions[i].height, SWP_NOZORDER | SWP_NOACTIVATE);
+        if (!batch || !EndDeferWindowPos(batch))
+            for (i = 0; i < 8; ++i)
+                SetWindowPos(positions[i].window, NULL, positions[i].x, positions[i].y,
+                             positions[i].width, positions[i].height, SWP_NOZORDER | SWP_NOACTIVATE);
     }
+    /* Windows preserves old client pixels on resize. The frame belongs to the
+       parent, so moving the EDIT/buttons alone leaves parts of its old border. */
+    rect.bottom = navigation_top;
+    RedrawWindow(archive->window, &rect, NULL, RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN);
     ListView_Arrange(archive->list, LVA_DEFAULT);
 }
 
@@ -914,9 +933,7 @@ static LRESULT CALLBACK archive_proc(HWND window, UINT message, WPARAM wparam, L
         int gap = archive_scaled(archive, 8), left = archive_scaled(archive, 174) + gap * 2;
         HGDIOBJ pen = SelectObject(dc, GetStockObject(DC_PEN));
         HGDIOBJ brush = SelectObject(dc, GetStockObject(NULL_BRUSH));
-        GetClientRect(window, &rect); field = rect;
-        field.left = left; field.top = gap;
-        field.right -= gap * 2 + archive_scaled(archive, 100); field.bottom = gap + archive_scaled(archive, 34);
+        GetClientRect(window, &rect); field = search_bounds(archive, &rect);
         SetDCPenColor(dc, RGB(190,177,151)); Rectangle(dc, field.left, field.top, field.right, field.bottom);
         SetDCPenColor(dc, ARCHIVE_INK);
         Ellipse(dc, left + archive_scaled(archive, 9), gap + archive_scaled(archive, 10),

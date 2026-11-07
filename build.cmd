@@ -28,6 +28,7 @@ if /i "%~1"=="test-only" goto tests
 if /i "%~1"=="screenshots-only" goto screenshots
 if /i "%~1"=="profile-only" goto profile
 if /i "%~1"=="search-profile" goto searchprofile
+if /i "%~1"=="storage-profile" goto storageprofile
 if /i "%~1"=="test-checked" goto tests
 cl %PICOSLIP_CFLAGS% src\picoslip.c /Fo"build\picoslip.obj" /Fe"dist\PicoSlip.exe" /link build\picoslip.res /SUBSYSTEM:WINDOWS %PICOSLIP_MANIFEST% %PICOSLIP_LIBS%
 if errorlevel 1 exit /b 1
@@ -62,6 +63,12 @@ exit /b %errorlevel%
 cl %PICOSLIP_CFLAGS% tools\search_profile.c /Fo"build\search_profile.obj" /Fe"build\search_profile.exe" /link build\search.obj build\tags.obj user32.lib normaliz.lib psapi.lib
 if errorlevel 1 exit /b 1
 build\search_profile.exe
+exit /b %errorlevel%
+
+:storageprofile
+cl %PICOSLIP_CFLAGS% tools\storage_profile.c /Fo"build\storage_profile.obj" /Fe"build\storage_profile.exe" /link build\picoslip.res /SUBSYSTEM:CONSOLE %PICOSLIP_MANIFEST% %PICOSLIP_LIBS%
+if errorlevel 1 exit /b 1
+build\storage_profile.exe
 exit /b %errorlevel%
 
 :analyze

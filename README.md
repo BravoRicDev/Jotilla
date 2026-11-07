@@ -60,15 +60,19 @@ Choosing another location writes its absolute path as UTF-8 in `%LOCALAPPDATA%\P
 
 Tags live in each note's `notes.ini` section. The first tag save upgrades this file atomically to Unicode; existing layout settings are preserved. Changing tags does not rewrite TXT or RTF files. Empty notes remain unsaved until they have a title or body.
 
+Layout changes write one key or one complete section, preserving tags and unfamiliar keys. Reopening an unchanged open note does not rewrite its metadata; reopening a closed note updates only its open flag. Formatting-only changes, including undo/redo, update just the RTF companion. Title-only changes update TXT and any changed title flag. Body changes still save both representations. Blank-note creation keeps the next palette color in memory until a save-all operation, archive switch or application exit.
+
 ## Resources
 
-Version **1.2.0**: about **256 KiB** for the app, **405 KiB** for the installer. Measurements with 1–10 default notes: **2.47–2.59 MiB private RAM**, **17.32–21.47 MiB working set**, **0–0.16% of one CPU core at idle** (10-second samples, Windows 11 x64; UI activity can affect short samples). Run `build.cmd profile-only` with PicoSlip closed to measure the current release in an isolated portable archive.
+Version **1.2.0**: about **258 KiB** for the app, **408 KiB** for the installer. Measurements with 1–10 default notes: **2.47–2.59 MiB private RAM**, **17.32–21.47 MiB working set**, **0–0.16% of one CPU core at idle** (10-second samples, Windows 11 x64; UI activity can affect short samples). Run `build.cmd profile-only` with PicoSlip closed to measure the current release in an isolated portable archive.
 
 ## Build
 
 MSVC + Windows SDK: `build.cmd` builds the app and installer; `build.cmd test` runs the tests (`--interactive` adds real keyboard/mouse input). All application, installer, test and profiling code is **C17**, compiled with `/TC /W4 /WX /O2`. Windows provides the native UI and rich text editor; no third-party runtime is bundled. Release binaries are unsigned.
 
 `build.cmd test-checked` runs the suite with MSVC runtime checks; `build.cmd analyze` checks all application and installer sources with the native static analyzer. Build products stay in `build/`; distributable files stay in `dist/`. PowerShell scripts only orchestrate documentation capture, packaging and installation checks.
+
+`build.cmd storage-profile` measures blank-note creation, first save, body/style/title edits and reopening with hidden native editors. It uses isolated synthetic INI files containing 100, 1,000 and 10,000 sections, with ten samples per operation, and reports elapsed time, metadata API calls, explicit content flushes and direct content-write bytes. The synthetic metadata sections do not require corresponding TXT files. Integration checks also compare the search toolbar's pixels after shrinking, growing, maximizing, restoring and rapid resize bursts against a full repaint, with empty and Unicode queries.
 
 `build.cmd test-only --location-only` covers archive switching and migration, Unicode paths, permanent defaults, formatting and metadata preservation, locked-file rollback, unavailable drives and native chooser cancellation.
 

@@ -35,6 +35,8 @@
 #define MIN_WIDTH 160
 #define MIN_HEIGHT 100
 #define MAX_SIZE 4096
+#define DIRTY_TEXT 1u
+#define DIRTY_RICH 2u
 #define CMD_ARCHIVE 100
 #define CMD_TITLE 101
 #define CMD_BROWSE 102
@@ -44,6 +46,13 @@
 #define CMD_PALETTE 400
 
 typedef struct Note Note;
+enum {
+    LAYOUT_X, LAYOUT_Y, LAYOUT_COLOR, LAYOUT_TITLE, LAYOUT_COLLAPSED, LAYOUT_OPEN,
+    LAYOUT_PALETTE, LAYOUT_SIZE, LAYOUT_OPACITY, LAYOUT_WIDTH, LAYOUT_HEIGHT, LAYOUT_COUNT
+};
+static const wchar_t *LAYOUT_KEYS[LAYOUT_COUNT] = {
+    L"x", L"y", L"color", L"has_title", L"collapsed", L"open", L"palette", L"size", L"opacity", L"width", L"height"
+};
 struct Note {
     Note *next;
     HWND window, edit;
@@ -57,9 +66,10 @@ struct Note {
     wchar_t id[80], path[PATH_CAP];
     int color, palette, size, opacity, dpi, line_height, max_lines, hover, pressed;
     int width, height, wheel_delta;
-    int saved_layout[11];
+    int saved_layout[LAYOUT_COUNT];
+    unsigned dirty;
     DWORD selection_start, selection_end;
-    BOOL collapsed, ready, dirty, tags_dirty, save_failed, validating, layout_saved, persisted;
+    BOOL collapsed, ready, tags_dirty, save_failed, validating, layout_saved, persisted;
 };
 static const SIZE NOTE_SIZES[] = {{240,180}, {NOTE_WIDTH,NOTE_HEIGHT}, {420,340}, {540,440}, {300,300}};
 static const wchar_t *SIZE_NAMES[] = {L"Small", L"Medium", L"Large", L"Extra large", L"Square"};
@@ -74,6 +84,7 @@ static wchar_t directory[PATH_CAP], state_path[PATH_CAP];
 static wchar_t location_config[PATH_CAP];
 static UINT taskbar_created;
 static int next_color;
+static int saved_next_color;
 static int current_palette;
 static BOOL testing;
 static HMODULE rich_edit;
@@ -97,8 +108,8 @@ static void redraw_bar(Note *note) {
     InvalidateRect(note->window, &rect, FALSE);
 }
 
-static void mark_dirty(Note *note) {
-    note->dirty = TRUE;
+static void mark_dirty(Note *note, unsigned changes) {
+    note->dirty |= changes;
     SetTimer(note->window, SAVE_TIMER, 400, NULL);
 }
 
@@ -125,18 +136,70 @@ static int setting(const wchar_t *section, const wchar_t *key, int fallback) {
     return (int)GetPrivateProfileIntW(section, key, fallback, state_path);
 }
 
+static int layout_setting(Note *note, int field, int fallback) {
+    return note->saved_layout[field] = setting(note->id, LAYOUT_KEYS[field], fallback);
+}
+
+/* A multi-property change replaces one section. Retain tags and unfamiliar
+   keys instead of rebuilding the section from just the layout fields. */
+static BOOL write_layout(const wchar_t *id, const int values[LAYOUT_COUNT]) {
+    wchar_t *section = NULL, *item;
+    size_t used = 0;
+    DWORD capacity = 1024, length;
+    int i;
+    BOOL ok = FALSE;
+    for (;;) {
+        wchar_t *grown = (wchar_t *)realloc(section, (size_t)capacity * sizeof(wchar_t));
+        if (!grown) goto done;
+        section = grown;
+        SetLastError(ERROR_SUCCESS);
+        length = GetPrivateProfileSectionW(id, section, capacity, state_path);
+        if (!length && GetLastError() != ERROR_SUCCESS && GetLastError() != ERROR_FILE_NOT_FOUND) goto done;
+        if (length < capacity - 2) break;
+        if (capacity >= 32768) goto done;
+        capacity *= 2;
+    }
+    for (item = section; *item;) {
+        size_t size = wcslen(item) + 1, key = wcscspn(item, L"=");
+        for (i = 0; i < LAYOUT_COUNT; ++i)
+            if (wcslen(LAYOUT_KEYS[i]) == key && !_wcsnicmp(item, LAYOUT_KEYS[i], key)) break;
+        if (i == LAYOUT_COUNT) { memmove(section + used, item, size * sizeof(wchar_t)); used += size; }
+        item += size;
+    }
+    /* Each key plus any signed int and its terminator fits in 32 characters. */
+    if (used + LAYOUT_COUNT * 32 + 1 > capacity) {
+        wchar_t *grown;
+        if (used + LAYOUT_COUNT * 32 + 1 > 32768) goto done;
+        capacity = (DWORD)(used + LAYOUT_COUNT * 32 + 1);
+        grown = (wchar_t *)realloc(section, (size_t)capacity * sizeof(wchar_t));
+        if (!grown) goto done;
+        section = grown;
+    }
+    for (i = 0; i < LAYOUT_COUNT; ++i) {
+        int size = swprintf_s(section + used, capacity - used, L"%s=%d", LAYOUT_KEYS[i], values[i]);
+        if (size < 0) goto done;
+        used += (size_t)size + 1;
+    }
+    section[used] = 0;
+    ok = WritePrivateProfileSectionW(id, section, state_path);
+done:
+    free(section);
+    return ok;
+}
+
 static BOOL save_layout(Note *note, BOOL open) {
-    static const wchar_t *keys[] = {L"x", L"y", L"color", L"has_title", L"collapsed", L"open", L"palette", L"size", L"opacity", L"width", L"height"};
     RECT rect;
-    int values[11], i;
+    int values[LAYOUT_COUNT], i, changed = 0, last = 0;
     if (!GetWindowRect(note->window, &rect)) return FALSE;
     values[0] = rect.left; values[1] = rect.top; values[2] = note->color;
     values[3] = note->title != NULL; values[4] = note->collapsed; values[5] = open;
     values[6] = note->palette; values[7] = note->size; values[8] = note->opacity;
     values[9] = MulDiv(note->width, 96, note->dpi); values[10] = MulDiv(note->height, 96, note->dpi);
-    for (i = 0; i < 11; ++i)
-        if ((!note->layout_saved || values[i] != note->saved_layout[i]) &&
-            !write_setting(note->id, keys[i], values[i])) return FALSE;
+    for (i = 0; i < LAYOUT_COUNT; ++i)
+        if (!note->layout_saved || values[i] != note->saved_layout[i]) { ++changed; last = i; }
+    if (!changed) return TRUE;
+    if (changed == 1 ? !write_setting(note->id, LAYOUT_KEYS[last], values[last]) : !write_layout(note->id, values))
+        return FALSE;
     memcpy(note->saved_layout, values, sizeof(values));
     note->layout_saved = TRUE;
     return TRUE;
@@ -154,6 +217,27 @@ static DWORD CALLBACK read_rich(DWORD_PTR cookie, LPBYTE data, LONG bytes, LONG 
     BOOL ok = ReadFile((HANDLE)cookie, data, (DWORD)bytes, &count, NULL);
     *read = (LONG)count;
     return ok ? 0 : ERROR_READ_FAULT;
+}
+
+typedef struct TextComparison { const BYTE *text; size_t remaining; } TextComparison;
+
+static DWORD CALLBACK compare_text(DWORD_PTR cookie, LPBYTE data, LONG bytes, LONG *written) {
+    TextComparison *comparison = (TextComparison *)cookie;
+    *written = 0;
+    if (bytes < 0 || (size_t)bytes > comparison->remaining || memcmp(comparison->text, data, (size_t)bytes)) return 1;
+    comparison->text += bytes; comparison->remaining -= (size_t)bytes;
+    *written = bytes;
+    return 0;
+}
+
+/* Rich Edit streams the same CRLF text as GetWindowText, without another
+   whole-body allocation. This also distinguishes format-only undo/redo. */
+static BOOL editor_matches_text(const Note *note) {
+    TextComparison comparison = {(const BYTE *)note->accepted_text, wcslen(note->accepted_text) * sizeof(wchar_t)};
+    EDITSTREAM stream = {0};
+    stream.dwCookie = (DWORD_PTR)&comparison; stream.pfnCallback = compare_text;
+    SendMessageW(note->edit, EM_STREAMOUT, SF_TEXT | SF_UNICODE, (LPARAM)&stream);
+    return !stream.dwError && !comparison.remaining;
 }
 
 /* Keep the UTF-8 archive readable; Windows streams formatting to a companion
@@ -177,12 +261,10 @@ static BOOL save_rich(Note *note) {
 }
 
 static void load_rich(Note *note) {
-    wchar_t path[PATH_CAP], *text;
+    wchar_t path[PATH_CAP];
     HANDLE file;
     LARGE_INTEGER size;
     EDITSTREAM stream = {0};
-    int length;
-    BOOL matches = FALSE;
     if (swprintf_s(path, PATH_CAP, L"%s\\%s.rtf", directory, note->id) < 0) return;
     file = CreateFileW(path, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
     if (file == INVALID_HANDLE_VALUE) return;
@@ -192,16 +274,9 @@ static void load_rich(Note *note) {
     stream.dwCookie = (DWORD_PTR)file; stream.pfnCallback = read_rich;
     SendMessageW(note->edit, EM_STREAMIN, SF_RTF, (LPARAM)&stream);
     CloseHandle(file);
-    length = GetWindowTextLengthW(note->edit);
-    text = (wchar_t *)malloc(((size_t)length + 1) * sizeof(wchar_t));
-    if (text) {
-        GetWindowTextW(note->edit, text, length + 1);
-        matches = !stream.dwError && !wcscmp(text, note->accepted_text);
-        free(text);
-    }
     /* A crash between the two replacements, or an external TXT edit, must
        never resurrect an older body from the formatting companion. */
-    if (!matches) SetWindowTextW(note->edit, note->accepted_text);
+    if (stream.dwError || !editor_matches_text(note)) SetWindowTextW(note->edit, note->accepted_text);
     SendMessageW(note->edit, EM_EMPTYUNDOBUFFER, 0, 0);
 }
 
@@ -216,6 +291,11 @@ static BOOL save_text(Note *note) {
     DWORD written;
     BOOL ok;
     if (!note->dirty) return TRUE;
+    if (!(note->dirty & DIRTY_TEXT)) {
+        if (!save_rich(note)) return FALSE;
+        note->dirty = 0;
+        return TRUE;
+    }
     body_length = wcslen(note->accepted_text);
     title_length = note->title ? wcslen(note->title) : 0;
     /* At most three UTF-8 bytes per UTF-16 code unit, plus # and CRLF.
@@ -242,7 +322,7 @@ static BOOL save_text(Note *note) {
     free(utf8);
     if (ok) ok = FlushFileBuffers(file);
     if (!CloseHandle(file)) ok = FALSE;
-    if (ok) ok = save_rich(note);
+    if (ok && (note->dirty & DIRTY_RICH)) ok = save_rich(note);
     if (ok) ok = MoveFileExW(temporary, note->path, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH);
     if (ok) { note->dirty = FALSE; note->persisted = TRUE; }
     else DeleteFileW(temporary);
@@ -258,7 +338,7 @@ static BOOL note_has_content(const Note *note) {
 
 static BOOL save_note(Note *note) {
     BOOL previous_failure = note->save_failed;
-    BOOL changed = note->dirty || note->tags_dirty || previous_failure;
+    BOOL changed = (note->dirty & DIRTY_TEXT) || note->tags_dirty || previous_failure;
     BOOL tags_changed = note->tags_dirty || !note->persisted || previous_failure;
     BOOL ok;
     if (!note_has_content(note)) {
@@ -318,7 +398,7 @@ static BOOL load_text(Note *note) {
     free(data);
     /* This flag records an explicit Enter gesture. A literal #first line
        entered with Shift+Enter must never become a title just by reopening. */
-    if (setting(note->id, L"has_title", FALSE) && text[0] == L'#') {
+    if (note->saved_layout[LAYOUT_TITLE] && text[0] == L'#') {
         size_t end = wcscspn(text, L"\r\n"), body = end;
         if (end > 1) {
             note->title = (wchar_t *)calloc(end, sizeof(wchar_t));
@@ -425,7 +505,7 @@ static BOOL promote_title(Note *note) {
     free(note->title); note->title = title;
     memmove(note->accepted_text, text + after, (wcslen(text + after) + 1) * sizeof(wchar_t));
     SendMessageW(note->edit, EM_SETSEL, 0, 0);
-    mark_dirty(note);
+    mark_dirty(note, DIRTY_TEXT | DIRTY_RICH);
     redraw_bar(note);
     return TRUE;
 }
@@ -549,7 +629,7 @@ static void toggle_format(Note *note, DWORD effect) {
     SendMessageW(note->edit, EM_SETCHARFORMAT, SCF_SELECTION, (LPARAM)&format);
     if (!text_fits(note)) SendMessageW(note->edit, EM_UNDO, 0, 0);
     note->validating = FALSE;
-    mark_dirty(note);
+    mark_dirty(note, DIRTY_RICH);
 }
 
 /* Treat a checkbox gesture and its derived formatting as one native undo
@@ -566,7 +646,7 @@ static void finish_edit(Note *note, const CHARRANGE *selection) {
     if (!text_fits(note) || !remember_text(note)) {
         SendMessageW(note->edit, EM_UNDO, 0, 0);
         SendMessageW(note->edit, EM_EXSETSEL, 0, (LPARAM)selection);
-    } else mark_dirty(note);
+    } else mark_dirty(note, DIRTY_TEXT | DIRTY_RICH);
     note->validating = FALSE;
 }
 
@@ -671,11 +751,12 @@ static LRESULT CALLBACK edit_proc(HWND window, UINT message, WPARAM wparam, LPAR
         note->validating = TRUE;
         result = CallWindowProcW(note->edit_proc, window, action, 0, 0);
         if (result) {
+            unsigned changes = DIRTY_RICH | (editor_matches_text(note) ? 0 : DIRTY_TEXT);
             if (!text_fits(note) || !remember_text(note)) {
                 CallWindowProcW(note->edit_proc, window, action == EM_UNDO ? EM_REDO : EM_UNDO, 0, 0);
                 SendMessageW(window, EM_EXSETSEL, 0, (LPARAM)&selection);
                 result = FALSE;
-            } else mark_dirty(note);
+            } else mark_dirty(note, changes);
         }
         note->validating = FALSE;
         return result;
@@ -715,8 +796,9 @@ static LRESULT CALLBACK edit_proc(HWND window, UINT message, WPARAM wparam, LPAR
 static BOOL set_title(Note *note, const wchar_t *text) {
     wchar_t *title;
     if (!copy_title(text,wcscspn(text,L"\r\n"),&title)) return FALSE;
+    if ((!title && !note->title) || (title && note->title && !wcscmp(title, note->title))) { free(title); return TRUE; }
     free(note->title); note->title = title;
-    mark_dirty(note); redraw_bar(note);
+    mark_dirty(note, DIRTY_TEXT); redraw_bar(note);
     return TRUE;
 }
 
@@ -967,7 +1049,7 @@ static void note_command(Note *note, UINT command) {
     } else if (command >= CMD_PALETTE && command < CMD_PALETTE + 3) {
         int palette = (int)command - CMD_PALETTE;
         if (write_setting(L"app", L"palette", palette) && write_setting(L"app", L"next_color", 0)) {
-            current_palette = palette; next_color = 0;
+            current_palette = palette; next_color = saved_next_color = 0;
         } else report_error(note->window, L"The palette preference could not be saved.");
     }
 }
@@ -1137,7 +1219,7 @@ static LRESULT CALLBACK note_proc(HWND window, UINT message, WPARAM wparam, LPAR
                 note->validating = FALSE;
                 return 0;
             }
-            mark_dirty(note);
+            mark_dirty(note, DIRTY_TEXT | DIRTY_RICH);
         }
         return 0;
     case WM_TIMER:
@@ -1236,23 +1318,23 @@ static Note *open_note(const wchar_t *id, int color, BOOL restore) {
         free(note); return NULL;
     }
     note->dpi = (int)GetDpiForSystem();
-    note->color = restore ? setting(id, L"color", color) : color;
+    note->color = restore ? layout_setting(note, LAYOUT_COLOR, color) : color;
     if (note->color < 0 || note->color >= COLOR_COUNT) note->color = 0;
-    note->palette = restore ? setting(id, L"palette", 0) : current_palette;
+    note->palette = restore ? layout_setting(note, LAYOUT_PALETTE, 0) : current_palette;
     if (note->palette < 0 || note->palette > 2) note->palette = 0;
-    note->size = restore ? setting(id, L"size", 1) : 1;
+    note->size = restore ? layout_setting(note, LAYOUT_SIZE, 1) : 1;
     if (note->size < 0 || note->size >= SIZE_COUNT) note->size = 1;
-    width = restore ? setting(id, L"width", NOTE_SIZES[note->size].cx) : NOTE_SIZES[note->size].cx;
-    height = restore ? setting(id, L"height", NOTE_SIZES[note->size].cy) : NOTE_SIZES[note->size].cy;
+    width = restore ? layout_setting(note, LAYOUT_WIDTH, NOTE_SIZES[note->size].cx) : NOTE_SIZES[note->size].cx;
+    height = restore ? layout_setting(note, LAYOUT_HEIGHT, NOTE_SIZES[note->size].cy) : NOTE_SIZES[note->size].cy;
     note->width = scaled(note, max(MIN_WIDTH, min(width, MAX_SIZE)));
     note->height = scaled(note, max(MIN_HEIGHT, min(height, MAX_SIZE)));
     if (width != NOTE_SIZES[note->size].cx || height != NOTE_SIZES[note->size].cy) note->size = -1;
-    note->opacity = restore ? setting(id, L"opacity", 100) : 100;
+    note->opacity = restore ? layout_setting(note, LAYOUT_OPACITY, 100) : 100;
     if (note->opacity < 60 || note->opacity > 100) note->opacity = 100;
     width = note->width;
     height = note->height;
-    x = restore ? setting(id, L"x", 100) : 100 + next_color % 7 * 28;
-    y = restore ? setting(id, L"y", 100) : 100 + next_color % 7 * 28;
+    x = restore ? layout_setting(note, LAYOUT_X, 100) : 100 + next_color % 7 * 28;
+    y = restore ? layout_setting(note, LAYOUT_Y, 100) : 100 + next_color % 7 * 28;
     /* Clamp stored coordinates before arithmetic and keep the whole title bar
        reachable when a monitor is unplugged or the screen layout changes. */
     x = max(-100000, min(x, 100000)); y = max(-100000, min(y, 100000));
@@ -1262,7 +1344,12 @@ static Note *open_note(const wchar_t *id, int color, BOOL restore) {
     height = min(height, monitor.rcWork.bottom - monitor.rcWork.top);
     x = max(monitor.rcWork.left, min(x, monitor.rcWork.right - width));
     y = max(monitor.rcWork.top, min(y, monitor.rcWork.bottom - height));
-    note->collapsed = restore && setting(id, L"collapsed", FALSE);
+    note->collapsed = restore && layout_setting(note, LAYOUT_COLLAPSED, FALSE);
+    if (restore) {
+        layout_setting(note, LAYOUT_TITLE, FALSE);
+        layout_setting(note, LAYOUT_OPEN, TRUE);
+        note->layout_saved = TRUE;
+    }
     note->next = notes; notes = note;
     window = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_TOPMOST, NOTE_CLASS, L"PicoSlip",
                              WS_POPUP | WS_THICKFRAME | WS_CLIPCHILDREN,
@@ -1313,7 +1400,6 @@ static Note *new_note(void) {
     note = open_note(id, color, FALSE);
     if (note) {
         next_color = (color + 1) % COLOR_COUNT;
-        write_setting(L"app", L"next_color", next_color);
     }
     return note;
 }
@@ -1352,6 +1438,10 @@ static BOOL save_all(void) {
     Note *note;
     BOOL ok = TRUE;
     for (note = notes; note; note = note->next) if (!save_note(note)) ok = FALSE;
+    if (next_color != saved_next_color) {
+        if (write_setting(L"app", L"next_color", next_color)) saved_next_color = next_color;
+        else ok = FALSE;
+    }
     return ok;
 }
 
@@ -1427,6 +1517,7 @@ static HWND browse_notes(void) {
 static void load_preferences(void) {
     next_color = setting(L"app", L"next_color", 0);
     if (next_color < 0 || next_color >= COLOR_COUNT) next_color = 0;
+    saved_next_color = next_color;
     current_palette = setting(L"app", L"palette", 0);
     if (current_palette < 0 || current_palette > 2) current_palette = 0;
 }
