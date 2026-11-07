@@ -1,5 +1,6 @@
 # Optional documentation capture; ImageMagick is a documentation tool only.
 param(
+    [switch]$OverviewOnly,
     [switch]$GifsOnly,
     [switch]$BrowserOnly,
     [switch]$NotesOnly,
@@ -7,18 +8,20 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 if ($BrowserOnly -and $NotesOnly) { throw 'Choose one walkthrough, or omit both switches to capture both.' }
+if ($OverviewOnly -and ($GifsOnly -or $BrowserOnly -or $NotesOnly)) { throw 'OverviewOnly cannot be combined with walkthrough switches.' }
 $root = Split-Path -Parent $PSScriptRoot
 $demoRoot = Join-Path ([IO.Path]::GetTempPath()) ('PicoSlip-demo-' + [guid]::NewGuid().ToString('N'))
 $previousDemoRoot = $env:PICOSLIP_DEMO_ROOT
 $env:PICOSLIP_DEMO_ROOT = $demoRoot
-$recordings = if ($BrowserOnly) { @('browser') } elseif ($NotesOnly) { @('notes') } else { @('notes', 'browser') }
+$recordings = if ($OverviewOnly) { @() } elseif ($BrowserOnly) { @('browser') } elseif ($NotesOnly) { @('notes') } else { @('notes', 'browser') }
 $finished = $false
 $backgrounds = [ordered]@{
-    'notes-background' = '1915P100 Night with her Train of Stars.jpg'
+    'notes-background' = 'birmingham-museums-trust-oTfV3cBAhSo-unsplash.jpg'
     'palettes-background' = 'birmingham-museums-trust-0ZbwwI6VV3E-unsplash.jpg'
     'notes-gif-background' = '1914P308  February Fill Dyke.jpg'
     'browser-background' = '1915P97 Walton-on-the-Naze.jpg'
 }
+if ($OverviewOnly) { $backgrounds = [ordered]@{ 'notes-background' = $backgrounds['notes-background'] } }
 
 function Clear-Frames([string]$name) {
     if ($name -notin $recordings) { throw 'Unknown recording directory.' }
@@ -45,7 +48,8 @@ try {
         if ($LASTEXITCODE -ne 0) { throw 'Background conversion failed.' }
     }
     foreach ($name in $recordings) { Clear-Frames $name }
-    if ($BrowserOnly) { & ./build.cmd screenshots-only --browser-only }
+    if ($OverviewOnly) { & ./build.cmd screenshots-only --overview-only }
+    elseif ($BrowserOnly) { & ./build.cmd screenshots-only --browser-only }
     elseif ($NotesOnly) { & ./build.cmd screenshots-only --notes-only }
     elseif ($GifsOnly) { & ./build.cmd screenshots-only --gifs-only }
     else { & ./build.cmd screenshots-only }
@@ -66,8 +70,9 @@ try {
         & magick @gifArguments
         if ($LASTEXITCODE -ne 0) { throw 'GIF conversion failed.' }
     }
-    if (!$GifsOnly -and !$BrowserOnly -and !$NotesOnly) {
-        foreach ($name in @('notes','palettes')) {
+    if ($OverviewOnly -or (!$GifsOnly -and !$BrowserOnly -and !$NotesOnly)) {
+        $screenshots = if ($OverviewOnly) { @('notes') } else { @('notes','palettes') }
+        foreach ($name in $screenshots) {
             & magick "build/$name.bmp" -strip -define png:compression-level=9 "docs/screenshots/$name.png"
             if ($LASTEXITCODE -ne 0) { throw 'Screenshot conversion failed.' }
             Remove-Item -LiteralPath "build/$name.bmp"

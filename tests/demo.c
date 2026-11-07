@@ -169,7 +169,7 @@ static void format_overview_note(Note *note) {
     SendMessageW(note->edit,EM_SETSEL,(WPARAM)-1,-1);
     note->validating=FALSE;
     require(text_fits(note),"formatting and both checklist states fit in the overview");
-    mark_dirty(note);
+    mark_dirty(note, DIRTY_RICH);
 }
 
 static void populate_demo_archive(void) {
@@ -661,6 +661,7 @@ int main(int argc,char **argv) {
     Note *collapsed,*formatted;
     DWORD root_length;
     POINT previous_cursor;
+    BOOL overview_only=argc==2 && !strcmp(argv[1],"--overview-only");
     BOOL browser_only=argc==2 && !strcmp(argv[1],"--browser-only");
     BOOL notes_only=argc==2 && !strcmp(argv[1],"--notes-only");
     BOOL gifs_only=browser_only || notes_only || (argc==2 && !strcmp(argv[1],"--gifs-only"));
@@ -698,6 +699,7 @@ int main(int argc,char **argv) {
     collapsed=demo_note(0,3,1,70,470,L"Later",L"Ideas for another day.",100);
     toggle_note(collapsed);
     capture(L"build\\notes.bmp"); clear_scene();
+    if (overview_only) goto cleanup;
     set_background(L"build\\palettes-background.bmp");
     demo_note(0,1,0,35,35,L"Pastel",L"Pick up flowers\r\nDinner at 7:30",100);
     demo_note(1,0,0,370,35,L"White",L"Read chapter 4\r\nEmail Alex",100);
@@ -709,6 +711,7 @@ int main(int argc,char **argv) {
 animations:
     if (!browser_only) record_postits();
     if (!notes_only) record_archive_browser();
+cleanup:
     SetCursorPos(previous_cursor.x,previous_cursor.y);
     clear_scene();
     DestroyWindow(controller);
@@ -716,7 +719,8 @@ animations:
     DeleteObject(photo); DeleteObject(caption_font);
     clear_demo_archive();
     require(RemoveDirectoryW(root),"remove private demo folder");
-    puts(browser_only ? "Captured the square browser walkthrough." :
+    puts(overview_only ? "Captured the notes overview." :
+         browser_only ? "Captured the square browser walkthrough." :
          notes_only ? "Captured the square post-it walkthrough." : "Captured the two square walkthroughs.");
     return 0;
 }
