@@ -8,6 +8,8 @@ Windows 10/11, x64. No administrator rights or extra dependencies required.
 
 ![Formatting, checklists and a collapsed note](docs/screenshots/notes.png)
 
+<sub>Background: Sundown, Loch Rannoch</sub>
+
 ## Everyday use
 
 - **Ctrl + Alt + +** creates a note; the numpad `+` works too.
@@ -29,12 +31,22 @@ Click a checkbox to mark a task complete. In the archive, search by text or tags
 
 Minimizing the archive sends it to the notification area. Double-click the tray icon to restore it; a single click creates a note.
 
-<p align="center">
-  <img src="docs/screenshots/notes-demo.gif" width="49%" alt="Writing, formatting, checklists and resizing">
-  <img src="docs/screenshots/browser-demo.gif" width="49%" alt="Searching, filtering and reopening archived notes">
-</p>
+<table>
+  <tr>
+    <td width="50%" align="center" valign="top">
+      <img src="docs/screenshots/notes-demo.gif" width="100%" alt="Writing, formatting, checklists and resizing"><br>
+      <sub>Background: February Fill Dyke</sub>
+    </td>
+    <td width="50%" align="center" valign="top">
+      <img src="docs/screenshots/browser-demo.gif" width="100%" alt="Searching, filtering and reopening archived notes"><br>
+      <sub>Background: Walton-on-the-Naze</sub>
+    </td>
+  </tr>
+</table>
 
 ![Pastel, black and white, and yellow palettes](docs/screenshots/palettes.png)
+
+<sub>Background: Stern View of Boat Going Down a Glacis, Nr Ning P-0</sub>
 
 ## Your notes
 
