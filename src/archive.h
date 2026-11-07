@@ -1,5 +1,5 @@
-#ifndef PICOSLIP_ARCHIVE_H
-#define PICOSLIP_ARCHIVE_H
+#ifndef IOTA_ARCHIVE_H
+#define IOTA_ARCHIVE_H
 
 #include <windows.h>
 

@@ -20,6 +20,7 @@
 #include "colors.h"
 #include "tags.h"
 #include "location.h"
+#include "palette_picker.h"
 
 #define APP_CLASS APP_CONTROLLER
 #define NOTE_CLASS APP_NOTE
@@ -74,7 +75,6 @@ struct Note {
 static const SIZE NOTE_SIZES[] = {{240,180}, {NOTE_WIDTH,NOTE_HEIGHT}, {420,340}, {540,440}, {300,300}};
 static const wchar_t *SIZE_NAMES[] = {L"Small", L"Medium", L"Large", L"Extra large", L"Square"};
 #define SIZE_COUNT ((int)(sizeof(NOTE_SIZES)/sizeof(NOTE_SIZES[0])))
-static const wchar_t *PALETTE_NAMES[] = {L"Pastel", L"Black and white", L"Yellow only"};
 static const int OPACITIES[] = {100,90,80,70,60};
 static HINSTANCE instance;
 static HWND controller;
@@ -100,7 +100,7 @@ static int bar_height(const Note *note) { return scaled(note, 32); }
 static int note_height(const Note *note) { return note->collapsed ? bar_height(note) : note->height; }
 static COLORREF note_color(const Note *note) { return PALETTES[note->palette][note->color]; }
 static COLORREF ink_color(const Note *note) {
-    return note->palette == 1 && (note->color & 1) ? RGB(255,255,255) : RGB(0,0,0);
+    return palette_ink(note->palette, note->color);
 }
 
 static void redraw_bar(Note *note) {
@@ -114,7 +114,7 @@ static void mark_dirty(Note *note, unsigned changes) {
 }
 
 static void report_error(HWND owner, const wchar_t *message) {
-    if (!testing) MessageBoxW(owner, message, L"PicoSlip", MB_OK | MB_ICONERROR);
+    if (!testing) MessageBoxW(owner, message, L"IOTA", MB_OK | MB_ICONERROR);
 }
 
 static BOOL make_paths(const wchar_t *root) {
@@ -338,7 +338,9 @@ static BOOL note_has_content(const Note *note) {
 
 static BOOL save_note(Note *note) {
     BOOL previous_failure = note->save_failed;
-    BOOL changed = (note->dirty & DIRTY_TEXT) || note->tags_dirty || previous_failure;
+    BOOL changed = (note->dirty & DIRTY_TEXT) || note->tags_dirty || previous_failure ||
+        (note->layout_saved && (note->saved_layout[LAYOUT_PALETTE] != note->palette ||
+                               note->saved_layout[LAYOUT_COLOR] != note->color));
     BOOL tags_changed = note->tags_dirty || !note->persisted || previous_failure;
     BOOL ok;
     if (!note_has_content(note)) {
@@ -415,6 +417,61 @@ static BOOL load_text(Note *note) {
         note->text_capacity = (size_t)count + 1;
     } else free(text);
     return ok;
+}
+
+/* Theme ink is independent of the text-edit undo history. Only the color mask
+   changes: emphasis, checklist strikes, selection and insertion point survive. */
+static BOOL set_editor_ink(Note *note, COLORREF ink) {
+    CHARFORMAT2W format = {0};
+    LONG count;
+    BOOL ok, validating = note->validating;
+    if (FAILED(note->document->lpVtbl->Undo(note->document, tomSuspend, &count))) return FALSE;
+    note->validating = TRUE;
+    format.cbSize = sizeof(format); format.dwMask = CFM_COLOR; format.crTextColor = ink;
+    ok = SendMessageW(note->edit, EM_SETCHARFORMAT, SCF_ALL, (LPARAM)&format) != 0;
+    if (ok) ok = SendMessageW(note->edit, EM_SETCHARFORMAT, SCF_DEFAULT, (LPARAM)&format) != 0;
+    note->document->lpVtbl->Undo(note->document, tomResume, &count);
+    note->validating = validating;
+    return ok;
+}
+
+static BOOL recolor_note(Note *note, int palette, int color) {
+    COLORREF paper, ink;
+    HBRUSH brush;
+    HPEN pen;
+    if (palette < 0 || palette >= PALETTE_COUNT || color < 0 || color >= PALETTE_SIZES[palette]) return FALSE;
+    if (note->palette == palette && note->color == color) return TRUE;
+    paper = PALETTES[palette][color]; ink = palette_ink(palette,color);
+    brush = CreateSolidBrush(paper);
+    pen = CreatePen(PS_SOLID,max(1,scaled(note,1)),ink);
+    if (!brush || !pen) {
+        if (brush) DeleteObject(brush);
+        if (pen) DeleteObject(pen);
+        return FALSE;
+    }
+    if (ink != ink_color(note)) {
+        if (!set_editor_ink(note,ink)) { DeleteObject(brush); DeleteObject(pen); return FALSE; }
+        mark_dirty(note,DIRTY_RICH);
+    }
+    DeleteObject(note->brush); DeleteObject(note->pen);
+    note->brush = brush; note->pen = pen; note->palette = palette; note->color = color;
+    SendMessageW(note->edit,EM_SETBKGNDCOLOR,0,paper);
+    InvalidateRect(note->window,NULL,FALSE);
+    return save_note(note);
+}
+
+static void select_note_color(void *context, int palette, int color) {
+    Note *note = (Note *)context;
+    if (!recolor_note(note,palette,color)) report_error(note->window,L"The note color could not be saved. Please check the archive folder.");
+}
+
+static void show_note_palette(Note *note, POINT point) {
+    if (point.x == -1 && point.y == -1) {
+        point.x = note->width / 2; point.y = bar_height(note) + scaled(note,50);
+        ClientToScreen(note->window,&point);
+    }
+    if (!palette_picker_show(note->window,point,note->palette,note->color,select_note_color,note))
+        report_error(note->window,L"The color picker could not be opened.");
 }
 
 static void update_style(Note *note) {
@@ -553,18 +610,19 @@ static void paint_note(Note *note) {
     FillRect(dc, &rect, note->brush);
     bar_rect = rect; bar_rect.bottom = bar;
     SetDCBrushColor(dc, note->save_failed ? RGB(235, 161, 151) :
-        RGB(GetRValue(color) * 94 / 100, GetGValue(color) * 94 / 100, GetBValue(color) * 94 / 100));
+        palette_bar(color));
     FillRect(dc, &bar_rect, dc_brush);
     if (note->title) {
         RECT title_rect = {scaled(note, 10), 0, rect.right - bar * 2 - scaled(note, 6), bar};
         HGDIOBJ old_font = SelectObject(dc, note->font);
-        SetBkMode(dc, TRANSPARENT); SetTextColor(dc, ink_color(note));
+        SetBkMode(dc, TRANSPARENT); SetTextColor(dc, note->save_failed ? RGB(0,0,0) : ink_color(note));
         DrawTextW(dc, note->title, -1, &title_rect,
                   DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX);
         SelectObject(dc, old_font);
     }
     for (i = 1; i <= 2; ++i) {
         int cx = rect.right - (i == 1 ? bar * 3 / 2 : bar / 2), cy = bar / 2, s = scaled(note, 4);
+        SelectObject(dc, (note->save_failed || (note->hover == i && i == 2)) ? GetStockObject(BLACK_PEN) : note->pen);
         if (note->hover == i) {
             SetDCBrushColor(dc, i == 2 ? RGB(235, 161, 151) : color);
             button.left = cx - bar / 2; button.right = button.left + bar; button.top = 0; button.bottom = bar;
@@ -733,6 +791,13 @@ static BOOL remove_todo_marker(Note *note) {
 
 static LRESULT CALLBACK edit_proc(HWND window, UINT message, WPARAM wparam, LPARAM lparam) {
     Note *note = (Note *)GetWindowLongPtrW(GetParent(window), GWLP_USERDATA);
+    if (message == WM_CONTEXTMENU) {
+        POINT point = {GET_X_LPARAM(lparam),GET_Y_LPARAM(lparam)};
+        show_note_palette(note,point); return 0;
+    }
+    if (message == WM_KEYDOWN && (wparam == VK_APPS || (wparam == VK_F10 && GetKeyState(VK_SHIFT) < 0))) {
+        POINT point = {-1,-1}; show_note_palette(note,point); return 0;
+    }
     if (note->ready && !note->validating && (message == WM_CHAR || message == WM_KEYDOWN ||
         message == WM_PASTE || message == WM_CUT || message == WM_CLEAR || message == WM_UNDO ||
         message == EM_REPLACESEL || message == WM_SETTEXT))
@@ -756,7 +821,10 @@ static LRESULT CALLBACK edit_proc(HWND window, UINT message, WPARAM wparam, LPAR
                 CallWindowProcW(note->edit_proc, window, action == EM_UNDO ? EM_REDO : EM_UNDO, 0, 0);
                 SendMessageW(window, EM_EXSETSEL, 0, (LPARAM)&selection);
                 result = FALSE;
-            } else mark_dirty(note, changes);
+            } else {
+                set_editor_ink(note,ink_color(note));
+                mark_dirty(note, changes);
+            }
         }
         note->validating = FALSE;
         return result;
@@ -1046,7 +1114,7 @@ static void note_command(Note *note, UINT command) {
         save_note(note);
     } else if (command >= CMD_SIZE && command < CMD_SIZE + SIZE_COUNT) {
         resize_note(note, (int)command - CMD_SIZE);
-    } else if (command >= CMD_PALETTE && command < CMD_PALETTE + 3) {
+    } else if (command >= CMD_PALETTE && command < CMD_PALETTE + DEFAULT_PALETTE_COUNT) {
         int palette = (int)command - CMD_PALETTE;
         if (write_setting(L"app", L"palette", palette) && write_setting(L"app", L"next_color", 0)) {
             current_palette = palette; next_color = saved_next_color = 0;
@@ -1074,7 +1142,7 @@ static HMENU build_note_menu(const Note *note) {
     }
     for (i = 0; i < SIZE_COUNT; ++i)
         AppendMenuW(size, MF_STRING | (note->size == i ? MF_CHECKED : 0), CMD_SIZE + i, SIZE_NAMES[i]);
-    for (i = 0; i < 3; ++i)
+    for (i = 0; i < DEFAULT_PALETTE_COUNT; ++i)
         AppendMenuW(palette, MF_STRING | (current_palette == i ? MF_CHECKED : 0), CMD_PALETTE + i, PALETTE_NAMES[i]);
     AppendMenuW(menu, MF_POPUP, (UINT_PTR)opacity, L"Opacity");
     AppendMenuW(menu, MF_STRING, CMD_TITLE, L"Edit title");
@@ -1269,6 +1337,7 @@ static LRESULT CALLBACK note_proc(HWND window, UINT message, WPARAM wparam, LPAR
         }
         ScreenToClient(window, &client);
         if (client.y >= 0 && client.y < bar_height(note)) show_note_menu(note, point);
+        else if (!note->collapsed) show_note_palette(note, point);
         return 0;
     }
     case WM_NCLBUTTONDBLCLK:
@@ -1319,9 +1388,9 @@ static Note *open_note(const wchar_t *id, int color, BOOL restore) {
     }
     note->dpi = (int)GetDpiForSystem();
     note->color = restore ? layout_setting(note, LAYOUT_COLOR, color) : color;
-    if (note->color < 0 || note->color >= COLOR_COUNT) note->color = 0;
     note->palette = restore ? layout_setting(note, LAYOUT_PALETTE, 0) : current_palette;
-    if (note->palette < 0 || note->palette > 2) note->palette = 0;
+    if (note->palette < 0 || note->palette >= PALETTE_COUNT) note->palette = 0;
+    if (note->color < 0 || note->color >= PALETTE_SIZES[note->palette]) note->color = 0;
     note->size = restore ? layout_setting(note, LAYOUT_SIZE, 1) : 1;
     if (note->size < 0 || note->size >= SIZE_COUNT) note->size = 1;
     width = restore ? layout_setting(note, LAYOUT_WIDTH, NOTE_SIZES[note->size].cx) : NOTE_SIZES[note->size].cx;
@@ -1351,7 +1420,7 @@ static Note *open_note(const wchar_t *id, int color, BOOL restore) {
         note->layout_saved = TRUE;
     }
     note->next = notes; notes = note;
-    window = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_TOPMOST, NOTE_CLASS, L"PicoSlip",
+    window = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_TOPMOST, NOTE_CLASS, L"IOTA",
                              WS_POPUP | WS_THICKFRAME | WS_CLIPCHILDREN,
                              x, y, width, note->collapsed ? bar_height(note) : height,
                              NULL, NULL, instance, note);
@@ -1364,6 +1433,7 @@ static Note *open_note(const wchar_t *id, int color, BOOL restore) {
         if (!load_text(note) || !tags_read(state_path, note->id, &note->tags)) { destroy_note(note); return NULL; }
         note->persisted = TRUE;
         load_rich(note);
+        if (!set_editor_ink(note,ink_color(note))) { destroy_note(note); return NULL; }
     }
     SetWindowPos(window, NULL, 0, 0, note->width, note_height(note),
                  SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
@@ -1430,7 +1500,7 @@ static void tray(BOOL add) {
     data.cbSize = sizeof(data); data.hWnd = controller; data.uID = 1;
     data.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP;
     data.uCallbackMessage = TRAY_MESSAGE; data.hIcon = app_icon ? app_icon : LoadIconW(NULL, IDI_APPLICATION);
-    wcscpy_s(data.szTip, 128, L"PicoSlip - Ctrl+Alt++");
+    wcscpy_s(data.szTip, 128, L"IOTA - Ctrl+Alt++");
     Shell_NotifyIconW(add ? NIM_ADD : NIM_DELETE, &data);
 }
 
@@ -1519,7 +1589,7 @@ static void load_preferences(void) {
     if (next_color < 0 || next_color >= COLOR_COUNT) next_color = 0;
     saved_next_color = next_color;
     current_palette = setting(L"app", L"palette", 0);
-    if (current_palette < 0 || current_palette > 2) current_palette = 0;
+    if (current_palette < 0 || current_palette >= DEFAULT_PALETTE_COUNT) current_palette = 0;
 }
 
 static BOOL switch_archive(const wchar_t *target, BOOL move, BOOL *copies_left) {
@@ -1638,7 +1708,7 @@ static LRESULT CALLBACK controller_proc(HWND window, UINT message, WPARAM wparam
         return 0;
     case WM_CLOSE:
         if (!save_all()) {
-            report_error(NULL, L"Some notes could not be saved. PicoSlip will stay open."); return 0;
+            report_error(NULL, L"Some notes could not be saved. IOTA will stay open."); return 0;
         }
         archive_close();
         while (notes) destroy_note(notes);
@@ -1682,6 +1752,7 @@ int WINAPI wWinMain(_In_ HINSTANCE app, _In_opt_ HINSTANCE previous, _In_ PWSTR 
     UINT key, modifiers;
     (void)previous; (void)command; (void)show;
     instance = app;
+    /* Share the established lock so an older release cannot edit concurrently. */
     mutex = CreateMutexW(NULL, FALSE, L"Local\\PicoSlip.SingleInstance");
     if (!mutex) return 1;
     if (GetLastError() == ERROR_ALREADY_EXISTS) {
@@ -1703,10 +1774,10 @@ int WINAPI wWinMain(_In_ HINSTANCE app, _In_opt_ HINSTANCE previous, _In_ PWSTR 
     } else {
         wchar_t local[PATH_CAP];
         if (FAILED(SHGetFolderPathW(NULL, CSIDL_LOCAL_APPDATA, NULL, SHGFP_TYPE_CURRENT, local)) ||
-            swprintf_s(root, PATH_CAP, L"%s\\PicoSlip", local) < 0 ||
-            (!CreateDirectoryW(root, NULL) && GetLastError() != ERROR_ALREADY_EXISTS)) { CloseHandle(mutex); return 1; }
-        swprintf_s(location_config, PATH_CAP, L"%s\\archive.path", root);
-        if (wcscat_s(root, PATH_CAP, L"\\notes")) { CloseHandle(mutex); return 1; }
+            !location_user_paths(local,location_config,root)) {
+            report_error(NULL,L"Your notes location could not be loaded. The existing archive has not been changed.");
+            CloseHandle(mutex); return 1;
+        }
     }
     if (!location_load(location_config, root, selected) || !make_paths(selected)) {
         report_error(NULL, L"The notes archive is unavailable. Reconnect its drive or check the saved archive.path setting. Your archive location has not been changed.");
@@ -1715,7 +1786,7 @@ int WINAPI wWinMain(_In_ HINSTANCE app, _In_opt_ HINSTANCE previous, _In_ PWSTR 
     load_preferences();
     app_icon = (HICON)LoadImageW(instance, MAKEINTRESOURCEW(IDI_APP), IMAGE_ICON, 32, 32, LR_DEFAULTCOLOR);
     if (!register_classes()) { CloseHandle(mutex); return 1; }
-    controller = CreateWindowExW(WS_EX_TOOLWINDOW, APP_CLASS, L"PicoSlip", WS_OVERLAPPED,
+    controller = CreateWindowExW(WS_EX_TOOLWINDOW, APP_CLASS, L"IOTA", WS_OVERLAPPED,
                                  0, 0, 0, 0, NULL, NULL, instance, NULL);
     if (!controller) { CloseHandle(mutex); return 1; }
     plus = VkKeyScanW(L'+');

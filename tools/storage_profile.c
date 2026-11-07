@@ -23,7 +23,7 @@ static BOOL counted_write(HANDLE file, LPCVOID data, DWORD size, LPDWORD written
 #define WritePrivateProfileSectionW counted_section
 #define FlushFileBuffers counted_flush
 #define WriteFile counted_write
-#include "../src/picoslip.c"
+#include "../src/iota.c"
 #undef WritePrivateProfileStringW
 #undef WritePrivateProfileSectionW
 #undef FlushFileBuffers
@@ -84,7 +84,7 @@ int wmain(void) {
     QueryPerformanceFrequency(&frequency);
     puts("metadata_sections,operation,mean_ms,profile_calls_per_op,flushes_per_op,direct_write_bytes_per_op");
     for (pass = 0; pass < 3; ++pass) {
-        swprintf_s(root, PATH_CAP, L"%sPicoSlip-storage-review-%lu-%llu-%d", temporary,
+        swprintf_s(root, PATH_CAP, L"%sIOTA-storage-review-%lu-%llu-%d", temporary,
                    GetCurrentProcessId(), GetTickCount64(), pass);
         check(make_paths(root)); seed_metadata(sizes[pass]);
         for (op = 0; op < 6; ++op) {

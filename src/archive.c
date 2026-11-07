@@ -18,7 +18,7 @@
 #include "tags.h"
 #include "search.h"
 
-#define ARCHIVE_CLASS L"PicoSlip.Archive"
+#define ARCHIVE_CLASS L"IOTA.Archive"
 #define ARCHIVE_PATH_CAP 1024
 #define DELETE_NOTES 1
 #define ARCHIVE_REFRESH (WM_APP + 1)
@@ -274,7 +274,7 @@ static BOOL refresh_archive(Archive *archive, BOOL reload) {
     if (archive->worker) search_cancel(archive->worker);
     discard_results(archive);
     /* Keep cached previews and selected notes across additions/deletions.
-       Explicit refresh also rereads files edited outside PicoSlip. */
+       Explicit refresh also rereads files edited outside IOTA. */
     for (i = 0; i < count; ++i) {
         while (old < archive->count && compare_entries(&archive->entries[old], &entries[i]) < 0) ++old;
         if (old < archive->count && !compare_entries(&archive->entries[old], &entries[i])) {
@@ -405,10 +405,10 @@ static void load_preview(Archive *archive, ArchiveEntry *entry) {
     int count = 0, length, offset = 0, trim;
     int color = (int)GetPrivateProfileIntW(entry->id, L"color", 0, archive->settings);
     int palette = (int)GetPrivateProfileIntW(entry->id, L"palette", 0, archive->settings);
-    if (color < 0 || color >= COLOR_COUNT) color = 0;
-    if (palette < 0 || palette >= 3) palette = 0;
+    if (palette < 0 || palette >= PALETTE_COUNT) palette = 0;
+    if (color < 0 || color >= PALETTE_SIZES[palette]) color = 0;
     entry->paper = PALETTES[palette][color];
-    entry->ink = palette == 1 && (color & 1) ? RGB(255,255,255) : RGB(0,0,0);
+    entry->ink = palette_ink(palette,color);
     entry->titled = GetPrivateProfileIntW(entry->id, L"has_title", FALSE, archive->settings) != 0;
     entry->loaded = TRUE;
     tags_read(archive->settings, entry->id, &entry->tags);
@@ -463,6 +463,7 @@ static void load_excerpt(Archive *archive, ArchiveEntry *entry, const SearchHit 
 
 static void draw_excerpt(HDC dc, const wchar_t *text, RECT rect, int highlight, int length) {
     TEXTMETRICW metrics;
+    COLORREF ink = GetTextColor(dc);
     int offset = 0, total = (int)wcslen(text), y = rect.top;
     GetTextMetricsW(dc, &metrics);
     while (offset < total && y + metrics.tmHeight <= rect.bottom) {
@@ -483,6 +484,7 @@ static void draw_excerpt(HDC dc, const wchar_t *text, RECT rect, int highlight, 
             int stop = marked ? min(end, highlight + length) : (part < highlight ? min(end, highlight) : end);
             SetBkColor(dc, RGB(228,196,109));
             SetBkMode(dc, marked ? OPAQUE : TRANSPARENT);
+            SetTextColor(dc, marked ? RGB(0,0,0) : ink);
             ExtTextOutW(dc, x, y, ETO_CLIPPED, &rect, text + part, (UINT)(stop - part), NULL);
             SetBkMode(dc, TRANSPARENT);
             GetTextExtentPoint32W(dc, text + part, stop - part, &size); x += size.cx; part = stop;
@@ -494,6 +496,7 @@ static void draw_excerpt(HDC dc, const wchar_t *text, RECT rect, int highlight, 
         } else if (text[offset] == L' ') ++offset;
         y += metrics.tmHeight;
     }
+    SetTextColor(dc, ink);
 }
 
 static LRESULT draw_preview(Archive *archive, NMLVCUSTOMDRAW *draw) {
@@ -511,15 +514,14 @@ static LRESULT draw_preview(Archive *archive, NMLVCUSTOMDRAW *draw) {
     InflateRect(&card, -archive_scaled(archive, 4), -archive_scaled(archive, 4));
     SetDCBrushColor(dc, entry->paper); FillRect(dc, &card, brush);
     bar = card; bar.bottom = bar.top + archive_scaled(archive, 28);
-    SetDCBrushColor(dc, RGB(GetRValue(entry->paper) * 94 / 100, GetGValue(entry->paper) * 94 / 100,
-                            GetBValue(entry->paper) * 94 / 100));
+    SetDCBrushColor(dc, palette_bar(entry->paper));
     FillRect(dc, &bar, brush);
     SetDCBrushColor(dc, RGB(GetRValue(entry->paper) * 85 / 100, GetGValue(entry->paper) * 85 / 100,
                             GetBValue(entry->paper) * 85 / 100));
     FrameRect(dc, &card, brush);
     if (ListView_GetItemState(archive->list, index, LVIS_SELECTED)) {
         RECT border = card;
-        SetDCBrushColor(dc, ARCHIVE_INK); FrameRect(dc, &border, brush);
+        SetDCBrushColor(dc, entry->ink); FrameRect(dc, &border, brush);
         InflateRect(&border, -1, -1); FrameRect(dc, &border, brush);
     }
     title = bar; InflateRect(&title, -archive_scaled(archive, 10), 0);
@@ -547,7 +549,7 @@ static LRESULT draw_preview(Archive *archive, NMLVCUSTOMDRAW *draw) {
         const wchar_t *cursor = entry->tags;
         marker.right = marker.left + archive_scaled(archive, 2);
         marker.top += archive_scaled(archive, 3); marker.bottom -= archive_scaled(archive, 3);
-        SetDCBrushColor(dc, RGB(0,0,0)); FillRect(dc, &marker, brush);
+        SetDCBrushColor(dc, entry->ink); FillRect(dc, &marker, brush);
         footer.left += archive_scaled(archive, 9);
         label[0] = 0;
         while (tags_next(&cursor, name)) {
@@ -634,7 +636,7 @@ static void archive_fonts(Archive *archive) {
 
 static void open_archive_item(Archive *archive, int index) {
     if (index >= 0 && index < archive->visible && !archive->actions.open(archive->entries[entry_index(archive, index)].id))
-        MessageBoxW(archive->window, L"This note could not be opened.", L"PicoSlip", MB_OK | MB_ICONERROR);
+        MessageBoxW(archive->window, L"This note could not be opened.", L"IOTA", MB_OK | MB_ICONERROR);
 }
 
 static void delete_archive_selection(Archive *archive) {
@@ -642,12 +644,12 @@ static void delete_archive_selection(Archive *archive) {
     wchar_t message[128];
     if (!count) return;
     swprintf_s(message, 128, L"Delete %d selected note%s from the archive?", count, count == 1 ? L"" : L"s");
-    if (MessageBoxW(archive->window, message, L"PicoSlip", MB_YESNO | MB_DEFBUTTON2 | MB_ICONQUESTION) != IDYES) return;
+    if (MessageBoxW(archive->window, message, L"IOTA", MB_YESNO | MB_DEFBUTTON2 | MB_ICONQUESTION) != IDYES) return;
     while ((index = ListView_GetNextItem(archive->list, index, LVNI_SELECTED)) >= 0)
         if (!archive->actions.remove(archive->entries[entry_index(archive, index)].id)) ++failures;
     if (!refresh_archive(archive, FALSE) || failures)
         MessageBoxW(archive->window, L"Some notes could not be deleted. Check that their files are writable.",
-                    L"PicoSlip", MB_OK | MB_ICONERROR);
+                    L"IOTA", MB_OK | MB_ICONERROR);
 }
 
 static void archive_context_menu(Archive *archive, POINT point) {
@@ -1115,7 +1117,7 @@ static LRESULT CALLBACK archive_proc(HWND window, UINT message, WPARAM wparam, L
             if (key == VK_RETURN) open_archive_item(archive, ListView_GetNextItem(archive->list, -1, LVNI_FOCUSED));
             if (key == VK_DELETE) delete_archive_selection(archive);
             if (key == VK_F5 && !refresh_archive(archive, TRUE))
-                MessageBoxW(window, L"The archive could not be refreshed.", L"PicoSlip", MB_OK | MB_ICONERROR);
+                MessageBoxW(window, L"The archive could not be refreshed.", L"IOTA", MB_OK | MB_ICONERROR);
             if (key == 'A' && GetKeyState(VK_CONTROL) < 0)
                 ListView_SetItemState(archive->list, -1, LVIS_SELECTED, LVIS_SELECTED);
             return 0;

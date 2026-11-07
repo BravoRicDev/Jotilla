@@ -1,11 +1,11 @@
 #include <windows.h>
 #include "resource.h"
-IDI_APP ICON "assets/picoslip.ico"
-IDR_APPLICATION RCDATA "dist/PicoSlip.exe"
+IDI_APP ICON "assets/iota.ico"
+IDR_APPLICATION RCDATA "dist/IOTA.exe"
 IDR_LICENSE RCDATA "LICENSE"
 1 VERSIONINFO
- FILEVERSION 1,2,0,0
- PRODUCTVERSION 1,2,0,0
+ FILEVERSION 1,3,0,0
+ PRODUCTVERSION 1,3,0,0
  FILEOS VOS_NT_WINDOWS32
  FILETYPE VFT_APP
 BEGIN
@@ -13,10 +13,10 @@ BEGIN
  BEGIN
   BLOCK "040904B0"
   BEGIN
-   VALUE "FileDescription", "PicoSlip Setup\0"
-   VALUE "FileVersion", "1.2.0\0"
-   VALUE "ProductName", "PicoSlip\0"
-   VALUE "ProductVersion", "1.2.0\0"
+   VALUE "FileDescription", "IOTA Setup\0"
+   VALUE "FileVersion", "1.3.0\0"
+   VALUE "ProductName", "IOTA\0"
+   VALUE "ProductVersion", "1.3.0\0"
    VALUE "LegalCopyright", "MIT - Alessio Garau\0"
   END
  END

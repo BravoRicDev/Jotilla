@@ -1,6 +1,7 @@
 # Optional documentation capture; ImageMagick is a documentation tool only.
 param(
     [switch]$OverviewOnly,
+    [switch]$StillsOnly,
     [switch]$GifsOnly,
     [switch]$BrowserOnly,
     [switch]$NotesOnly,
@@ -8,12 +9,12 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 if ($BrowserOnly -and $NotesOnly) { throw 'Choose one walkthrough, or omit both switches to capture both.' }
-if ($OverviewOnly -and ($GifsOnly -or $BrowserOnly -or $NotesOnly)) { throw 'OverviewOnly cannot be combined with walkthrough switches.' }
+if (($OverviewOnly -or $StillsOnly) -and ($GifsOnly -or $BrowserOnly -or $NotesOnly)) { throw 'Still captures cannot be combined with walkthrough switches.' }
 $root = Split-Path -Parent $PSScriptRoot
-$demoRoot = Join-Path ([IO.Path]::GetTempPath()) ('PicoSlip-demo-' + [guid]::NewGuid().ToString('N'))
-$previousDemoRoot = $env:PICOSLIP_DEMO_ROOT
-$env:PICOSLIP_DEMO_ROOT = $demoRoot
-$recordings = if ($OverviewOnly) { @() } elseif ($BrowserOnly) { @('browser') } elseif ($NotesOnly) { @('notes') } else { @('notes', 'browser') }
+$demoRoot = Join-Path ([IO.Path]::GetTempPath()) ('IOTA-demo-' + [guid]::NewGuid().ToString('N'))
+$previousDemoRoot = $env:IOTA_DEMO_ROOT
+$env:IOTA_DEMO_ROOT = $demoRoot
+$recordings = if ($OverviewOnly -or $StillsOnly) { @() } elseif ($BrowserOnly) { @('browser') } elseif ($NotesOnly) { @('notes') } else { @('notes', 'browser') }
 $finished = $false
 $backgrounds = [ordered]@{
     'notes-background' = 'birmingham-museums-trust-oTfV3cBAhSo-unsplash.jpg'
@@ -22,6 +23,7 @@ $backgrounds = [ordered]@{
     'browser-background' = '1915P97 Walton-on-the-Naze.jpg'
 }
 if ($OverviewOnly) { $backgrounds = [ordered]@{ 'notes-background' = $backgrounds['notes-background'] } }
+elseif ($StillsOnly) { $backgrounds = [ordered]@{ 'notes-background' = $backgrounds['notes-background']; 'palettes-background' = $backgrounds['palettes-background'] } }
 
 function Clear-Frames([string]$name) {
     if ($name -notin $recordings) { throw 'Unknown recording directory.' }
@@ -49,6 +51,7 @@ try {
     }
     foreach ($name in $recordings) { Clear-Frames $name }
     if ($OverviewOnly) { & ./build.cmd screenshots-only --overview-only }
+    elseif ($StillsOnly) { & ./build.cmd screenshots-only --stills-only }
     elseif ($BrowserOnly) { & ./build.cmd screenshots-only --browser-only }
     elseif ($NotesOnly) { & ./build.cmd screenshots-only --notes-only }
     elseif ($GifsOnly) { & ./build.cmd screenshots-only --gifs-only }
@@ -80,7 +83,7 @@ try {
     }
     $finished = $true
 } finally {
-    $env:PICOSLIP_DEMO_ROOT = $previousDemoRoot
+    $env:IOTA_DEMO_ROOT = $previousDemoRoot
     if (Test-Path -LiteralPath $demoRoot) {
         $files = @(Get-ChildItem -LiteralPath $demoRoot -Force)
         if (@($files | Where-Object { $_.PSIsContainer -or $_.Name -notmatch '^(notes\.ini|note-.+\.(txt|rtf)(\.tmp)?)$' }).Count) {

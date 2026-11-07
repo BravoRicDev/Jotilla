@@ -13,28 +13,35 @@
 #include "resource.h"
 
 #define PATH_CAP 1024
-#define UNINSTALL_KEY L"Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\PicoSlip"
+#ifndef UNINSTALL_KEY
+#define UNINSTALL_KEY L"Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\IOTA"
+#define LEGACY_UNINSTALL_KEY L"Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\PicoSlip"
+#endif
 static wchar_t install_dir[PATH_CAP], app_path[PATH_CAP], uninstall_path[PATH_CAP];
 static wchar_t start_link[PATH_CAP], desktop_link[PATH_CAP], self[PATH_CAP];
+static wchar_t legacy_dir[PATH_CAP], legacy_start_link[PATH_CAP], legacy_desktop_link[PATH_CAP];
 static BOOL silent;
 
 static BOOL paths(void) {
     wchar_t root[PATH_CAP];
     DWORD length;
     if (FAILED(SHGetFolderPathW(NULL,CSIDL_LOCAL_APPDATA,NULL,SHGFP_TYPE_CURRENT,root)) ||
-        swprintf_s(install_dir,PATH_CAP,L"%s\\Programs\\PicoSlip",root)<0 ||
-        swprintf_s(app_path,PATH_CAP,L"%s\\PicoSlip.exe",install_dir)<0 ||
+        swprintf_s(legacy_dir,PATH_CAP,L"%s\\Programs\\PicoSlip",root)<0 ||
+        swprintf_s(install_dir,PATH_CAP,L"%s\\Programs\\IOTA",root)<0 ||
+        swprintf_s(app_path,PATH_CAP,L"%s\\IOTA.exe",install_dir)<0 ||
         swprintf_s(uninstall_path,PATH_CAP,L"%s\\Uninstall.exe",install_dir)<0) return FALSE;
     if (FAILED(SHGetFolderPathW(NULL,CSIDL_PROGRAMS,NULL,SHGFP_TYPE_CURRENT,root)) ||
-        swprintf_s(start_link,PATH_CAP,L"%s\\PicoSlip.lnk",root)<0) return FALSE;
+        swprintf_s(legacy_start_link,PATH_CAP,L"%s\\PicoSlip.lnk",root)<0 ||
+        swprintf_s(start_link,PATH_CAP,L"%s\\IOTA.lnk",root)<0) return FALSE;
     if (FAILED(SHGetFolderPathW(NULL,CSIDL_DESKTOPDIRECTORY,NULL,SHGFP_TYPE_CURRENT,root)) ||
-        swprintf_s(desktop_link,PATH_CAP,L"%s\\PicoSlip.lnk",root)<0) return FALSE;
+        swprintf_s(legacy_desktop_link,PATH_CAP,L"%s\\PicoSlip.lnk",root)<0 ||
+        swprintf_s(desktop_link,PATH_CAP,L"%s\\IOTA.lnk",root)<0) return FALSE;
     length=GetModuleFileNameW(NULL,self,PATH_CAP);
     return length>0 && length<PATH_CAP;
 }
 
 static int failure(const wchar_t *message) {
-    if (!silent) MessageBoxW(NULL,message,L"PicoSlip Setup",MB_OK|MB_ICONERROR);
+    if (!silent) MessageBoxW(NULL,message,L"IOTA Setup",MB_OK|MB_ICONERROR);
     return 1;
 }
 
@@ -60,7 +67,7 @@ static BOOL shortcut(const wchar_t *path) {
     HRESULT result=CoCreateInstance(&CLSID_ShellLink,NULL,CLSCTX_INPROC_SERVER,&IID_IShellLinkW,(void **)&link);
     if (SUCCEEDED(result)) result=IShellLinkW_SetPath(link,app_path);
     if (SUCCEEDED(result)) result=IShellLinkW_SetWorkingDirectory(link,install_dir);
-    if (SUCCEEDED(result)) result=IShellLinkW_SetDescription(link,L"PicoSlip - Tiny Sticky Notes for Windows");
+    if (SUCCEEDED(result)) result=IShellLinkW_SetDescription(link,L"IOTA - Tiny Sticky Notes for Windows");
     if (SUCCEEDED(result)) result=IShellLinkW_SetIconLocation(link,app_path,0);
     if (SUCCEEDED(result)) result=IShellLinkW_QueryInterface(link,&IID_IPersistFile,(void **)&file);
     if (SUCCEEDED(result)) result=IPersistFile_Save(file,path,TRUE);
@@ -80,7 +87,7 @@ static BOOL register_uninstaller(void) {
     BOOL ok;
     if (RegCreateKeyExW(HKEY_CURRENT_USER,UNINSTALL_KEY,0,NULL,0,KEY_WRITE,NULL,&key,NULL)!=ERROR_SUCCESS) return FALSE;
     swprintf_s(command,PATH_CAP+64,L"\"%s\"",uninstall_path);
-    ok=registry_text(key,L"DisplayName",L"PicoSlip") && registry_text(key,L"DisplayVersion",APP_VERSION_W) &&
+    ok=registry_text(key,L"DisplayName",L"IOTA") && registry_text(key,L"DisplayVersion",APP_VERSION_W) &&
        registry_text(key,L"Publisher",L"Alessio Garau") && registry_text(key,L"DisplayIcon",app_path) &&
        registry_text(key,L"InstallLocation",install_dir) && registry_text(key,L"UninstallString",command) &&
        registry_text(key,L"URLInfoAbout",L"https://github.com/GarauGarau/picoslip");
@@ -113,17 +120,44 @@ static BOOL extract_resource(int id,const wchar_t *path) {
     return ok;
 }
 
+static BOOL remove_file(const wchar_t *path) {
+    if (DeleteFileW(path)) return TRUE;
+    return GetLastError()==ERROR_FILE_NOT_FOUND || GetLastError()==ERROR_PATH_NOT_FOUND;
+}
+
+static BOOL retire_legacy_install(void) {
+    const wchar_t *files[]={L"PicoSlip.exe",L"Uninstall.exe",L"LICENSE.txt"};
+    wchar_t registered[PATH_CAP], path[PATH_CAP];
+    DWORD bytes=sizeof(registered);
+    LSTATUS status;
+    int i;
+    status=RegGetValueW(HKEY_CURRENT_USER,LEGACY_UNINSTALL_KEY,L"InstallLocation",RRF_RT_REG_SZ,
+                       NULL,registered,&bytes);
+    if (status==ERROR_FILE_NOT_FOUND) return TRUE;
+    /* Only retire the known per-user installation. Never recurse or follow a
+       registry-provided path, and never touch notes or portable configuration. */
+    if (status!=ERROR_SUCCESS || _wcsicmp(registered,legacy_dir)) return TRUE;
+    for (i=0;i<3;++i) {
+        if (swprintf_s(path,PATH_CAP,L"%s\\%s",legacy_dir,files[i])<0 || !remove_file(path)) return FALSE;
+    }
+    if (!remove_file(legacy_start_link) || !remove_file(legacy_desktop_link)) return FALSE;
+    status=RegDeleteTreeW(HKEY_CURRENT_USER,LEGACY_UNINSTALL_KEY);
+    if (status!=ERROR_SUCCESS && status!=ERROR_FILE_NOT_FOUND) return FALSE;
+    RemoveDirectoryW(legacy_dir); /* A nonempty folder, including user data, remains. */
+    return TRUE;
+}
+
 static int install(void) {
     int directory_result;
     BOOL links;
     HRESULT com;
     wchar_t license[PATH_CAP];
     if (!silent && MessageBoxW(NULL,
-        L"Install PicoSlip for this Windows account?\n\n"
+        L"Install IOTA for this Windows account?\n\n"
         L"Adds Start menu and desktop shortcuts. No administrator rights needed.\n"
         L"Your notes and chosen archive location are kept separate from the program.",
-        L"PicoSlip Setup",MB_YESNO|MB_ICONQUESTION)!=IDYES) return 0;
-    if (!close_app()) return failure(L"PicoSlip could not save and close. Close it and run Setup again.");
+        L"IOTA Setup",MB_YESNO|MB_ICONQUESTION)!=IDYES) return 0;
+    if (!close_app()) return failure(L"IOTA could not save and close. Close it and run Setup again.");
     directory_result=SHCreateDirectoryExW(NULL,install_dir,NULL);
     if (directory_result!=ERROR_SUCCESS && directory_result!=ERROR_ALREADY_EXISTS && directory_result!=ERROR_FILE_EXISTS)
         return failure(L"The installation folder could not be created.");
@@ -133,15 +167,12 @@ static int install(void) {
     com=CoInitializeEx(NULL,COINIT_APARTMENTTHREADED);
     links=SUCCEEDED(com) && shortcut(start_link) && shortcut(desktop_link);
     if (SUCCEEDED(com)) CoUninitialize();
-    if (!links || !register_uninstaller()) return failure(L"PicoSlip was copied, but a shortcut or uninstall entry could not be created. Run Setup again.");
+    if (!links || !register_uninstaller()) return failure(L"IOTA was copied, but a shortcut or uninstall entry could not be created. Run Setup again.");
+    if (!retire_legacy_install()) return failure(L"IOTA is installed, but the previous program files could not be retired. Close the previous Setup and run IOTA Setup again. Your notes have been kept.");
     SHChangeNotify(SHCNE_ASSOCCHANGED,SHCNF_IDLIST,NULL,NULL);
-    if (!silent && MessageBoxW(NULL,L"PicoSlip is installed. Open it now?",L"PicoSlip Setup",MB_YESNO|MB_ICONINFORMATION)==IDYES)
+    if (!silent && MessageBoxW(NULL,L"IOTA is installed. Open it now?",L"IOTA Setup",MB_YESNO|MB_ICONINFORMATION)==IDYES)
         ShellExecuteW(NULL,L"open",app_path,NULL,install_dir,SW_SHOWNORMAL);
     return 0;
-}
-
-static BOOL remove_file(const wchar_t *path) {
-    return DeleteFileW(path) || GetLastError()==ERROR_FILE_NOT_FOUND;
 }
 
 static int cleanup(DWORD parent_pid) {
@@ -154,12 +185,12 @@ static int cleanup(DWORD parent_pid) {
     /* Only these exact per-user program files are removed. Never recurse and
        never touch notes, archive.path or a portable note archive. */
     swprintf_s(license,PATH_CAP,L"%s\\LICENSE.txt",install_dir);
-    if (!remove_file(app_path) || !remove_file(uninstall_path) || !remove_file(license)) return failure(L"PicoSlip could not be removed. Close the application and try again.");
+    if (!remove_file(app_path) || !remove_file(uninstall_path) || !remove_file(license)) return failure(L"IOTA could not be removed. Close the application and try again.");
     remove_file(start_link); remove_file(desktop_link);
     RegDeleteTreeW(HKEY_CURRENT_USER,UNINSTALL_KEY);
     RemoveDirectoryW(install_dir);
     SHChangeNotify(SHCNE_ASSOCCHANGED,SHCNF_IDLIST,NULL,NULL);
-    if (!silent) MessageBoxW(NULL,L"PicoSlip has been uninstalled. Your notes have been kept.",L"PicoSlip",MB_OK|MB_ICONINFORMATION);
+    if (!silent) MessageBoxW(NULL,L"IOTA has been uninstalled. Your notes have been kept.",L"IOTA",MB_OK|MB_ICONINFORMATION);
     return 0;
 }
 
@@ -167,10 +198,10 @@ static int uninstall(void) {
     wchar_t temporary[PATH_CAP], helper[PATH_CAP], command[PATH_CAP+80];
     STARTUPINFOW startup={0};
     PROCESS_INFORMATION process={0};
-    if (!silent && MessageBoxW(NULL,L"Uninstall PicoSlip?\n\nYour saved notes will be kept.",L"PicoSlip",MB_YESNO|MB_ICONQUESTION)!=IDYES) return 0;
-    if (!close_app()) return failure(L"PicoSlip could not save and close. Close it before uninstalling.");
+    if (!silent && MessageBoxW(NULL,L"Uninstall IOTA?\n\nYour saved notes will be kept.",L"IOTA",MB_YESNO|MB_ICONQUESTION)!=IDYES) return 0;
+    if (!close_app()) return failure(L"IOTA could not save and close. Close it before uninstalling.");
     if (!GetTempPathW(PATH_CAP,temporary) ||
-        swprintf_s(helper,PATH_CAP,L"%sPicoSlip-cleanup-%lu-%llu.exe",temporary,GetCurrentProcessId(),GetTickCount64())<0 ||
+        swprintf_s(helper,PATH_CAP,L"%sIOTA-cleanup-%lu-%llu.exe",temporary,GetCurrentProcessId(),GetTickCount64())<0 ||
         !CopyFileW(self,helper,TRUE)) return failure(L"The temporary uninstaller could not be created.");
     swprintf_s(command,PATH_CAP+80,L"\"%s\" --cleanup %lu %s",helper,GetCurrentProcessId(),silent?L"/S":L"");
     startup.cb=sizeof(startup); startup.dwFlags=STARTF_USESHOWWINDOW; startup.wShowWindow=SW_HIDE;

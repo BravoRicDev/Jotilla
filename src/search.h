@@ -1,5 +1,5 @@
-#ifndef PICOSLIP_SEARCH_H
-#define PICOSLIP_SEARCH_H
+#ifndef IOTA_SEARCH_H
+#define IOTA_SEARCH_H
 #include <windows.h>
 
 #define SEARCH_CAP 512

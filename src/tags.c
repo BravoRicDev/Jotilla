@@ -78,7 +78,7 @@ BOOL tags_contains(const wchar_t *tags, const wchar_t *name) {
 }
 
 /* Read once, preserving every section/key during the first Unicode migration.
-   Existing PicoSlip metadata is ASCII; legacy ANSI files use the Windows ACP. */
+   Existing IOTA metadata is ASCII; legacy ANSI files use the Windows ACP. */
 static BOOL read_ini(const wchar_t *path, wchar_t **result, BOOL *unicode) {
     HANDLE file;
     LARGE_INTEGER size;

@@ -1,5 +1,5 @@
-#ifndef PICOSLIP_TAGS_H
-#define PICOSLIP_TAGS_H
+#ifndef IOTA_TAGS_H
+#define IOTA_TAGS_H
 #include <windows.h>
 
 #define TAG_NAME_CAP 64

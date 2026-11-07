@@ -1,13 +1,25 @@
-#ifndef PICOSLIP_COLORS_H
-#define PICOSLIP_COLORS_H
+#ifndef IOTA_COLORS_H
+#define IOTA_COLORS_H
 
 #include <windows.h>
 
 #define COLOR_COUNT 6
-static const COLORREF PALETTES[3][COLOR_COUNT] = {
-    {RGB(255,238,151), RGB(199,229,255), RGB(213,239,187), RGB(255,210,218), RGB(229,214,255), RGB(255,222,180)},
-    {RGB(255,255,255), RGB(28,28,28), RGB(255,255,255), RGB(28,28,28), RGB(255,255,255), RGB(28,28,28)},
-    {RGB(255,238,151), RGB(255,224,112), RGB(255,245,184), RGB(250,218,128), RGB(255,239,105), RGB(255,250,205)}
-};
+#define DEFAULT_PALETTE_COUNT 3
+#define PALETTE_COUNT 10
+
+/* Persisted indices are append-only. The first three palettes and their six
+   slots retain the original new-note sequence, including monochrome repeats. */
+extern const COLORREF PALETTES[PALETTE_COUNT][COLOR_COUNT];
+extern const wchar_t *const PALETTE_NAMES[PALETTE_COUNT];
+extern const unsigned char PALETTE_SIZES[PALETTE_COUNT];
+extern const unsigned char PALETTE_LIGHT_INK[PALETTE_COUNT];
+
+static inline COLORREF palette_ink(int palette, int color) {
+    return PALETTE_LIGHT_INK[palette] & (1u << color) ? RGB(255,255,255) : RGB(0,0,0);
+}
+
+static inline COLORREF palette_bar(COLORREF paper) {
+    return RGB(GetRValue(paper) * 94 / 100, GetGValue(paper) * 94 / 100, GetBValue(paper) * 94 / 100);
+}
 
 #endif

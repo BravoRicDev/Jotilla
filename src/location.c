@@ -68,6 +68,35 @@ static BOOL save_location(const wchar_t *config, const wchar_t *path) {
     return ok;
 }
 
+BOOL location_user_paths(const wchar_t *local, wchar_t config[LOCATION_CAP], wchar_t fallback[LOCATION_CAP]) {
+    wchar_t root[LOCATION_CAP], legacy_config[LOCATION_CAP], legacy_notes[LOCATION_CAP], selected[LOCATION_CAP];
+    DWORD attributes;
+    if (swprintf_s(root,LOCATION_CAP,L"%s\\IOTA",local) < 0 ||
+        swprintf_s(config,LOCATION_CAP,L"%s\\archive.path",root) < 0 ||
+        swprintf_s(fallback,LOCATION_CAP,L"%s\\notes",root) < 0 ||
+        swprintf_s(legacy_config,LOCATION_CAP,L"%s\\PicoSlip\\archive.path",local) < 0 ||
+        swprintf_s(legacy_notes,LOCATION_CAP,L"%s\\PicoSlip\\notes",local) < 0) return FALSE;
+    if (!CreateDirectoryW(root,NULL) && GetLastError() != ERROR_ALREADY_EXISTS) return FALSE;
+    attributes = GetFileAttributesW(config);
+    if (attributes != INVALID_FILE_ATTRIBUTES) return TRUE;
+    if (GetLastError() != ERROR_FILE_NOT_FOUND) return FALSE;
+    attributes = GetFileAttributesW(fallback);
+    if (attributes != INVALID_FILE_ATTRIBUTES) return (attributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
+    if (GetLastError() != ERROR_FILE_NOT_FOUND) return FALSE;
+    attributes = GetFileAttributesW(legacy_config);
+    if (attributes != INVALID_FILE_ATTRIBUTES) {
+        if (!location_load(legacy_config,legacy_notes,selected)) return FALSE;
+        return save_location(config,selected);
+    }
+    if (GetLastError() != ERROR_FILE_NOT_FOUND && GetLastError() != ERROR_PATH_NOT_FOUND) return FALSE;
+    attributes = GetFileAttributesW(legacy_notes);
+    if (attributes != INVALID_FILE_ATTRIBUTES) {
+        if (!(attributes & FILE_ATTRIBUTE_DIRECTORY)) { SetLastError(ERROR_DIRECTORY); return FALSE; }
+        return save_location(config,legacy_notes);
+    }
+    return GetLastError() == ERROR_FILE_NOT_FOUND || GetLastError() == ERROR_PATH_NOT_FOUND;
+}
+
 static BOOL managed_file(const wchar_t *name) {
     const wchar_t *extension;
     size_t length = wcslen(name);
@@ -151,7 +180,7 @@ BOOL location_change(const wchar_t *config, const wchar_t *source, const wchar_t
     }
     /* Opening an archive must also support subsequent autosaves. The uniquely
        named probe is removed by Windows even if the process is interrupted. */
-    swprintf_s(probe, LOCATION_CAP, L"%s\\.picoslip-write-%lu-%llu.tmp", selected, GetCurrentProcessId(), GetTickCount64());
+    swprintf_s(probe, LOCATION_CAP, L"%s\\.iota-write-%lu-%llu.tmp", selected, GetCurrentProcessId(), GetTickCount64());
     {
         HANDLE test = CreateFileW(probe, GENERIC_WRITE | DELETE, 0, NULL, CREATE_NEW,
                                   FILE_ATTRIBUTE_TEMPORARY | FILE_FLAG_DELETE_ON_CLOSE, NULL);
