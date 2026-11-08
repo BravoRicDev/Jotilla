@@ -11,8 +11,10 @@ typedef struct ArchiveActions {
 } ArchiveActions;
 
 HWND archive_show(HWND owner, const wchar_t *directory, const wchar_t *settings, const ArchiveActions *actions);
-void archive_changed(const wchar_t *id, BOOL present, BOOL tags_changed);
+enum { ARCHIVE_TAGS_CHANGED = 1, ARCHIVE_DATE_CHANGED = 2 };
+void archive_changed(const wchar_t *id, BOOL present, unsigned changes);
 void archive_close(void);
 void archive_search(void);
+void archive_notes(void);
 
 #endif

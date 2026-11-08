@@ -17,6 +17,8 @@
 #include "colors.h"
 #include "tags.h"
 #include "search.h"
+#include "calendar.h"
+#include "metadata.h"
 
 #define ARCHIVE_CLASS L"Jotila.Archive"
 #define ARCHIVE_PATH_CAP 1024
@@ -29,6 +31,8 @@
 #define TAG_BUTTON 7
 #define DATE_BUTTON 8
 #define LOCATION_BUTTON 9
+#define CALENDAR_BUTTON 10
+#define CALENDAR_VIEW 11
 #define ARCHIVE_PAPER RGB(244,238,226)
 #define ARCHIVE_SIDEBAR RGB(235,226,209)
 #define ARCHIVE_INK RGB(58,52,43)
@@ -43,7 +47,7 @@ typedef struct ArchiveEntry {
     wchar_t id[80];
     wchar_t *preview, *tags, *excerpt;
     int highlight, highlight_length;
-    unsigned date;
+    unsigned date, scheduled;
     UINT state;
     COLORREF paper, ink, bar_ink;
     BOOL loaded, titled;
@@ -51,6 +55,7 @@ typedef struct ArchiveEntry {
 
 typedef struct Archive {
     HWND window, tree, tag_tree, tag_button, date_button, list, search, clear, location;
+    HWND calendar, calendar_button;
     HFONT font, bold;
     HBRUSH background, sidebar;
     HIMAGELIST tiles;
@@ -63,6 +68,9 @@ typedef struct Archive {
     SearchResult *results;
     TagCatalog catalog;
     wchar_t tag_filter[TAG_NAME_CAP];
+    int *day_entries, day_capacity, day_offsets[367];
+    POINT note_scroll;
+    BOOL calendar_view, calendar_dirty;
     BOOL rebuilding, refresh_pending, searching, tags_view, tags_dirty, tags_pending;
 } Archive;
 
@@ -72,6 +80,9 @@ static BOOL refresh_archive(Archive *archive, BOOL reload);
 static void open_archive_item(Archive *archive, int index);
 static BOOL refresh_tags(Archive *archive);
 static void sidebar_mode(Archive *archive, BOOL tags);
+static void calendar_update(Archive *archive);
+static void calendar_mode(Archive *archive, BOOL enabled);
+static void load_preview(Archive *archive, ArchiveEntry *entry);
 
 static int entry_index(const Archive *archive, int row) {
     return archive->results ? archive->results->hits[row].index : archive->first + row;
@@ -79,6 +90,7 @@ static int entry_index(const Archive *archive, int row) {
 
 static void remember_selection(Archive *archive) {
     int i;
+    if (archive->calendar_view) return;
     for (i = 0; i < archive->count; ++i) archive->entries[i].state = 0;
     /* Native selection iteration avoids one synchronous message per card. */
     for (i = ListView_GetNextItem(archive->list, -1, LVNI_SELECTED); i >= 0;
@@ -133,6 +145,91 @@ static ArchiveEntry *find_entry(Archive *archive, const wchar_t *id) {
         for (i = 0; i < archive->count; ++i)
             if (!wcscmp(archive->entries[i].id, id)) return &archive->entries[i];
     return NULL;
+}
+
+static BOOL calendar_load(Archive *archive) {
+    wchar_t *text, *key, *value;
+    BOOL unicode;
+    MetadataCursor cursor = {0};
+    int i;
+    if (!metadata_read(archive->settings,&text,&unicode)) return FALSE;
+    for (i=0;i<archive->count;++i) archive->entries[i].scheduled=0;
+    cursor.next=text;
+    while (metadata_next(&cursor,&key,&value)) {
+        if (cursor.section && !_wcsicmp(key,L"calendar_date") && wcslen(cursor.section)<80 &&
+            (!wcsncmp(cursor.section,L"note-",5) || !wcsncmp(cursor.section,L"nota-",5))) {
+            ArchiveEntry *entry=find_entry(archive,cursor.section);
+            if (entry) entry->scheduled=date_parse(value);
+        }
+    }
+    free(text); archive->calendar_dirty=FALSE; return TRUE;
+}
+
+/* Counting buckets keep each day's references contiguous without changing
+   the archive's creation-date ordering. Rebuilds reuse the existing vector. */
+static void calendar_update(Archive *archive) {
+    unsigned counts[366]={0};
+    int positions[366], i, year;
+    if (!archive->calendar_view || !archive->calendar) return;
+    calendar_list_close(archive->window);
+    memset(archive->day_offsets,0,sizeof(archive->day_offsets));
+    if (archive->calendar_dirty && !calendar_load(archive)) {
+        calendar_counts(archive->calendar,counts);
+        SetWindowTextW(archive->window,L"Calendar - Dates could not be read. Press F5 to retry."); return;
+    }
+    if (archive->day_capacity < archive->count) {
+        int *entries=(int *)realloc(archive->day_entries,(size_t)archive->count*sizeof(int));
+        if (!entries) { calendar_counts(archive->calendar,counts); SetWindowTextW(archive->window,L"Calendar - Not enough memory. Press F5 to retry."); return; }
+        archive->day_entries=entries; archive->day_capacity=archive->count;
+    }
+    year=calendar_year(archive->calendar);
+    for (i=0;i<archive->visible;++i) {
+        unsigned date=archive->entries[entry_index(archive,i)].scheduled;
+        if ((int)(date/10000)==year) ++counts[date_ordinal(date)];
+    }
+    archive->day_offsets[0]=0;
+    for (i=0;i<366;++i) {
+        positions[i]=archive->day_offsets[i];
+        archive->day_offsets[i+1]=positions[i]+(int)counts[i];
+    }
+    for (i=0;i<archive->visible;++i) {
+        int index=entry_index(archive,i);
+        unsigned date=archive->entries[index].scheduled;
+        if ((int)(date/10000)==year) archive->day_entries[positions[date_ordinal(date)]++]=index;
+    }
+    calendar_counts(archive->calendar,counts);
+}
+
+static void calendar_open_day(Archive *archive, unsigned date) {
+    int day=date_ordinal(date), first, count, i;
+    CalendarItem *items;
+    RECT rect; POINT anchor;
+    if (day<0 || date/10000!=(unsigned)calendar_year(archive->calendar)) return;
+    first=archive->day_offsets[day]; count=archive->day_offsets[day+1]-first;
+    if (!count) return;
+    if (count==1) {
+        if (!archive->actions.open(archive->entries[archive->day_entries[first]].id))
+            MessageBoxW(archive->window,L"This note could not be opened.",L"Jotila",MB_OK|MB_ICONERROR);
+        return;
+    }
+    items=(CalendarItem *)calloc((size_t)count,sizeof(*items));
+    if (!items) return;
+    for (i=0;i<count;++i) {
+        ArchiveEntry *entry=&archive->entries[archive->day_entries[first+i]];
+        const wchar_t *title;
+        if (!entry->loaded) load_preview(archive,entry);
+        title=entry->preview ? entry->preview : L"Preview unavailable";
+        if (entry->titled && *title==L'#') ++title;
+        while (iswspace(*title)) ++title;
+        if (!*title) title=L"Untitled";
+        wcscpy_s(items[i].id,80,entry->id);
+        wcsncpy_s(items[i].title,256,title,min(wcscspn(title,L"\r\n"),255));
+        items[i].paper=palette_bar(entry->paper); items[i].ink=entry->bar_ink;
+    }
+    calendar_day_rect(archive->calendar,date,&rect); anchor.x=rect.left; anchor.y=rect.bottom;
+    ClientToScreen(archive->calendar,&anchor);
+    if (!calendar_list(archive->window,anchor,date,items,count,archive->actions.open))
+        MessageBoxW(archive->window,L"The day's notes could not be displayed.",L"Jotila",MB_OK|MB_ICONERROR);
 }
 
 static BOOL scan_archive(Archive *archive, ArchiveEntry **result, int *total) {
@@ -195,7 +292,7 @@ static void filter_archive(Archive *archive, unsigned date) {
     if (archive->worker) search_cancel(archive->worker);
     discard_results(archive);
     archive->filter = date;
-    if (archive->tags_view || !date) { archive->first = 0; archive->visible = archive->count; }
+    if (archive->calendar_view || archive->tags_view || !date) { archive->first = 0; archive->visible = archive->count; }
     else {
         if (!(date % 10000)) last += 1231;
         else if (!(date % 100)) last += 31;
@@ -290,6 +387,7 @@ static BOOL refresh_archive(Archive *archive, BOOL reload) {
     SendMessageW(archive->tree, WM_SETREDRAW, FALSE, 0);
     free_entries(archive->entries, archive->count);
     archive->entries = entries; archive->count = count;
+    archive->calendar_dirty=TRUE;
     swprintf_s(label, 64, L"All notes (%d)", count);
     if (!root) root = date_node(archive, TVI_ROOT, TVI_LAST, label, 0);
     else {
@@ -565,8 +663,8 @@ static LRESULT draw_preview(Archive *archive, NMLVCUSTOMDRAW *draw) {
 
 static RECT search_bounds(const Archive *archive, const RECT *client) {
     int gap = archive_scaled(archive, 8);
-    RECT field = {archive_scaled(archive, 174) + gap * 2, gap,
-                  client->right - gap * 2 - archive_scaled(archive, 100), gap + archive_scaled(archive, 34)};
+    RECT field = {archive->calendar_view ? gap : archive_scaled(archive, 174) + gap * 2, gap,
+                  client->right - gap * 3 - archive_scaled(archive, 134), gap + archive_scaled(archive, 34)};
     return field;
 }
 
@@ -589,14 +687,16 @@ static void archive_layout(Archive *archive) {
                 max(1, field.right - field.left - archive_scaled(archive, 68)), archive_scaled(archive, 22)},
             {archive->clear, field.right - height + 2, gap + 2, height - 4, height - 4},
             {archive->location, field.right + gap, gap, archive_scaled(archive, 100), height},
-            {archive->list, field.left, navigation_top, max(1, rect.right - field.left - gap), max(1, rect.bottom - navigation_top - gap)}
+            {archive->list, field.left, navigation_top, max(1, rect.right - field.left - gap), max(1, rect.bottom - navigation_top - gap)},
+            {archive->calendar_button,field.right+gap*2+archive_scaled(archive,100),gap,height,height},
+            {archive->calendar,gap,navigation_top,max(1,rect.right-gap*2),max(1,rect.bottom-navigation_top-gap)}
         };
-        batch = BeginDeferWindowPos(8);
-        for (i = 0; batch && i < 8; ++i)
+        batch = BeginDeferWindowPos(10);
+        for (i = 0; batch && i < 10; ++i)
             batch = DeferWindowPos(batch, positions[i].window, NULL, positions[i].x, positions[i].y,
                                    positions[i].width, positions[i].height, SWP_NOZORDER | SWP_NOACTIVATE);
         if (!batch || !EndDeferWindowPos(batch))
-            for (i = 0; i < 8; ++i)
+            for (i = 0; i < 10; ++i)
                 SetWindowPos(positions[i].window, NULL, positions[i].x, positions[i].y,
                              positions[i].width, positions[i].height, SWP_NOZORDER | SWP_NOACTIVATE);
     }
@@ -605,6 +705,34 @@ static void archive_layout(Archive *archive) {
     rect.bottom = navigation_top;
     RedrawWindow(archive->window, &rect, NULL, RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN);
     ListView_Arrange(archive->list, LVA_DEFAULT);
+}
+
+static void calendar_mode(Archive *archive, BOOL enabled) {
+    if (archive->calendar_view==enabled) return;
+    calendar_list_close(archive->window);
+    if (enabled) {
+        remember_selection(archive); ListView_GetOrigin(archive->list,&archive->note_scroll);
+    }
+    archive->calendar_view=enabled;
+    ShowWindow(archive->list,enabled ? SW_HIDE : SW_SHOW);
+    ShowWindow(archive->tree,!enabled && !archive->tags_view ? SW_SHOW : SW_HIDE);
+    ShowWindow(archive->tag_tree,!enabled && archive->tags_view ? SW_SHOW : SW_HIDE);
+    ShowWindow(archive->tag_button,enabled ? SW_HIDE : SW_SHOW);
+    ShowWindow(archive->date_button,enabled ? SW_HIDE : SW_SHOW);
+    ShowWindow(archive->calendar,enabled ? SW_SHOW : SW_HIDE);
+    filter_archive(archive,archive->filter);
+    archive_layout(archive);
+    if (!enabled) {
+        int i;
+        for(i=0;i<archive->visible;++i) {
+            UINT state=archive->entries[entry_index(archive,i)].state;
+            if(state) ListView_SetItemState(archive->list,i,state,LVIS_SELECTED|LVIS_FOCUSED);
+        }
+        ListView_Scroll(archive->list,archive->note_scroll.x,archive->note_scroll.y);
+    }
+    SetWindowTextW(archive->calendar_button,enabled ? L"Show notes" : L"Show calendar");
+    InvalidateRect(archive->window,NULL,TRUE);
+    SetFocus(enabled ? archive->calendar : archive->list);
 }
 
 static void archive_fonts(Archive *archive) {
@@ -672,7 +800,8 @@ static void search_status(Archive *archive) {
         swprintf_s(label, 192, L"Notes archive - %s", archive->results->error);
     else if (archive->results && archive->results->unreadable)
         swprintf_s(label, 192, L"Notes archive - %d unreadable; F5 to retry", archive->results->unreadable);
-    else wcscpy_s(label, 192, L"Notes archive");
+    else wcscpy_s(label, 192, archive->calendar_view ?
+        (GetWindowTextLengthW(archive->search) ? L"Calendar - Filtered notes" : L"Calendar") : L"Notes archive");
     SetWindowTextW(archive->window, label);
 }
 
@@ -684,12 +813,13 @@ static void schedule_search(Archive *archive) {
     archive->recheck = -1;
     GetWindowTextW(archive->search, query, SEARCH_CAP);
     while (iswspace(*text)) ++text;
-    archive->searching = *text != 0 || (archive->tags_view && *archive->tag_filter);
+    archive->searching = *text != 0 || (!archive->calendar_view && archive->tags_view && *archive->tag_filter);
     archive->visible = archive->searching ? 0 : archive->range;
     ListView_SetItemCountEx(archive->list, archive->visible, LVSICF_NOSCROLL);
     InvalidateRect(archive->list, NULL, TRUE);
     if (archive->searching) SetTimer(archive->window, SEARCH_TIMER, 150, NULL);
     search_status(archive);
+    calendar_update(archive);
 }
 
 static void start_search(Archive *archive) {
@@ -707,7 +837,7 @@ static void start_search(Archive *archive) {
             wcscpy_s(items[i].id, 80, archive->entries[items[i].index].id);
         }
         ok = search_submit_filtered(archive->worker, archive->directory, archive->settings, query,
-                                    archive->tags_view ? archive->tag_filter : L"", items, archive->range);
+                                    !archive->calendar_view && archive->tags_view ? archive->tag_filter : L"", items, archive->range);
     }
     free(items);
     if (!ok) { archive->searching = FALSE; SetWindowTextW(archive->window, L"Notes archive - Search could not start. Press F5 to retry."); }
@@ -763,6 +893,7 @@ static void finish_search(Archive *archive) {
     }
     ListView_Arrange(archive->list, LVA_DEFAULT); InvalidateRect(archive->list, NULL, TRUE);
     search_status(archive);
+    calendar_update(archive);
 }
 
 static void recheck_note(Archive *archive, int index) {
@@ -774,7 +905,7 @@ static void recheck_note(Archive *archive, int index) {
         wcscpy_s(item.id, 80, archive->entries[index].id); item.index = index;
         GetWindowTextW(archive->search, query, SEARCH_CAP);
         if (search_submit_filtered(archive->worker, archive->directory, archive->settings, query,
-                                   archive->tags_view ? archive->tag_filter : L"", &item, 1)) {
+                                   !archive->calendar_view && archive->tags_view ? archive->tag_filter : L"", &item, 1)) {
             archive->recheck = index; archive->searching = TRUE; search_status(archive); return;
         }
     }
@@ -791,13 +922,14 @@ static LRESULT CALLBACK archive_input_proc(HWND window, UINT message, WPARAM wpa
         }
         if (wparam == VK_ESCAPE) {
             if (GetWindowTextLengthW(archive->search)) SetWindowTextW(archive->search, L"");
-            SetFocus(archive->list); return 0;
+            SetFocus(archive->calendar_view ? archive->calendar : archive->list); return 0;
         }
         if (wparam == VK_F5) {
             if (!refresh_archive(archive, TRUE)) SetWindowTextW(archive->window, L"Notes archive - Refresh failed. Press F5 to retry.");
             return 0;
         }
         if (window == archive->search && (wparam == VK_RETURN || wparam == VK_DOWN)) {
+            if (archive->calendar_view) { SetFocus(archive->calendar); return 0; }
             if (archive->visible) {
                 if (wparam == VK_RETURN) open_archive_item(archive, 0);
                 else {
@@ -808,10 +940,11 @@ static LRESULT CALLBACK archive_input_proc(HWND window, UINT message, WPARAM wpa
             return 0;
         }
         if (wparam == VK_TAB) {
-            HWND controls[] = {archive->search, archive->clear, archive->location, archive->tag_button, archive->date_button,
-                               archive->tags_view ? archive->tag_tree : archive->tree, archive->list};
-            int i, direction = GetKeyState(VK_SHIFT) < 0 ? 6 : 1;
-            for (i = 0; i < 7; ++i) if (window == controls[i]) { SetFocus(controls[(i + direction) % 7]); break; }
+            HWND controls[] = {archive->search,archive->clear,archive->location,archive->calendar_button,
+                archive->calendar_view ? archive->calendar : archive->tag_button,archive->date_button,
+                archive->tags_view ? archive->tag_tree : archive->tree,archive->list};
+            int count=archive->calendar_view ? 5 : 8, i, direction=GetKeyState(VK_SHIFT)<0 ? count-1 : 1;
+            for (i=0;i<count;++i) if (window==controls[i]) { SetFocus(controls[(i+direction)%count]); break; }
             return 0;
         }
     }
@@ -896,8 +1029,12 @@ static LRESULT CALLBACK archive_proc(HWND window, UINT message, WPARAM wparam, L
             0, 0, 1, 1, window, (HMENU)(INT_PTR)DATE_BUTTON, app, NULL);
         archive->location = CreateWindowExW(0, L"BUTTON", L"Archive", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW,
             0, 0, 1, 1, window, (HMENU)(INT_PTR)LOCATION_BUTTON, app, NULL);
+        archive->calendar_button=CreateWindowExW(0,L"BUTTON",L"Show calendar",WS_CHILD|WS_VISIBLE|WS_TABSTOP|BS_OWNERDRAW,
+            0,0,1,1,window,(HMENU)(INT_PTR)CALENDAR_BUTTON,app,NULL);
+        archive->calendar=calendar_create(window,CALENDAR_VIEW);
         if (!archive->tree || !archive->list || !archive->search || !archive->clear ||
-            !archive->tag_tree || !archive->tag_button || !archive->date_button || !archive->location) return -1;
+            !archive->tag_tree || !archive->tag_button || !archive->date_button || !archive->location ||
+            !archive->calendar_button || !archive->calendar) return -1;
         SendMessageW(archive->search, EM_SETLIMITTEXT, SEARCH_CAP - 1, 0);
         SendMessageW(archive->search, EM_SETCUEBANNER, TRUE, (LPARAM)L"Search notes and tags");
         {
@@ -918,6 +1055,7 @@ static LRESULT CALLBACK archive_proc(HWND window, UINT message, WPARAM wparam, L
         ListView_SetTextColor(archive->list, ARCHIVE_INK);
         ListView_SetExtendedListViewStyle(archive->list, LVS_EX_DOUBLEBUFFER);
         archive_fonts(archive);
+        SetWindowSubclass(archive->calendar_button,archive_input_proc,1,(DWORD_PTR)archive);
         return 0;
     }
     case WM_ERASEBKGND: {
@@ -926,17 +1064,18 @@ static LRESULT CALLBACK archive_proc(HWND window, UINT message, WPARAM wparam, L
         FillRect((HDC)wparam, &rect, archive->background);
         rect.left = rect.top = archive_scaled(archive, 8);
         rect.right = rect.left + archive_scaled(archive, 174); rect.bottom -= rect.top;
-        FillRect((HDC)wparam, &rect, archive->sidebar);
+        if (!archive->calendar_view) FillRect((HDC)wparam, &rect, archive->sidebar);
         return 1;
     }
     case WM_PAINT: {
         PAINTSTRUCT paint;
         RECT rect, field;
         HDC dc = BeginPaint(window, &paint);
-        int gap = archive_scaled(archive, 8), left = archive_scaled(archive, 174) + gap * 2;
+        int gap = archive_scaled(archive, 8), left;
         HGDIOBJ pen = SelectObject(dc, GetStockObject(DC_PEN));
         HGDIOBJ brush = SelectObject(dc, GetStockObject(NULL_BRUSH));
         GetClientRect(window, &rect); field = search_bounds(archive, &rect);
+        left=field.left;
         SetDCPenColor(dc, RGB(190,177,151)); Rectangle(dc, field.left, field.top, field.right, field.bottom);
         SetDCPenColor(dc, ARCHIVE_INK);
         Ellipse(dc, left + archive_scaled(archive, 9), gap + archive_scaled(archive, 10),
@@ -949,8 +1088,9 @@ static LRESULT CALLBACK archive_proc(HWND window, UINT message, WPARAM wparam, L
         DRAWITEMSTRUCT *draw = (DRAWITEMSTRUCT *)lparam;
         RECT rect = draw->rcItem;
         BOOL mode = draw->CtlID == TAG_BUTTON || draw->CtlID == DATE_BUTTON;
-        BOOL location = draw->CtlID == LOCATION_BUTTON;
-        BOOL active = mode && ((draw->CtlID == TAG_BUTTON) == archive->tags_view);
+        BOOL calendar = draw->CtlID == CALENDAR_BUTTON;
+        BOOL location = draw->CtlID == LOCATION_BUTTON || calendar;
+        BOOL active = calendar ? archive->calendar_view : mode && ((draw->CtlID == TAG_BUTTON) == archive->tags_view);
         HGDIOBJ font = SelectObject(draw->hDC, active ? archive->bold : archive->font);
         const wchar_t *text = location ? L"Archive" : mode ? (draw->CtlID == TAG_BUTTON ? L"Tags" : L"Date") : L"×";
         HBRUSH brush = (HBRUSH)GetStockObject(DC_BRUSH);
@@ -961,7 +1101,8 @@ static LRESULT CALLBACK archive_proc(HWND window, UINT message, WPARAM wparam, L
             SetDCBrushColor(draw->hDC, RGB(190,177,151)); FrameRect(draw->hDC, &rect, brush);
         }
         SetTextColor(draw->hDC, ARCHIVE_INK); SetBkMode(draw->hDC, TRANSPARENT);
-        DrawTextW(draw->hDC, text, -1, &rect, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+        if (calendar) calendar_icon(draw->hDC,rect,ARCHIVE_INK,archive->calendar_view);
+        else DrawTextW(draw->hDC, text, -1, &rect, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
         if (draw->itemState & ODS_FOCUS) { InflateRect(&rect, -3, -3); DrawFocusRect(draw->hDC, &rect); }
         SelectObject(draw->hDC, font);
         return TRUE;
@@ -971,6 +1112,7 @@ static LRESULT CALLBACK archive_proc(HWND window, UINT message, WPARAM wparam, L
         SetTextColor((HDC)wparam, ARCHIVE_INK); SetBkColor((HDC)wparam, ARCHIVE_PAPER);
         return (LRESULT)archive->background;
     case WM_COMMAND:
+        if (LOWORD(wparam)==CALENDAR_BUTTON) { calendar_mode(archive,!archive->calendar_view); return 0; }
         if (LOWORD(wparam) == LOCATION_BUTTON && archive->actions.location) {
             archive->actions.location(window); return 0;
         }
@@ -984,6 +1126,7 @@ static LRESULT CALLBACK archive_proc(HWND window, UINT message, WPARAM wparam, L
         if (LOWORD(wparam) == 4) { SetWindowTextW(archive->search, L""); SetFocus(archive->search); return 0; }
         break;
     case WM_KEYDOWN:
+        if (wparam==VK_F5) { if(!refresh_archive(archive,TRUE)) SetWindowTextW(window,L"Refresh failed. Press F5 to retry."); return 0; }
         if (wparam == 'F' && GetKeyState(VK_CONTROL) < 0 && GetKeyState(VK_MENU) >= 0) {
             SetFocus(archive->search); SendMessageW(archive->search, EM_SETSEL, 0, -1); return 0;
         }
@@ -1007,7 +1150,7 @@ static LRESULT CALLBACK archive_proc(HWND window, UINT message, WPARAM wparam, L
         return 0;
     case ARCHIVE_TAGS_REFRESH:
         archive->tags_pending = FALSE;
-        if (archive->tags_view && !archive->refresh_pending) {
+        if (archive->tags_view && !archive->calendar_view && !archive->refresh_pending) {
             wchar_t previous[TAG_NAME_CAP];
             wcscpy_s(previous, TAG_NAME_CAP, archive->tag_filter);
             if (!refresh_tags(archive)) SetWindowTextW(window, L"Notes archive - Tags could not be read. Press F5 to retry.");
@@ -1029,6 +1172,12 @@ static LRESULT CALLBACK archive_proc(HWND window, UINT message, WPARAM wparam, L
     }
     case WM_NOTIFY: {
         NMHDR *header = (NMHDR *)lparam;
+        if (header->hwndFrom==archive->calendar) {
+            if (header->code==CALENDAR_YEAR) calendar_update(archive);
+            if (header->code==CALENDAR_DAY) calendar_open_day(archive,((CalendarEvent *)lparam)->date);
+            if (header->code==CALENDAR_LEAVE) SetFocus(((CalendarEvent *)lparam)->date ? archive->calendar_button : archive->search);
+            return 0;
+        }
         if (header->hwndFrom == archive->tree || header->hwndFrom == archive->tag_tree) {
             if (header->code == TVN_SELCHANGEDW && !archive->rebuilding) {
                 unsigned value = (unsigned)((NMTREEVIEWW *)header)->itemNew.lParam;
@@ -1139,6 +1288,7 @@ static LRESULT CALLBACK archive_proc(HWND window, UINT message, WPARAM wparam, L
         break;
     case WM_CLOSE: DestroyWindow(window); return 0;
     case WM_NCDESTROY:
+        calendar_list_close(window); free(archive->day_entries);
         search_destroy(archive->worker);
         search_result_free(archive->results);
         if (archive->tiles) ImageList_Destroy(archive->tiles);
@@ -1200,15 +1350,17 @@ HWND archive_show(HWND owner, const wchar_t *directory, const wchar_t *settings,
 
 /* Called only after a successful save/removal, on the UI thread. Editing
    invalidates one lazy preview; membership changes share one queued refresh. */
-void archive_changed(const wchar_t *id, BOOL present, BOOL tags_changed) {
+void archive_changed(const wchar_t *id, BOOL present, unsigned changes) {
     Archive *archive;
     ArchiveEntry *entry;
     int i;
     if (!archive_window) return;
     archive = (Archive *)GetWindowLongPtrW(archive_window, GWLP_USERDATA);
+    calendar_list_close(archive_window);
+    if ((changes & ARCHIVE_DATE_CHANGED) || !present) archive->calendar_dirty=TRUE;
     entry = find_entry(archive, id);
-    if (tags_changed || !entry || !present) archive->tags_dirty = TRUE;
-    if (tags_changed) search_reload(archive->worker);
+    if ((changes & ARCHIVE_TAGS_CHANGED) || !entry || !present) archive->tags_dirty = TRUE;
+    if (changes & ARCHIVE_TAGS_CHANGED) search_reload(archive->worker);
     if (archive->tags_dirty && archive->tags_view && !archive->rebuilding && !archive->tags_pending)
         archive->tags_pending = PostMessageW(archive_window, ARCHIVE_TAGS_REFRESH, 0, 0);
     if (entry && present) {
@@ -1216,7 +1368,8 @@ void archive_changed(const wchar_t *id, BOOL present, BOOL tags_changed) {
         free(entry->preview); entry->preview = NULL; entry->loaded = FALSE;
         free(entry->tags); entry->tags = NULL;
         free(entry->excerpt); entry->excerpt = NULL;
-        if ((GetWindowTextLengthW(archive->search) || (archive->tags_view && *archive->tag_filter)) && !archive->rebuilding) {
+        if (archive->calendar_view && archive->calendar_dirty && !archive->rebuilding) calendar_update(archive);
+        if ((GetWindowTextLengthW(archive->search) || (!archive->calendar_view && archive->tags_view && *archive->tag_filter)) && !archive->rebuilding) {
             recheck_note(archive, i); return;
         }
         if (i >= archive->first && i < archive->first + archive->visible)
@@ -1236,7 +1389,12 @@ void archive_search(void) {
     Archive *archive;
     if (!archive_window) return;
     archive = (Archive *)GetWindowLongPtrW(archive_window, GWLP_USERDATA);
+    calendar_mode(archive,FALSE);
     sidebar_mode(archive, FALSE);
     TreeView_SelectItem(archive->tree, TreeView_GetRoot(archive->tree));
     SetFocus(archive->search); SendMessageW(archive->search, EM_SETSEL, 0, -1);
+}
+
+void archive_notes(void) {
+    if (archive_window) calendar_mode((Archive *)GetWindowLongPtrW(archive_window,GWLP_USERDATA),FALSE);
 }

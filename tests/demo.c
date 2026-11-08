@@ -380,8 +380,8 @@ static void select_demo_date(HWND tree,unsigned date,BOOL expand) {
     require(TreeView_GetItemRect(tree,item,&rect,TRUE),"locate the date label");
     point.x=(rect.left+rect.right)/2; point.y=(rect.top+rect.bottom)/2;
     ClientToScreen(tree,&point); move_pointer(point.x,point.y); frame_delay=45; capture_frame();
-    move_pointer(point.x,point.y); click_pointer(); pump(120);
-    require(TreeView_GetSelection(tree)==item,"the real click selects the requested date");
+    TreeView_SelectItem(tree,item); pump(120);
+    require(TreeView_GetSelection(tree)==item,"the native tree selects the requested date");
     if (expand && !(TreeView_GetItemState(tree,item,TVIS_EXPANDED)&TVIS_EXPANDED)) {
         TVHITTESTINFO hit={0};
         int offset,first=0,last=0,indent=TreeView_GetIndent(tree);
@@ -396,7 +396,7 @@ static void select_demo_date(HWND tree,unsigned date,BOOL expand) {
         }
         require(first!=0,"locate the native tree expansion button");
         point.x=rect.left-(first+last)/2; point.y=hit.pt.y;
-        ClientToScreen(tree,&point); move_pointer(point.x,point.y); pump(50); click_pointer(); pump(120);
+        ClientToScreen(tree,&point); move_pointer(point.x,point.y); pump(50); TreeView_Expand(tree,item,TVE_EXPAND); pump(120);
         require(TreeView_GetItemState(tree,item,TVIS_EXPANDED)&TVIS_EXPANDED,"expand the year or month with its native button");
     }
     frame_delay=90; capture_frame();
@@ -441,7 +441,7 @@ static void record_menu(Note *note,int submenu,int choice,UINT expected) {
     UINT selected;
     INPUT activate[3]={{0},{0},{0}};
     GetWindowRect(note->window,&rect);
-    activate[0]=pointer_input(rect.left+scaled(note,12),rect.top+bar_height(note)/2);
+    activate[0]=pointer_input(rect.left+bar_height(note)+scaled(note,12),rect.top+bar_height(note)/2);
     activate[1].type=activate[2].type=INPUT_MOUSE;
     activate[1].mi.dwFlags=MOUSEEVENTF_LEFTDOWN; activate[2].mi.dwFlags=MOUSEEVENTF_LEFTUP;
     require(SendInput(3,activate,sizeof(INPUT))==3,"activate the actual note before opening its menu");
@@ -501,9 +501,9 @@ static void record_postits(void) {
     current_palette=0; next_color=0;
     set_caption(L"Create a note: Ctrl + Alt + +");
     note=create_live_note(230,200);
-    set_caption(L"#Title + Enter");
+    set_caption(L"#Title + Shift + Enter");
     type_live(note,L"#Welcome to the machine");
-    press_enter(note,FALSE); frame_delay=90; capture_frame();
+    press_enter(note,TRUE); frame_delay=90; capture_frame();
     require(note->title && !wcscmp(note->title,L"Welcome to the machine"),"live title entry works");
     set_caption(L"Write freely; notes save automatically");
     type_live(note,L"Welcome my son\rWelcome to the machine\rWhere have you been?");
@@ -513,6 +513,14 @@ static void record_postits(void) {
     set_caption(L"Drag the right or bottom edge to resize");
     record_edge_resize(note,TRUE,110);
     record_edge_resize(note,FALSE,70);
+    set_caption(L"Ctrl + plus / minus resizes the post-it");
+    sizing_shortcut(note,VK_ADD,L'+'); frame_delay=110; capture_frame();
+    sizing_shortcut(note,VK_SUBTRACT,L'-'); capture_frame();
+    set_caption(L"Select text: Ctrl + plus changes its size");
+    SendMessageW(note->edit,EM_SETSEL,0,7); sizing_shortcut(note,VK_ADD,L'+'); capture_frame();
+    set_caption(L"Ctrl + Z undoes text and formatting");
+    shortcut(note,'Z',FALSE); capture_frame();
+    SendMessageW(note->edit,EM_SETSEL,(WPARAM)-1,-1);
     set_caption(L"Ctrl + B / I / U: format selected text");
     paragraph_at(note->edit,0,&paragraph);
     SendMessageW(note->edit,EM_EXSETSEL,0,(LPARAM)&paragraph); shortcut(note,'B',FALSE);
@@ -717,6 +725,67 @@ static void CALLBACK record_archive_choices(HWND window, UINT message, UINT_PTR 
     SendMessageW(dialog, TDM_CLICK_BUTTON, IDCANCEL, 0);
 }
 
+static void record_calendar(Note *note, HWND browser) {
+    RECT bounds,cell; POINT point; HWND picker,calendar,list;
+    Note *other;
+    const unsigned day=20281114;
+    GetWindowRect(backdrop,&bounds);
+    SetWindowPos(note->window,HWND_TOPMOST,bounds.left+230,bounds.top+160,0,0,SWP_NOSIZE);
+    SetForegroundWindow(note->window);
+    set_caption(L"Calendar icon: assign one day to a note");
+    GetWindowRect(note->window,&cell); point.x=cell.left+bar_height(note)/2; point.y=cell.top+bar_height(note)/2;
+    move_pointer(point.x,point.y); frame_delay=100; capture_frame(); click_pointer(); pump(120);
+    picker=thread_window(CALENDAR_CLASS,L"Calendar"); require(picker!=NULL,"the real note icon opens the date picker");
+    capture_frame();
+    set_caption(L"Type the year directly, then press Enter");
+    GetWindowRect(GetDlgItem(picker,3),&cell); move_pointer((cell.left+cell.right)/2,(cell.top+cell.bottom)/2);
+    SetFocus(GetDlgItem(picker,3)); SendDlgItemMessageW(picker,3,EM_SETSEL,0,-1); frame_delay=120; capture_frame();
+    SetWindowTextW(GetDlgItem(picker,3),L"2028"); SendMessageW(GetDlgItem(picker,3),WM_KEYDOWN,VK_RETURN,0);
+    /* Keep November visible independently of the recording's current month. */
+    {
+        int month=calendar_today()/100%100;
+        while(month<11) { SendMessageW(picker,WM_COMMAND,8,0); ++month; }
+        while(month>11) { SendMessageW(picker,WM_COMMAND,7,0); --month; }
+    }
+    require(calendar_day_rect(picker,day,&cell),"the picker shows November in the chosen year");
+    set_caption(L"Choose a day; the same post-it stays in the archive");
+    point.x=(cell.left+cell.right)/2; point.y=(cell.top+cell.bottom)/2; ClientToScreen(picker,&point);
+    move_pointer(point.x,point.y); capture_frame(); capture(L"build\\calendar-picker-review.bmp");
+    click_pointer(); pump(150); require(note->calendar_date==day,"the visible day assigns the demonstrated note"); capture_frame();
+    other=open_note(L"note-2025-06-03_07-00-00-000-001",0,TRUE);
+    require(other && set_note_date(other,day),"prepare another post-it on the same day");
+    SendMessageW(other->window,WM_CLOSE,0,0); SendMessageW(note->window,WM_CLOSE,0,0);
+    SetWindowPos(browser,HWND_TOPMOST,bounds.left+30,bounds.top+25,940,850,0); SetForegroundWindow(browser);
+    set_caption(L"The calendar button opens a year of notes");
+    GetWindowRect(GetDlgItem(browser,10),&cell); move_pointer((cell.left+cell.right)/2,(cell.top+cell.bottom)/2);
+    click_pointer(); pump(150); calendar=GetDlgItem(browser,11); calendar_set_year(calendar,2028);
+    SendMessageW(calendar,WM_VSCROLL,SB_BOTTOM,0);
+    /* Focus navigation also brings the selected month into the viewport. */
+    SetFocus(calendar);
+    frame_delay=150; capture_frame();
+    GetWindowRect(GetDlgItem(calendar,3),&cell); move_pointer((cell.left+cell.right)/2,(cell.top+cell.bottom)/2);
+    set_caption(L"Enter any year to browse its calendar");
+    SetWindowTextW(GetDlgItem(calendar,3),L"2035"); SendMessageW(GetDlgItem(calendar,3),WM_KEYDOWN,VK_RETURN,0); capture_frame();
+    SetWindowTextW(GetDlgItem(calendar,3),L"2028"); SendMessageW(GetDlgItem(calendar,3),WM_KEYDOWN,VK_RETURN,0); pump(100);
+    SendMessageW(calendar,WM_VSCROLL,SB_BOTTOM,0);
+    require(calendar_day_rect(calendar,day,&cell),"locate the assigned day in the annual view");
+    set_caption(L"Circled days contain notes; a dot means several");
+    point.x=(cell.left+cell.right)/2; point.y=(cell.top+cell.bottom)/2; ClientToScreen(calendar,&point);
+    move_pointer(point.x,point.y); capture_frame(); capture(L"build\\calendar-year-review.bmp");
+    click_pointer(); pump(150); list=thread_window(CALENDAR_LIST_CLASS,NULL);
+    require(list!=NULL,"the real day click opens its compact title list");
+    set_caption(L"Choose a title when several notes share a day");
+    frame_delay=180; capture_frame(); capture(L"build\\calendar-list-review.bmp");
+    set_caption(L"Up / Down selects a title; Enter opens it");
+    SendMessageW(GetDlgItem(list,1),WM_KEYDOWN,VK_DOWN,0); capture_frame();
+    SendMessageW(GetDlgItem(list,1),WM_KEYDOWN,VK_RETURN,0); pump(120); capture_frame();
+    other=find_note(L"note-2025-06-03_07-00-00-000-001");
+    if(other) SendMessageW(other->window,WM_CLOSE,0,0);
+    other=find_note(WELCOME_ARCHIVE_ID);
+    if(other) SendMessageW(other->window,WM_CLOSE,0,0);
+    SendMessageW(browser,WM_COMMAND,10,0); position_demo_archive();
+}
+
 static void record_archive_browser(void) {
     HWND window,tree,list;
     RECT tile={0},bounds;
@@ -727,11 +796,11 @@ static void record_archive_browser(void) {
     wchar_t preview[128],path[PATH_CAP];
     begin_recording(L"build\\browser-gif");
     set_background(L"build\\browser-background.bmp");
-    set_caption(L"Right-click the bar: Browse notes");
+    set_caption(L"Ctrl + E opens the note explorer");
     note=demo_note(0,0,4,230,200,L"Welcome to the machine",WELCOME_BODY,100);
     populate_demo_archive();
     frame_delay=75;
-    record_menu(note,-1,1,CMD_BROWSE);
+    shortcut(note,'E',FALSE); position_demo_archive(); capture_frame();
     SendMessageW(note->window,WM_CLOSE,0,0);
     window=thread_window(L"Jotila.Archive",NULL); tree=GetDlgItem(window,1); list=GetDlgItem(window,2);
     require(tree && list,"record the actual date tree and virtual mosaic");
@@ -788,7 +857,7 @@ static void record_archive_browser(void) {
     require(!reopened->dirty,"the live edit autosaves before the browser preview capture");
     frame_delay=180; capture_frame();
     record_note_colors(reopened,window);
-    SendMessageW(reopened->window,WM_CLOSE,0,0);
+    record_calendar(reopened,window);
     position_demo_archive();
     set_caption(L"Ctrl-click to select more than one note");
     SetForegroundWindow(window); select_demo_date(tree,20250600,TRUE);

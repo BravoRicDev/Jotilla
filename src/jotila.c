@@ -22,6 +22,7 @@
 #include "tags.h"
 #include "location.h"
 #include "palette_picker.h"
+#include "calendar.h"
 
 #define APP_CLASS APP_CONTROLLER
 #define NOTE_CLASS APP_NOTE
@@ -31,6 +32,7 @@
 #define TRAY_CLICK_TIMER 2
 #define TRAY_MESSAGE (WM_APP + 1)
 #define NEW_NOTE_MESSAGE (WM_APP + 2)
+#define NOTE_DATE_MESSAGE (WM_APP + 3)
 #define EXIT_COMMAND 1
 #define NOTE_WIDTH 300
 #define NOTE_HEIGHT 240
@@ -71,6 +73,9 @@ struct Note {
     SIZE text_extent;
     int saved_layout[LAYOUT_COUNT];
     unsigned dirty;
+    unsigned calendar_date;
+    HWND date_tip;
+    wchar_t date_label[64];
     DWORD selection_start, selection_end;
     CHARRANGE palette_selection, wheel_selection;
     BOOL custom_ink;
@@ -103,6 +108,7 @@ static Note *find_note(const wchar_t *id);
 static void note_command(Note *note, UINT command);
 static HWND browse_notes(void);
 static void choose_archive(HWND owner);
+static void wheel_resize(Note *note, int delta);
 
 static int scaled(const Note *note, int value) { return MulDiv(value, note->dpi, 96); }
 static int bar_height(const Note *note) { return scaled(note, 32); }
@@ -358,6 +364,7 @@ static BOOL save_note(Note *note) {
         if (ok) {
             note->dirty = note->persisted = note->layout_saved = FALSE;
             note->tags_dirty = note->tags != NULL;
+            if (note->calendar_date) { note->calendar_date = 0; redraw_bar(note); }
         }
     } else {
         ok = save_text(note);
@@ -373,6 +380,36 @@ static BOOL save_note(Note *note) {
     else SetTimer(note->window, SAVE_TIMER, 1000, NULL);
     if (previous_failure != note->save_failed) redraw_bar(note);
     return ok;
+}
+
+/* The persisted association is authoritative: a failed write leaves the
+   previous day visible in both windows. Layout saves preserve this key. */
+static BOOL set_note_date(Note *note, unsigned date) {
+    wchar_t value[16];
+    if ((date && !date_valid(date)) || !note_has_content(note) || !save_note(note)) return FALSE;
+    if (date == note->calendar_date) return TRUE;
+    swprintf_s(value,16,L"%08u",date);
+    if (!WritePrivateProfileStringW(note->id,L"calendar_date",date ? value : NULL,state_path)) return FALSE;
+    note->calendar_date = date;
+    archive_changed(note->id,TRUE,ARCHIVE_DATE_CHANGED); redraw_bar(note);
+    return TRUE;
+}
+
+static void show_note_calendar(Note *note) {
+    POINT anchor = {0,bar_height(note)};
+    if (!note_has_content(note)) {
+        report_error(note->window,L"Add a title or some text before assigning a day."); return;
+    }
+    ClientToScreen(note->window,&anchor);
+    if (!calendar_picker(note->window,anchor,note->calendar_date,NOTE_DATE_MESSAGE))
+        report_error(note->window,L"The calendar could not be opened.");
+}
+
+static int sizing_key(WPARAM key) {
+    UINT character = MapVirtualKeyW((UINT)key,MAPVK_VK_TO_CHAR) & 0xffff;
+    if (key == VK_ADD || key == VK_OEM_PLUS || character == L'+') return 1;
+    if (key == VK_SUBTRACT || key == VK_OEM_MINUS || character == L'-') return -1;
+    return 0;
 }
 
 static void destroy_note(Note *note) {
@@ -659,6 +696,11 @@ static void layout(Note *note) {
     MoveWindow(note->edit, padding, bar + scaled(note, 6), note->width - padding * 2,
                note->height - bar - scaled(note, 16), TRUE);
     ShowWindow(note->edit, note->collapsed ? SW_HIDE : SW_SHOW);
+    if (note->date_tip) {
+        TOOLINFOW tip = {sizeof(tip)};
+        tip.hwnd=note->window; tip.uId=1; SetRect(&tip.rect,0,0,bar,bar);
+        SendMessageW(note->date_tip,TTM_NEWTOOLRECTW,0,(LPARAM)&tip);
+    }
     InvalidateRect(note->window, NULL, FALSE);
 }
 
@@ -677,6 +719,7 @@ static int button_at(Note *note, LPARAM position) {
     RECT rect;
     int x = GET_X_LPARAM(position), y = GET_Y_LPARAM(position), bar = bar_height(note);
     GetClientRect(note->window, &rect);
+    if (y >= 0 && y < bar && x >= 0 && x < bar) return 3;
     if (y < 0 || y >= bar || x < rect.right - bar * 2 || x >= rect.right) return 0;
     return x >= rect.right - bar ? 2 : 1;
 }
@@ -696,13 +739,16 @@ static void paint_note(Note *note) {
         palette_bar(color));
     FillRect(dc, &bar_rect, dc_brush);
     if (note->title) {
-        RECT title_rect = {scaled(note, 10), 0, rect.right - bar * 2 - scaled(note, 6), bar};
+        RECT title_rect = {bar + scaled(note, 4), 0, rect.right - bar * 2 - scaled(note, 6), bar};
         HGDIOBJ old_font = SelectObject(dc, note->font);
         SetBkMode(dc, TRANSPARENT); SetTextColor(dc, note->save_failed ? RGB(0,0,0) : palette_bar_ink(note->palette,note->color));
         DrawTextW(dc, note->title, -1, &title_rect,
                   DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX);
         SelectObject(dc, old_font);
     }
+    button.left = 1; button.right = bar; button.top = 1; button.bottom = bar - 1;
+    if (note->hover == 3) { SetDCBrushColor(dc,color); FillRect(dc,&button,dc_brush); }
+    calendar_icon(dc,button,palette_bar_ink(note->palette,note->color),note->calendar_date != 0);
     for (i = 1; i <= 2; ++i) {
         int cx = rect.right - (i == 1 ? bar * 3 / 2 : bar / 2), cy = bar / 2, s = scaled(note, 4);
         SelectObject(dc, (note->save_failed || (note->hover == i && i == 2)) ? GetStockObject(BLACK_PEN) : note->pen);
@@ -931,6 +977,8 @@ static LRESULT CALLBACK edit_proc(HWND window, UINT message, WPARAM wparam, LPAR
                        wparam == 'X' && GetKeyState(VK_SHIFT) < 0 ? CFM_STRIKEOUT : 0;
         if (effect) { toggle_format(note, effect); return 0; }
         if (wparam == 'T') { note_command(note, CMD_TAGS); return 0; }
+        if (wparam == 'E') { browse_notes(); archive_notes(); return 0; }
+        if (sizing_key(wparam)) { note->wheel_delta=0; wheel_resize(note,sizing_key(wparam)*WHEEL_DELTA); return 0; }
         if (wparam == 'F' && GetKeyState(VK_SHIFT) < 0) { browse_notes(); archive_search(); return 0; }
         if (wparam == 'Z' || wparam == 'Y') {
             SendMessageW(window, wparam == 'Y' || GetKeyState(VK_SHIFT) < 0 ? EM_REDO : EM_UNDO, 0, 0);
@@ -939,7 +987,8 @@ static LRESULT CALLBACK edit_proc(HWND window, UINT message, WPARAM wparam, LPAR
         if (wparam == 'A') { SendMessageW(window, EM_SETSEL, 0, -1); return 0; }
     }
     if (message == WM_CHAR && GetKeyState(VK_CONTROL) < 0 &&
-        (wparam == 2 || wparam == 9 || wparam == 20 || wparam == 21 || wparam == 25 || wparam == 26 ||
+        (wparam == 2 || wparam == 5 || wparam == 9 || wparam == 20 || wparam == 21 || wparam == 25 || wparam == 26 ||
+         wparam == L'+' || wparam == L'-' || wparam == L'=' || wparam == 31 || wparam == 29 ||
          (wparam == 6 && GetKeyState(VK_SHIFT) < 0) ||
          (wparam == 24 && GetKeyState(VK_SHIFT) < 0))) return 0;
     if (message == WM_PASTE) return SendMessageW(window, EM_PASTESPECIAL, CF_UNICODETEXT, 0);
@@ -947,7 +996,7 @@ static LRESULT CALLBACK edit_proc(HWND window, UINT message, WPARAM wparam, LPAR
     if (message == WM_KEYDOWN && wparam == VK_BACK && note->ready && remove_todo_marker(note)) return 0;
     if (message == WM_KEYDOWN && wparam == VK_RETURN && note->ready) {
         BOOL shift = GetKeyState(VK_SHIFT) < 0;
-        if (todo_enter(note, shift) || (!shift && promote_title(note))) return 0;
+        if (todo_enter(note, shift) || (shift && promote_title(note))) return 0;
         SendMessageW(window, EM_REPLACESEL, TRUE, (LPARAM)L"\r\n"); return 0;
     }
     /* Rich Edit edits on key-down. Consume the corresponding translated
@@ -1313,6 +1362,13 @@ static LRESULT CALLBACK note_proc(HWND window, UINT message, WPARAM wparam, LPAR
     if (!note) return DefWindowProcW(window, message, wparam, lparam);
     switch (message) {
     case WM_KEYDOWN:
+        if (GetKeyState(VK_CONTROL) < 0 && GetKeyState(VK_MENU) >= 0) {
+            if (wparam == 'E') { browse_notes(); archive_notes(); return 0; }
+            if (sizing_key(wparam)) { note->wheel_delta=0; wheel_resize(note,sizing_key(wparam)*WHEEL_DELTA); return 0; }
+            if (wparam == 'Z' || wparam == 'Y') {
+                SendMessageW(note->edit,wparam=='Y' || GetKeyState(VK_SHIFT)<0 ? EM_REDO : EM_UNDO,0,0); return 0;
+            }
+        }
         if (wparam == 'T' && GetKeyState(VK_CONTROL) < 0 && GetKeyState(VK_MENU) >= 0) {
             note_command(note, CMD_TAGS); return 0;
         }
@@ -1345,6 +1401,14 @@ static LRESULT CALLBACK note_proc(HWND window, UINT message, WPARAM wparam, LPAR
         SendMessageW(note->edit, EM_SETMARGINS, EC_LEFTMARGIN | EC_RIGHTMARGIN, MAKELPARAM(0, 0));
         SendMessageW(note->edit, EM_SETEVENTMASK, 0, ENM_CHANGE | ENM_REQUESTRESIZE | ENM_SELCHANGE);
         SendMessageW(note->edit, EM_SETUNDOLIMIT, 100, 0);
+        note->date_tip = CreateWindowExW(WS_EX_TOPMOST,TOOLTIPS_CLASSW,NULL,WS_POPUP|TTS_ALWAYSTIP,
+            0,0,0,0,window,NULL,instance,NULL);
+        if (note->date_tip) {
+            TOOLINFOW tip = {sizeof(tip)};
+            tip.uFlags=TTF_SUBCLASS; tip.hwnd=window; tip.uId=1;
+            SetRect(&tip.rect,0,0,bar_height(note),bar_height(note)); tip.lpszText=LPSTR_TEXTCALLBACKW;
+            SendMessageW(note->date_tip,TTM_ADDTOOLW,0,(LPARAM)&tip);
+        }
         update_style(note);
         return 0;
     case WM_NCHITTEST: {
@@ -1364,7 +1428,7 @@ static LRESULT CALLBACK note_proc(HWND window, UINT message, WPARAM wparam, LPAR
             if (top) return HTTOP;
             if (bottom) return HTBOTTOM;
         }
-        if (p.y < bar_height(note) && p.x >= rect.right - bar_height(note) * 2) return HTCLIENT;
+        if (p.y < bar_height(note) && (p.x < bar_height(note) || p.x >= rect.right - bar_height(note) * 2)) return HTCLIENT;
         return p.y < bar_height(note) ? HTCAPTION : HTCLIENT;
     }
     case WM_GETMINMAXINFO: {
@@ -1429,6 +1493,12 @@ static LRESULT CALLBACK note_proc(HWND window, UINT message, WPARAM wparam, LPAR
         }
         return 0;
     case WM_NOTIFY:
+        if (((NMHDR *)lparam)->code == TTN_GETDISPINFOW) {
+            if (note->calendar_date) swprintf_s(note->date_label,64,L"Calendar: %04u-%02u-%02u",note->calendar_date/10000,
+                note->calendar_date/100%100,note->calendar_date%100);
+            else wcscpy_s(note->date_label,64,L"Assign a calendar day");
+            ((NMTTDISPINFOW *)lparam)->lpszText=note->date_label; return 0;
+        }
         if (((NMHDR *)lparam)->hwndFrom == note->edit) {
             if (((NMHDR *)lparam)->code == EN_REQUESTRESIZE) {
                 const RECT *rect = &((REQRESIZE *)lparam)->rc;
@@ -1469,11 +1539,16 @@ static LRESULT CALLBACK note_proc(HWND window, UINT message, WPARAM wparam, LPAR
         if (GetCapture() == window) ReleaseCapture();
         if (pressed && pressed == button_at(note, lparam)) {
             if (pressed == 1) toggle_note(note);
+            else if (pressed == 3) show_note_calendar(note);
             else SendMessageW(window, WM_CLOSE, 0, 0);
         }
         return 0;
     }
     case WM_CAPTURECHANGED: note->pressed = 0; return 0;
+    case NOTE_DATE_MESSAGE:
+        if (!set_note_date(note,(unsigned)wparam))
+            report_error(window,L"The calendar date could not be saved. Check the archive folder.");
+        return 0;
     case WM_NCRBUTTONUP:
         if (wparam == HTCAPTION) {
             POINT point = {GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)};
@@ -1541,6 +1616,11 @@ static Note *open_note(const wchar_t *id, int color, BOOL restore) {
     note->color = restore ? layout_setting(note, LAYOUT_COLOR, color) : color;
     note->palette = restore ? layout_setting(note, LAYOUT_PALETTE, 0) : current_palette;
     note->custom_ink = restore && layout_setting(note, LAYOUT_CUSTOM_INK, FALSE) != 0;
+    if (restore) {
+        wchar_t date[32];
+        GetPrivateProfileStringW(id,L"calendar_date",L"",date,32,state_path);
+        note->calendar_date = date_parse(date);
+    }
     if (note->palette < 0 || note->palette >= PALETTE_COUNT) note->palette = 0;
     if (note->color < 0 || note->color >= PALETTE_SIZES[note->palette]) note->color = 0;
     note->size = restore ? layout_setting(note, LAYOUT_SIZE, 1) : 1;

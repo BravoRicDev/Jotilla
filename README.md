@@ -1,74 +1,38 @@
 # <img src="assets/jotila.png" width="36" height="36" alt="Greek iota on a yellow note"> Jotila - Sticky notes, on silicon
 
-Jotila is a small Windows app for taking quick notes on your desktop. Notes are saved and archived automatically, so you can find, reopen and update them later.
+Small, native Windows notes with autosave, an archive and a calendar. **C17**, no extra dependencies. Windows 10/11, x64.
 
-**[Download for Windows](https://github.com/GarauGarau/Jotila/releases/latest/download/Jotila-Setup-x64.exe)** · [Portable ZIP](https://github.com/GarauGarau/Jotila/releases/latest/download/Jotila-portable-x64.zip) · [Releases](https://github.com/GarauGarau/Jotila/releases)
-
-Windows 10/11, x64. No administrator rights or extra dependencies required.
+**[Installer](https://github.com/GarauGarau/Jotila/releases/latest/download/Jotila-Setup-x64.exe)** · [Portable ZIP](https://github.com/GarauGarau/Jotila/releases/latest/download/Jotila-portable-x64.zip) · [Releases](https://github.com/GarauGarau/Jotila/releases)
 
 ![Formatting, checklists and a collapsed note](docs/screenshots/notes.png)
 
-<sub>Background: Sundown, Loch Rannoch</sub>
-
-## Everyday use
-
-- **Ctrl + Alt + +** creates a note; the numpad `+` works too.
-- Drag the title bar to move a note, double-click to rename it, or use **− / □** to collapse and expand it. **×** closes the note and keeps it in the archive.
-- Drag an edge or corner to resize. **Ctrl + mouse wheel** or a touchpad pinch resizes the note; with text selected, it resizes only that text. Resizing stops before content would be clipped.
-- Right-click the title bar for the archive, tags, opacity, sizes and the original three palettes for new notes.
-- Right-click inside a note for the color wheel with all **80 [Color-Hex Popular palettes](docs/palettes.md)**. **← / →** browse; click a wedge to apply and close. **Esc** cancels. New notes draw from that palette for the rest of the session; **★** saves it for future starts. Text defaults to black or white for contrast.
-- Select text before right-clicking to color just that selection. Custom text colors stay intact when you change the background.
-
 | Action | Shortcut |
 |---|---|
+| New note | **Ctrl + Alt + +** |
+| Open note explorer | **Ctrl + E** |
+| Search notes and tags | **Ctrl + Shift + F** |
+| Turn `#Title` into a title | **Shift + Enter** |
+| Start a checklist after `*` | **Shift + Enter**; **Enter** continues it |
 | Bold, italic, underline | **Ctrl + B / I / U** |
 | Strikethrough | **Ctrl + Shift + X** |
-| Start a checklist | Type `*`, then **Shift + Enter** |
-| Add or finish checklist items | **Enter** adds an item; **Backspace** on an empty item ends the list |
-| Turn the first line into a title | Type `#Title`, then **Enter** |
-| Edit tags | **Ctrl + T**; separate tags with `;` |
-| Search all notes | **Ctrl + Shift + F** |
+| Undo / redo | **Ctrl + Z / Y** |
+| Resize note, or selected text | **Ctrl + + / −**, **Ctrl + wheel** or touchpad pinch |
+| Edit tags | **Ctrl + T** |
 
-Click a checkbox to mark a task complete. In the archive, search by text or tags, filter by date, and click a note to reopen it. Use `#work` for an exact tag, `"release plan"` for a phrase, or `-#` for untagged notes. **Ctrl + F** focuses search; **F5** refreshes external edits.
+Drag the bar to move; double-click its title to rename. **− / □** folds or expands; **×** closes and keeps the note in the archive. Resizing preserves visible content.
 
-Minimizing the archive sends it to the notification area. Double-click the tray icon to restore it; a single click creates a note.
+Click the note's **calendar icon** to assign, change or remove its day. The square calendar button beside **Archive** switches to the year view: circled days open a note, or a compact title list when several share the day. Type a year directly in either calendar. In day lists, **↑ / ↓**, **Page Up / Down**, **Home / End** navigate, **Enter** opens and **Esc** returns. Search also filters calendar notes.
 
-<table>
-  <tr>
-    <td width="50%" align="center" valign="top">
-      <img src="docs/screenshots/notes-demo.gif" width="100%" alt="Writing, formatting, checklists and resizing"><br>
-      <sub>Background: February Fill Dyke</sub>
-    </td>
-    <td width="50%" align="center" valign="top">
-      <img src="docs/screenshots/browser-demo.gif" width="100%" alt="Searching archives and choosing colors for notes and selected text"><br>
-      <sub>Background: Walton-on-the-Naze</sub>
-    </td>
-  </tr>
-</table>
+Right-click the text for [80 color palettes](docs/palettes.md); select text first to color just that selection. **← / →** browse, click applies, **★** saves a startup favorite. Right-click the bar for more options.
 
-![Notes in pastel, white, yellow, Faded Rose and Soft Black](docs/screenshots/palettes.png)
+Search by text or tags: `#work`, `"release plan"`, or `-#` for untagged notes. **F5** reloads external edits. Minimizing the explorer hides it in the tray; double-click the tray icon to return, single-click for a new note.
 
-<sub>Background: Stern View of Boat Going Down a Glacis, Nr Ning P-0</sub>
+| Notes and shortcuts | Archive and calendar |
+|---|---|
+| ![Note editing walkthrough](docs/screenshots/notes-demo.gif) | ![Archive and calendar walkthrough](docs/screenshots/browser-demo.gif) |
 
-## Your notes
+Notes save as UTF-8 text in `%LOCALAPPDATA%\Jotila\notes`, or beside the portable EXE. Empty notes stay unsaved. **Archive** moves or switches folders; back up the whole folder, including `notes.ini` and RTF files. Updates and uninstall preserve your notes.
 
-Notes save automatically as UTF-8 text files in `%LOCALAPPDATA%\Jotila\notes`, or in `notes` beside the portable EXE. Empty notes are not saved. Open notes return on restart, and uninstalling leaves your archive intact.
+Build with MSVC and the Windows SDK: `build.cmd`. Checks: `build.cmd test`, `build.cmd test-checked`, `build.cmd analyze`. Package downloads: `tools/package.ps1`. Binaries are unsigned.
 
-Upgrading from an earlier release keeps your existing archive in its original location.
-
-Use **Archive** in the archive window to move your notes or open another archive. Back up the whole folder, including `notes.ini` and the RTF files that preserve formatting.
-
-## Development
-
-Written in **C17** using the native Windows UI and rich text editor. Build with MSVC and the Windows SDK:
-
-```bat
-build.cmd                 rem Build the app and installer
-build.cmd test            rem Run integration tests
-build.cmd test-checked    rem Run tests with runtime checks
-build.cmd analyze         rem Run static analysis
-```
-
-Sources live in `src/`, tests in `tests/`, and supporting tools in `tools/`. Generated files go to `build/` and `dist/`. Release binaries are unsigned.
-
-With ImageMagick installed, `tools/capture.ps1` regenerates the screenshots and demos using local artwork; `-OverviewOnly` refreshes just the first screenshot. Pass `-BackgroundRoot` to choose the artwork folder. Backgrounds are from the Birmingham Museums Trust collection.
+`tools/capture.ps1` regenerates the real-app screenshots and GIFs using ImageMagick and local artwork (`-BackgroundRoot`). Backgrounds: Birmingham Museums Trust — *Sundown, Loch Rannoch*, *February Fill Dyke* and *Walton-on-the-Naze*.

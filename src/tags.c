@@ -8,6 +8,7 @@
 #include <wchar.h>
 #include <wctype.h>
 #include "tags.h"
+#include "metadata.h"
 
 static int name_compare(const void *a, const void *b) {
     return CompareStringOrdinal((const wchar_t *)a, -1, (const wchar_t *)b, -1, TRUE) - CSTR_EQUAL;
@@ -77,51 +78,6 @@ BOOL tags_contains(const wchar_t *tags, const wchar_t *name) {
     return FALSE;
 }
 
-/* Read once, preserving every section/key during the first Unicode migration.
-   Existing Jotila metadata is ASCII; legacy ANSI files use the Windows ACP. */
-static BOOL read_ini(const wchar_t *path, wchar_t **result, BOOL *unicode) {
-    HANDLE file;
-    LARGE_INTEGER size;
-    char *bytes;
-    wchar_t *text;
-    DWORD read;
-    int count, offset = 0;
-    UINT encoding = CP_ACP;
-    BOOL ok;
-    *result = NULL; *unicode = FALSE;
-    file = CreateFileW(path, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-                       NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
-    if (file == INVALID_HANDLE_VALUE) {
-        if (GetLastError() != ERROR_FILE_NOT_FOUND) return FALSE;
-        *result = (wchar_t *)calloc(1, sizeof(wchar_t)); return *result != NULL;
-    }
-    if (!GetFileSizeEx(file, &size) || size.QuadPart < 0 || size.QuadPart > 64 * 1024 * 1024) {
-        CloseHandle(file); return FALSE;
-    }
-    bytes = (char *)malloc((size_t)size.QuadPart + 2);
-    if (!bytes) { CloseHandle(file); return FALSE; }
-    ok = ReadFile(file, bytes, (DWORD)size.QuadPart, &read, NULL) && read == size.QuadPart;
-    CloseHandle(file);
-    if (!ok) { free(bytes); return FALSE; }
-    if (read >= 2 && (BYTE)bytes[0] == 0xff && (BYTE)bytes[1] == 0xfe) {
-        if (read & 1) { free(bytes); return FALSE; }
-        count = (int)(read / 2 - 1); *unicode = TRUE;
-        text = (wchar_t *)bytes;
-        memmove(text, text + 1, (size_t)count * sizeof(wchar_t)); text[count] = 0;
-        *result = text; return TRUE;
-    }
-    if (read >= 3 && (BYTE)bytes[0] == 0xef && (BYTE)bytes[1] == 0xbb && (BYTE)bytes[2] == 0xbf) {
-        offset = 3; encoding = CP_UTF8;
-    }
-    count = read > (DWORD)offset ? MultiByteToWideChar(encoding, MB_ERR_INVALID_CHARS,
-                                                     bytes + offset, (int)read - offset, NULL, 0) : 0;
-    if (!count && read > (DWORD)offset) { free(bytes); return FALSE; }
-    text = (wchar_t *)calloc((size_t)count + 1, sizeof(wchar_t));
-    if (text && count) MultiByteToWideChar(encoding, MB_ERR_INVALID_CHARS, bytes + offset,
-                                         (int)read - offset, text, count);
-    free(bytes); *result = text; return text != NULL;
-}
-
 static BOOL unicode_ini(const wchar_t *path) {
     wchar_t *text, temporary[1024], bom = 0xfeff;
     BOOL unicode, ok;
@@ -136,7 +92,7 @@ static BOOL unicode_ini(const wchar_t *path) {
         if (!ok) return FALSE;
         if (written == sizeof(header) && header == 0xfeff) return TRUE;
     }
-    if (!read_ini(path, &text, &unicode)) return FALSE;
+    if (!metadata_read(path, &text, &unicode)) return FALSE;
     if (unicode) { free(text); return TRUE; }
     if (swprintf_s(temporary, 1024, L"%s.unicode.tmp", path) < 0) { free(text); return FALSE; }
     file = CreateFileW(temporary, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
@@ -176,28 +132,19 @@ void tags_store_free(TagStore *store) {
 }
 
 BOOL tags_store_load(const wchar_t *directory, const wchar_t *settings, TagStore *store) {
-    wchar_t *text, *line, id[80] = L"";
+    wchar_t *text, *key, *value;
+    MetadataCursor cursor = {0};
     size_t capacity = 0;
     BOOL unicode, ok = TRUE;
     memset(store, 0, sizeof(*store));
-    if (!read_ini(settings, &text, &unicode)) return FALSE;
-    line = text;
-    while (*line) {
-        wchar_t *end = line + wcscspn(line, L"\r\n"), *next = end;
-        while (*next == L'\r' || *next == L'\n') ++next;
-        if (*end) *end = 0;
-        while (iswspace(*line)) ++line;
-        if (*line == L'[') {
-            wchar_t *close = wcschr(line, L']');
-            id[0] = 0;
-            if (close && close - line < 80 &&
-                (!wcsncmp(line + 1, L"note-", 5) || !wcsncmp(line + 1, L"nota-", 5)))
-                wcsncpy_s(id, 80, line + 1, (size_t)(close - line - 1));
-        } else if (*id && !_wcsnicmp(line, L"tags", 4)) {
-            wchar_t *value = line + 4, normal[TAGS_CAP], path[1024];
+    if (!metadata_read(settings, &text, &unicode)) return FALSE;
+    cursor.next = text;
+    while (metadata_next(&cursor,&key,&value)) {
+        const wchar_t *id = cursor.section;
+        if (id && !_wcsicmp(key,L"tags") && wcslen(id)<80 &&
+            (!wcsncmp(id,L"note-",5) || !wcsncmp(id,L"nota-",5))) {
+            wchar_t normal[TAGS_CAP], path[1024];
             WIN32_FILE_ATTRIBUTE_DATA attributes;
-            while (iswspace(*value)) ++value;
-            if (*value++ != L'=') { line = next; continue; }
             if (!tags_normalize(value, normal)) { ok = FALSE; break; }
             if (*normal && (!directory || (swprintf_s(path, 1024, L"%s\\%s.txt", directory, id) >= 0 &&
                 GetFileAttributesExW(path, GetFileExInfoStandard, &attributes) &&
@@ -216,7 +163,6 @@ BOOL tags_store_load(const wchar_t *directory, const wchar_t *settings, TagStore
                 ++store->count;
             }
         }
-        line = next;
     }
     free(text);
     if (!ok) { tags_store_free(store); return FALSE; }

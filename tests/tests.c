@@ -237,8 +237,8 @@ static void title_checks(void) {
     SelectObject(dc, old); ReleaseDC(titled->edit, dc);
 
     replace_text(titled, L"#Spesa è urgente");
-    press_enter(titled, FALSE);
-    require(titled->title && !wcscmp(titled->title, L"Spesa è urgente"), "Enter promotes #first line without hash");
+    press_enter(titled, TRUE);
+    require(titled->title && !wcscmp(titled->title, L"Spesa è urgente"), "Shift+Enter promotes #first line without hash");
     require(GetWindowTextLengthW(titled->edit) == 0, "promoted title is removed from body without blank line");
     replace_text(titled, L"Caffè e pane");
     pump(650);
@@ -249,9 +249,9 @@ static void title_checks(void) {
     screenshot(titled, L"build\\titled-collapsed.bmp");
 
     replace_text(literal, L"#appunto");
-    press_enter(literal, TRUE);
+    press_enter(literal, FALSE);
     GetWindowTextW(literal->edit, text, 256);
-    require(!literal->title && !wcscmp(text, L"#appunto\r\n"), "Shift+Enter keeps hashtag line in body");
+    require(!literal->title && !wcscmp(text, L"#appunto\r\n"), "Enter keeps hashtag line in body");
     SendMessageW(literal->edit, EM_REPLACESEL, TRUE, (LPARAM)L"Resta nel testo");
     press_enter(literal, FALSE);
     require(!literal->title, "Enter on later lines cannot promote initial literal hashtag");
@@ -267,13 +267,13 @@ static void title_checks(void) {
     require(!wcscmp(text, L"Caffè e pane"), "title header is excluded from reopened body");
     GetWindowTextW(literal->edit, text, 256);
     require(!literal->title && !wcscmp(text, L"#appunto\r\nResta nel testo\r\nAnche qui."),
-            "literal Shift+Enter note remains literal after restart");
+            "literal Enter note remains literal after restart");
     replace_text(literal, L"#");
     press_enter(literal, FALSE);
     require(!literal->title, "a bare hash does not create an empty title");
     SendMessageW(titled->window, WM_CLOSE, 0, 0);
     SendMessageW(literal->window, WM_CLOSE, 0, 0);
-    puts("PASS: bold monospaced black font, Enter title, Shift+Enter literal, body separation and restart persistence.");
+    puts("PASS: bold monospaced black font, Shift+Enter title, Enter literal, body separation and restart persistence.");
 }
 
 static void efficiency_checks(BOOL enforce) {
@@ -404,13 +404,13 @@ static void serialization_checks(void) {
     wchar_t body[128];
     require(note != NULL, "create serialization check note");
     replace_text(note, L"#  Titolo 😀  ");
-    press_enter(note, FALSE);
+    press_enter(note, TRUE);
     require(note->title && !wcscmp(note->title, L"Titolo 😀"), "trimmed Unicode title");
     require(save_note(note), "save a title with an empty body");
     expect_file(note->path, "#Titolo 😀\r\n");
     replace_text(note, L"#Nuovo\r\nCorpo già presente: 漢字");
     SendMessageW(note->edit, EM_SETSEL, 6, 6);
-    press_enter(note, FALSE);
+    press_enter(note, TRUE);
     GetWindowTextW(note->edit, body, 128);
     require(!wcscmp(note->title, L"Nuovo") && !wcscmp(body, L"Corpo già presente: 漢字"),
             "promoting an existing first line preserves following body");
@@ -1767,6 +1767,7 @@ static void location_checks(void) {
 
 #include "palette_checks.c"
 #include "text_size_checks.c"
+#include "calendar_checks.c"
 
 int main(int argc, char **argv) {
     wchar_t temporary[PATH_CAP], root[PATH_CAP], id[80], path[PATH_CAP], text[256], pattern[PATH_CAP];
@@ -1805,6 +1806,7 @@ int main(int argc, char **argv) {
     controller = CreateWindowExW(WS_EX_TOOLWINDOW, APP_CLASS, L"Jotila test", WS_OVERLAPPED,
                                  0, 0, 0, 0, NULL, NULL, instance, NULL);
     require(controller != NULL, "create hotkey controller");
+    if (argc==2 && !strcmp(argv[1],"--calendar-only")) { calendar_checks(); shortcut_checks(); goto cleanup; }
     if (argc==2 && !strcmp(argv[1],"--archive-only")) {
         require(new_note()!=NULL,"create archive test owner");
         archive_checks();
@@ -1913,6 +1915,7 @@ int main(int argc, char **argv) {
             "restart restores window position and custom width");
     expect_file(path, expected);
     puts("PASS: restart restores layout and active notes, preserves closed TXT archives.");
+    calendar_checks(); shortcut_checks();
     title_checks();
     border_checks();
     serialization_checks();

@@ -1,6 +1,6 @@
 # Text sizing
 
-Ctrl + mouse wheel and the touchpad's pinch gesture resize the selected text.
+Ctrl + plus/minus, Ctrl + mouse wheel and the touchpad's pinch gesture resize the selected text.
 Without a selection they resize the note, preserving its aspect ratio. Collapsed
 notes resize their stored expanded dimensions. Dragging an edge or corner always
 resizes the note.
@@ -17,6 +17,8 @@ Windows supplies the normal pinch-to-zoom fallback as
 [Ctrl + wheel input](https://learn.microsoft.com/en-us/windows/win32/wintouch/windows-touch-gestures-overview).
 The same handler accumulates fractional deltas and discards a remainder when
 the target selection changes. No gesture framework or background worker is added.
+Keyboard shortcuts use a complete size step and clear any pending wheel remainder;
+both the main keyboard and numeric keypad are supported.
 
 [EM_SETFONTSIZE](https://learn.microsoft.com/en-us/windows/win32/controls/em-setfontsize)
 updates each selected formatting run through Rich Edit's existing undo engine.
