@@ -612,6 +612,34 @@ static void choose_demo_color(HWND popup,int palette,int color,int steps) {
     require(!IsWindow(popup),"choosing a visible wedge applies the color and closes the wheel");
 }
 
+static void record_favorite_palette(Note *note) {
+    HWND popup=open_demo_palette(note);
+    PaletteArt *art=palette_art_create((int)GetDpiForWindow(popup));
+    PaletteLayout layout;
+    POINT point;
+    RECT bounds;
+    Note *next;
+    require(art!=NULL,"read favorite button geometry");
+    layout=*palette_art_layout(art); palette_art_destroy(art);
+    set_caption(L"Star a palette: the current note changes immediately");
+    point.x=(layout.next.left+layout.next.right)/2; point.y=(layout.next.top+layout.next.bottom)/2;
+    ClientToScreen(popup,&point); move_pointer(point.x,point.y); click_pointer(); pump(160);
+    point.x=(layout.favorite.left+layout.favorite.right)/2; point.y=(layout.favorite.top+layout.favorite.bottom)/2;
+    ClientToScreen(popup,&point); move_pointer(point.x,point.y); frame_delay=100; capture_frame();
+    click_pointer(); pump(180);
+    require(IsWindow(popup) && favorite_palette==11 && current_palette==11 && note->palette==11 && note->color==0,
+            "the recorded star click applies Beach immediately to the current note");
+    frame_delay=160; capture_frame();
+    send_key(VK_ESCAPE,TRUE); send_key(VK_ESCAPE,FALSE); pump(100);
+    require(!IsWindow(popup),"dismiss the favorite picker");
+    next=new_note(); require(next && next->palette==11,"the next recorded note uses the favorite without a restart");
+    GetWindowRect(backdrop,&bounds);
+    SetWindowPos(next->window,HWND_TOPMOST,bounds.left+560,bounds.top+240,0,0,SWP_NOSIZE);
+    ShowWindow(next->window,SW_SHOWNORMAL); SetForegroundWindow(next->window); pump(120);
+    set_caption(L"The next note uses the favorite too; no restart needed");
+    frame_delay=210; capture_frame(); destroy_note(next);
+}
+
 static void record_note_colors(Note *note,HWND browser) {
     RECT bounds,edit;
     HWND popup;
@@ -676,6 +704,7 @@ static void record_note_colors(Note *note,HWND browser) {
     move_pointer(edit.right-scaled(note,10),edit.bottom-scaled(note,10)); click_pointer(); pump(150);
     set_caption(L"A little color, exactly where you want it");
     frame_delay=210; capture_frame();
+    record_favorite_palette(note);
     ShowWindow(browser,SW_SHOWNOACTIVATE);
 }
 

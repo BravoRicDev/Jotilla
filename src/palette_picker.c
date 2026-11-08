@@ -52,7 +52,7 @@ static void tooltip_text(HWND window, Picker *p, UINT message) {
     TOOLINFOW tool={sizeof(tool)};
     tool.uFlags=TTF_SUBCLASS; tool.hwnd=window; tool.uId=1;
     tool.rect=palette_art_layout(p->art)->favorite;
-    tool.lpszText=p->palette==p->options.favorite ? L"Remove startup favorite (F)" : L"Use this palette when Jotila starts (F)";
+    tool.lpszText=p->palette==p->options.favorite ? L"Remove favorite (F)" : L"Use for this note and new notes; save as favorite (F)";
     SendMessageW(p->tooltip,message,0,(LPARAM)&tool);
 }
 
@@ -74,9 +74,13 @@ static void favorite(HWND window, Picker *p) {
     if(!p->options.favorite_changed(p->options.context,value) || !IsWindow(window) ||
         (Picker *)GetWindowLongPtrW(window,GWLP_USERDATA)!=p) return;
     p->options.favorite=value;
+    if(value>=0 && !p->options.text_mode) {
+        if(p->options.palette!=value || p->options.color<0) p->options.color=0;
+        p->options.palette=value;
+    }
     palette_art_prepare(p->art,p->palette,value,p->options.text_mode);
     tooltip_text(window,p,TTM_UPDATETIPTEXTW);
-    render(window,p);
+    transition(window,p);
 }
 
 static void finish(HWND window, Picker *p, int color, BOOL restore_focus) {

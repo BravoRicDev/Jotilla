@@ -9,9 +9,11 @@ the circle. Browsing never changes the note.
 
 Choosing a background also sets the palette for new notes this session. Colors
 are drawn in shuffled cycles, using each distinct color once before reshuffling.
-The star below the circle saves the displayed palette for future starts; click
-it again to clear the favorite. **F** does the same. Starring does not recolor
-the current note. The preference belongs to the current archive.
+The star below the circle immediately applies the displayed palette to the
+current note and new notes, and remembers it after restart. It uses the first
+color unless the note already uses that palette, preserving its chosen color.
+Click again to clear the favorite without recoloring; **F** does the same.
+The preference belongs to the current archive.
 
 The title-bar menu offers **Pastel**, **Black and white** and **Yellow only**,
 with their original colors and sequence. These three palettes do not appear in
@@ -19,7 +21,8 @@ the wheel. Unless a wheel color or startup favorite is chosen, the defaults
 behave exactly as before.
 
 With text selected, right-click opens **Selected text** mode: the chosen color
-formats only that range and does not change the note or session palette. Without
+formats only that range and does not change the note or session palette. The star
+still applies a background favorite, preserving manual text colors. Without
 a selection, **Note color** mode changes the background. Manual text colors are
 preserved by background changes, undo/redo and reopening; once used, foreground
 colors are under your control instead of following automatic black/white ink.

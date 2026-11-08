@@ -18,7 +18,7 @@ Sizing stops before text would be clipped; Ctrl+Z/Ctrl+Y undo/redo font changes.
 Right-click the bar for the archive, opacity, title, size and three original palettes.
 Right-click the text for the color wheel; Left/Right browse all 80 Color-Hex Popular palettes.
 Click a color to apply and close; Escape cancels.
-New notes draw from the selected palette; the star saves a startup favorite.
+The star applies a favorite to this note and new notes, including after restart.
 Select text before right-clicking to change only its text color.
 #Title + Shift+Enter makes a title; Enter keeps it as text.
 Ctrl+E opens the note explorer; Ctrl+Z/Ctrl+Y undo/redo text and formatting.

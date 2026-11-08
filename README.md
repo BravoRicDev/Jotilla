@@ -23,7 +23,7 @@ Drag the bar to move; double-click its title to rename. **− / □** folds or e
 
 Click the note's **calendar icon** to assign, change or remove its day. The square calendar button beside **Archive** switches to the year view: circled days open a note, or a compact title list when several share the day. Type a year directly in either calendar. In day lists, **↑ / ↓**, **Page Up / Down**, **Home / End** navigate, **Enter** opens and **Esc** returns. Search also filters calendar notes.
 
-Right-click the text for [80 color palettes](docs/palettes.md); select text first to color just that selection. **← / →** browse, click applies, **★** saves a startup favorite. Right-click the bar for more options.
+Right-click the text for [80 color palettes](docs/palettes.md); select text first to color just that selection. **← / →** browse, click applies, **★** applies a favorite to this note and new notes, including after restart. Right-click the bar for more options.
 
 Search by text or tags: `#work`, `"release plan"`, or `-#` for untagged notes. **F5** reloads external edits. Minimizing the explorer hides it in the tray; double-click the tray icon to return, single-click for a new note.
 

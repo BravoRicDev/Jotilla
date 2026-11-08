@@ -166,7 +166,8 @@ static BOOL close_favorite_callback(void *context,int palette) {
 }
 
 static void palette_preference_checks(void) {
-    Note *note;
+    Note *note,*other;
+    wchar_t id[80];
     POINT anchor={430,380};
     HWND popup;
     PaletteArt *art;
@@ -195,9 +196,13 @@ static void palette_preference_checks(void) {
     }
     require(setting(L"app",L"palette",-1)==2 && setting(L"app",L"favorite_palette",-2)==-1,
             "session-only selection leaves startup preferences unchanged");
+    replace_text(note,L"Favorite palette"); require(save_note(note),"persist the favorite owner");
+    wcscpy_s(id,80,note->id);
+    other=new_note(); require(other!=NULL,"keep another note open in the previous palette");
     art=palette_art_create(note->dpi); require(art!=NULL,"read star layout at owner DPI");
     layout=*palette_art_layout(art); palette_art_destroy(art);
-    popup=test_picker(note,anchor,favorite,0);
+    popup=test_picker(note,anchor,note->palette,note->color);
+    browse_picker(popup,favorite);
     require(SetWindowSubclass(popup,count_picker_timers,1,(DWORD_PTR)&timer_count),"observe popup animation lifetime");
     pump(220); timer_count=0; pump(180);
     require(timer_count==0,"a settled popup has no animation timer");
@@ -208,17 +213,48 @@ static void palette_preference_checks(void) {
         (layout.favorite.top+layout.favorite.bottom)/2));
     SendMessageW(popup,WM_LBUTTONUP,0,MAKELPARAM((layout.favorite.left+layout.favorite.right)/2,
         (layout.favorite.top+layout.favorite.bottom)/2));
-    require(IsWindow(popup) && favorite_palette==favorite && current_palette==4 && note->palette==4 &&
-            setting(L"app",L"favorite_palette",-1)==favorite,"star durably saves a newly appended palette without recoloring or closing");
+    require(IsWindow(popup) && favorite_palette==favorite && current_palette==favorite && note->palette==favorite &&
+            note->color==0 && setting(L"app",L"favorite_palette",-1)==favorite,
+            "star immediately applies and saves the favorite without closing the picker");
+    require(setting(note->id,L"palette",-1)==favorite && setting(note->id,L"color",-1)==0 && other->palette==4,
+            "the current note's color is durable while other open notes keep their palette");
+    for(i=0;i<10;++i) {
+        Note *next=new_note();
+        require(next && next->palette==favorite && !(seen&(1u<<next->color)),
+                "new notes immediately draw from the favorite without reloading preferences");
+        seen|=1u<<next->color;
+        if(i%5==4) { require(seen==31,"changing favorites resets the previous palette's color bag"); seen=0; }
+        destroy_note(next);
+    }
     { Note view={0}; view.window=popup; screenshot(&view,L"build\\palette-favorite.bmp"); }
     if(IsWindow(popup)) SendMessageW(popup,WM_KEYDOWN,VK_ESCAPE,0);
+    destroy_note(note); note=open_note(id,0,TRUE);
+    require(note && note->palette==favorite && note->color==0,"the recolored note survives closing and reopening");
     load_preferences();
     require(current_palette==favorite && favorite_palette==favorite && shuffled_palette,"startup uses the saved favorite");
     { Note *next=new_note(); require(next && next->palette==favorite,"favorite governs actual new notes after reload"); destroy_note(next); }
+    select_note_color(note,favorite,3);
+    popup=test_picker(note,anchor,note->palette,note->color);
+    SendMessageW(popup,WM_KEYDOWN,'F',0);
+    require(favorite_palette==-1 && current_palette==favorite && note->color==3,
+            "clearing a favorite keeps the current note and session colors");
+    i=colors_left;
+    SendMessageW(popup,WM_KEYDOWN,'F',0);
+    require(favorite_palette==favorite && note->color==3 && colors_left==i,
+            "starring the current palette preserves its chosen color and remaining shuffle");
+    SendMessageW(popup,WM_KEYDOWN,VK_RETURN,0);
+    require(!IsWindow(popup) && note->color==3,"Enter after starring retains the selected wedge");
     lock=CreateFileW(state_path,GENERIC_READ,FILE_SHARE_READ,NULL,OPEN_EXISTING,0,NULL);
-    require(lock!=INVALID_HANDLE_VALUE && !save_favorite(note,6) && favorite_palette==favorite,
+    require(lock!=INVALID_HANDLE_VALUE && !save_favorite(note,6) && favorite_palette==favorite &&
+            current_palette==favorite && note->palette==favorite && note->color==3 && colors_left==i,
             "a failed favorite save leaves the active preference intact"); CloseHandle(lock);
-    popup=test_picker(note,anchor,favorite,0); SendMessageW(popup,WM_KEYDOWN,'F',0);
+    popup=test_picker(note,anchor,note->palette,note->color); browse_picker(popup,6);
+    SendMessageW(popup,WM_KEYDOWN,'F',0);
+    require(favorite_palette==6 && current_palette==6 && note->palette==6 && note->color==0,
+            "F applies a different favorite immediately, just like clicking its star");
+    { Note *next=new_note(); require(next && next->palette==6,"keyboard favorite governs the very next note"); destroy_note(next); }
+    SendMessageW(popup,WM_KEYDOWN,VK_ESCAPE,0);
+    popup=test_picker(note,anchor,note->palette,note->color); SendMessageW(popup,WM_KEYDOWN,'F',0);
     require(favorite_palette==-1 && setting(L"app",L"favorite_palette",0)==-1,"F removes the displayed favorite");
     SendMessageW(popup,WM_KEYDOWN,VK_ESCAPE,0); load_preferences();
     require(current_palette==2 && !shuffled_palette,"removing the favorite restores the original startup preference");
@@ -243,10 +279,10 @@ static void palette_preference_checks(void) {
                 "a manually chosen monochrome palette draws distinct colors despite legacy repeated slots");
         destroy_note(first); destroy_note(second);
     }
-    destroy_note(note);
+    destroy_note(note); destroy_note(other);
     require(write_setting(L"app",L"palette",base) && write_setting(L"app",L"next_color",sequence),"restore test preference baseline");
     load_preferences();
-    puts("PASS: session draws without repetition, startup favorite, removal, save failure, stopped timers and reentrant callback lifetime.");
+    puts("PASS: immediate mouse/keyboard favorites, current and next note colors, persistence, shuffle cycles, removal, save failure and popup lifetime.");
 }
 
 static CHARFORMAT2W selection_format(Note *note,LONG start,LONG end) {
@@ -300,6 +336,24 @@ static void palette_text_checks(void) {
     note=open_note(id,0,TRUE); require(note && note->custom_ink,"restore manual-color ownership with the note");
     format=selection_format(note,0,4);
     require(format.crTextColor==PALETTES[6][4] && (format.dwEffects&CFE_ITALIC),"RTF restores color and emphasis exactly");
+    SendMessageW(note->edit,WM_CONTEXTMENU,(WPARAM)note->edit,MAKELPARAM(-1,-1));
+    popup=thread_window(PALETTE_PICKER_CLASS,NULL); require(popup!=NULL,"open favorite with manually colored text selected");
+    browse_picker(popup,3); SendMessageW(popup,WM_KEYDOWN,'F',0);
+    SendMessageW(note->edit,EM_EXGETSEL,0,(LPARAM)&range);
+    require(IsWindow(popup) && favorite_palette==3 && current_palette==3 && note->palette==3 && note->color==0 &&
+            range.cpMin==0 && range.cpMax==4,"text-mode favorite changes the background and preserves the selection");
+    format=selection_format(note,0,4);
+    require(format.crTextColor==PALETTES[6][4] && (format.dwEffects&CFE_ITALIC),
+            "starring a background preserves manual foreground color and emphasis");
+    format=selection_format(note,5,14);
+    require(format.crTextColor==RGB(0,0,0),"starring also preserves the unselected foreground");
+    SendMessageW(popup,WM_KEYDOWN,'F',0); SendMessageW(popup,WM_KEYDOWN,VK_ESCAPE,0);
+    require(favorite_palette==-1 && note->palette==3,"removing a text-mode favorite leaves the new background in place");
+    require(save_note(note),"persist the starred note's mixed formatting"); destroy_note(note);
+    note=open_note(id,0,TRUE); require(note && note->palette==3 && note->custom_ink,"reopen the starred background and manual colors");
+    format=selection_format(note,0,4);
+    require(format.crTextColor==PALETTES[6][4] && (format.dwEffects&CFE_ITALIC),
+            "favorite changes preserve mixed foregrounds after reopening");
     SendMessageW(note->edit,EM_SETSEL,0,-1);
     SendMessageW(note->edit,WM_CONTEXTMENU,(WPARAM)note->edit,MAKELPARAM(-1,-1));
     popup=thread_window(PALETTE_PICKER_CLASS,NULL); require(popup!=NULL,"keyboard context request supports select-all");

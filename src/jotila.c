@@ -550,12 +550,16 @@ static int draw_note_color(void) {
 static BOOL save_favorite(void *context, int palette) {
     Note *note = (Note *)context;
     if (palette < -1 || palette >= PALETTE_COUNT || (palette >= 0 && PALETTE_POPULAR_INDEX[palette] < 0)) return FALSE;
-    if (palette == favorite_palette) return TRUE;
-    if (!write_setting(L"app", L"favorite_palette", palette)) {
+    if (palette != favorite_palette && !write_setting(L"app", L"favorite_palette", palette)) {
         report_error(note->window,L"The favorite palette could not be saved. Please check the archive folder.");
         return FALSE;
     }
     favorite_palette = palette;
+    if (palette >= 0) {
+        use_session_palette(palette);
+        if (!recolor_note(note,palette,note->palette == palette ? note->color : 0))
+            report_error(note->window,L"The favorite palette was saved, but the note color could not be saved. Please check the archive folder.");
+    }
     return TRUE;
 }
 
