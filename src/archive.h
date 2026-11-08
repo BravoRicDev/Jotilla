@@ -1,5 +1,5 @@
-#ifndef IOTA_ARCHIVE_H
-#define IOTA_ARCHIVE_H
+#ifndef JOTILA_ARCHIVE_H
+#define JOTILA_ARCHIVE_H
 
 #include <windows.h>
 

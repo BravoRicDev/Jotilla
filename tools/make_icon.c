@@ -1,4 +1,4 @@
-/* IOTA: a lowercase Greek iota on the app's framed yellow note. Deterministic
+/* Jotila: a lowercase Greek iota on the app's framed yellow note. Deterministic
    supersampled C geometry; Windows WIC encodes compact PNG icon frames. */
 #define COBJMACROS
 #define WIN32_LEAN_AND_MEAN
@@ -25,6 +25,9 @@ static DWORD sample(double x,double y) {
     int i;
     if (x<.07 || x>=.93 || y<.07 || y>=.93) return 0;
     if (x<.097 || x>=.903 || y<.097 || y>=.903 || (y>=.235 && y<.262)) return 0xff20201b;
+    if (y<.235 && (distance2(x,y,(Point){.632,.168},(Point){.708,.168})<.009*.009 ||
+                  distance2(x,y,(Point){.782,.131},(Point){.850,.199})<.008*.008 ||
+                  distance2(x,y,(Point){.782,.199},(Point){.850,.131})<.008*.008)) return 0xff20201b;
     for (i=0;i<18;++i)
         if (distance2(x,y,stroke[i],stroke[i+1])<.034*.034) return 0xff20201b;
     return y<.235 ? 0xffefdf8d : 0xffffee97;
@@ -98,7 +101,7 @@ int main(void) {
                            s*s*s*.655+3*s*s*t*.795+3*s*t*t*.802+t*t*t*.717};
     }
     for (i=0;i<9;++i) if (!encode(factory,sizes[i],&frames[i])) goto done;
-    if (fopen_s(&file,"assets/iota.ico","wb")) goto done;
+    if (fopen_s(&file,"assets/jotila.ico","wb")) goto done;
     u16(file,0); u16(file,1); u16(file,9);
     for (i=0;i<9;++i) {
         fputc(sizes[i]&255,file); fputc(sizes[i]&255,file); u16(file,0); u16(file,1); u16(file,32);
@@ -107,7 +110,7 @@ int main(void) {
     for (i=0;i<9;++i) fwrite(frames[i].bytes,1,frames[i].size,file);
     if (ferror(file)) goto done;
     if (fclose(file)) { file=NULL; goto done; } file=NULL;
-    if (fopen_s(&file,"assets/iota.png","wb")) goto done;
+    if (fopen_s(&file,"assets/jotila.png","wb")) goto done;
     if (fwrite(frames[8].bytes,1,frames[8].size,file)!=frames[8].size) goto done;
     result=0;
 done:

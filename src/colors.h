@@ -1,5 +1,5 @@
-#ifndef IOTA_COLORS_H
-#define IOTA_COLORS_H
+#ifndef JOTILA_COLORS_H
+#define JOTILA_COLORS_H
 
 #include <windows.h>
 

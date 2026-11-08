@@ -1,8 +1,8 @@
-#ifndef IOTA_PALETTE_PICKER_H
-#define IOTA_PALETTE_PICKER_H
+#ifndef JOTILA_PALETTE_PICKER_H
+#define JOTILA_PALETTE_PICKER_H
 #include <windows.h>
 
-#define PALETTE_PICKER_CLASS L"IOTA.PalettePicker"
+#define PALETTE_PICKER_CLASS L"Jotila.PalettePicker"
 typedef void (*PaletteSelection)(void *context, int palette, int color);
 
 /* One transient, owner-bound popup. Browsing and cancellation never mutate the

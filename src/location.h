@@ -1,11 +1,11 @@
-#ifndef IOTA_LOCATION_H
-#define IOTA_LOCATION_H
+#ifndef JOTILA_LOCATION_H
+#define JOTILA_LOCATION_H
 #include <windows.h>
 
 #define LOCATION_CAP 1024
 
-/* Fresh installs use IOTA; upgrades retain the existing archive in place and
-   atomically remember its path. Explicit IOTA settings always take priority. */
+/* Fresh installs use Jotila; upgrades retain the existing archive in place and
+   atomically remember its path. Explicit Jotila settings always take priority. */
 BOOL location_user_paths(const wchar_t *local, wchar_t config[LOCATION_CAP], wchar_t fallback[LOCATION_CAP]);
 
 /* archive.path is independent of per-archive notes.ini. Missing configuration

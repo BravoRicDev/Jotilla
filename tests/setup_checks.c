@@ -1,10 +1,12 @@
 /* Exercise upgrade cleanup against private paths and registry keys only. */
 #include <wchar.h>
 #include <stdlib.h>
-static wchar_t test_key[160], test_legacy_key[160];
+static wchar_t test_key[160], test_legacy_key[160], test_previous_key[160];
 #define UNINSTALL_KEY test_key
 #define LEGACY_UNINSTALL_KEY test_legacy_key
+#define PREVIOUS_UNINSTALL_KEY test_previous_key
 #include "../src/setup.c"
+static wchar_t legacy_dir[PATH_CAP], legacy_start_link[PATH_CAP], legacy_desktop_link[PATH_CAP];
 
 static void require(BOOL ok, const char *message) {
     if (!ok) { fprintf(stderr,"FAIL: %s (Windows error %lu)\n",message,GetLastError()); exit(1); }
@@ -37,24 +39,27 @@ int main(void) {
     HANDLE lock;
     DWORD bytes=sizeof(value);
     GetTempPathW(PATH_CAP,temporary);
-    swprintf_s(base,PATH_CAP,L"%sIOTA-setup-test-%lu-%llu",temporary,GetCurrentProcessId(),GetTickCount64());
-    swprintf_s(registry_root,128,L"Software\\IOTA-setup-test-%lu-%llu",GetCurrentProcessId(),GetTickCount64());
-    swprintf_s(test_key,160,L"%s\\IOTA",registry_root);
+    swprintf_s(base,PATH_CAP,L"%sJotila-setup-test-%lu-%llu",temporary,GetCurrentProcessId(),GetTickCount64());
+    swprintf_s(registry_root,128,L"Software\\Jotila-setup-test-%lu-%llu",GetCurrentProcessId(),GetTickCount64());
+    swprintf_s(test_key,160,L"%s\\Jotila",registry_root);
     swprintf_s(test_legacy_key,160,L"%s\\Legacy",registry_root);
+    swprintf_s(test_previous_key,160,L"%s\\Previous",registry_root);
     require(CreateDirectoryW(base,NULL),"create private setup directory");
-    child(install_dir,base,L"IOTA"); child(app_path,install_dir,L"IOTA.exe");
+    child(install_dir,base,L"Jotila"); child(app_path,install_dir,L"Jotila.exe");
     child(uninstall_path,install_dir,L"Uninstall.exe");
-    require(register_uninstaller(),"register IOTA under a private test key");
+    require(register_uninstaller(),"register Jotila under a private test key");
     require(RegGetValueW(HKEY_CURRENT_USER,test_key,L"DisplayName",RRF_RT_REG_SZ,NULL,value,&bytes)==ERROR_SUCCESS &&
-            !wcscmp(value,L"IOTA"),"new uninstall registration uses the IOTA name");
+            !wcscmp(value,L"Jotila"),"new uninstall registration uses the Jotila name");
     bytes=sizeof(value);
     require(RegGetValueW(HKEY_CURRENT_USER,test_key,L"DisplayVersion",RRF_RT_REG_SZ,NULL,value,&bytes)==ERROR_SUCCESS &&
             !wcscmp(value,APP_VERSION_W),"new uninstall registration uses the release version");
-    child(legacy_dir,base,L"Legacy"); require(CreateDirectoryW(legacy_dir,NULL),"create private legacy install");
+    child(start_link,base,L"Jotila.lnk"); child(desktop_link,base,L"Desktop\\Jotila.lnk");
+    child(value,base,L"Desktop"); require(CreateDirectoryW(value,NULL),"create private desktop");
+    child(legacy_dir,base,L"PicoSlip"); require(CreateDirectoryW(legacy_dir,NULL),"create private legacy install");
     child(executable,legacy_dir,L"PicoSlip.exe"); child(uninstaller,legacy_dir,L"Uninstall.exe");
     child(license,legacy_dir,L"LICENSE.txt"); child(archive,legacy_dir,L"notes");
     child(note,archive,L"note-keep.txt");
-    child(legacy_start_link,base,L"legacy-start.lnk"); child(legacy_desktop_link,base,L"legacy-desktop.lnk");
+    child(legacy_start_link,base,L"PicoSlip.lnk"); child(legacy_desktop_link,base,L"Desktop\\PicoSlip.lnk");
     require(CreateDirectoryW(archive,NULL),"create archive sentinel");
     fixture(note); fixture(executable); fixture(uninstaller); fixture(license);
     fixture(legacy_start_link); fixture(legacy_desktop_link);
@@ -76,7 +81,12 @@ int main(void) {
     require(DeleteFileW(note) && RemoveDirectoryW(archive),"remove only the test archive sentinel");
     fixture(executable); fixture(uninstaller); fixture(license); register_legacy(legacy_dir);
     require(retire_legacy_install() && !present(legacy_dir),"empty legacy installation directory is removed");
-    require(RegDeleteTreeW(HKEY_CURRENT_USER,registry_root)==ERROR_SUCCESS && RemoveDirectoryW(base),"remove private setup fixtures");
-    puts("PASS: IOTA registration, upgrade path validation, locked-file recovery and exact-file retirement preserve archives.");
+    child(legacy_dir,base,L"IOTA"); require(CreateDirectoryW(legacy_dir,NULL),"create private IOTA installation");
+    child(executable,legacy_dir,L"IOTA.exe"); fixture(executable);
+    wcscpy_s(test_legacy_key,160,test_previous_key); register_legacy(legacy_dir);
+    require(retire_legacy_install() && !present(legacy_dir),"retire the immediately preceding IOTA release");
+    child(value,base,L"Desktop");
+    require(RegDeleteTreeW(HKEY_CURRENT_USER,registry_root)==ERROR_SUCCESS && RemoveDirectoryW(value) && RemoveDirectoryW(base),"remove private setup fixtures");
+    puts("PASS: Jotila registration, upgrade path validation, locked-file recovery and exact-file retirement preserve archives.");
     return 0;
 }

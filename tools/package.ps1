@@ -3,12 +3,12 @@ $root = Split-Path -Parent $PSScriptRoot
 $dist = Join-Path $root 'dist'
 $stage = Join-Path $root 'build\portable'
 New-Item -ItemType Directory -Path $stage -Force | Out-Null
-Copy-Item -LiteralPath (Join-Path $dist 'IOTA.exe') -Destination $stage
+Copy-Item -LiteralPath (Join-Path $dist 'Jotila.exe') -Destination $stage
 Copy-Item -LiteralPath (Join-Path $root 'LICENSE') -Destination $stage
 $readme = @'
-IOTA - Tiny Sticky Notes for Windows
+Jotila - Tiny Sticky Notes for Windows
 
-Run IOTA.exe. Ctrl+Alt++ creates a note.
+Run Jotila.exe. Ctrl+Alt++ creates a note.
 Single-click the tray icon for a new note; double-click to browse notes.
 Minimizing the browser hides it beside the clock; double-click restores it.
 Drag the bar to move it; use - to collapse and X to close.
@@ -24,13 +24,13 @@ The chosen folder becomes the default; archive.path stores its location.
 Keep portable.flag beside the EXE to retain portable mode.
 Back up the entire archive, including notes.ini and RTF formatting files.
 
-https://github.com/GarauGarau/picoslip
+https://github.com/GarauGarau/Jotila
 '@
 [IO.File]::WriteAllText((Join-Path $stage 'README.txt'), $readme, [Text.UTF8Encoding]::new($false))
 [IO.File]::WriteAllText((Join-Path $stage 'portable.flag'), '')
-$zip = Join-Path $dist 'IOTA-portable-x64.zip'
-Compress-Archive -LiteralPath (Join-Path $stage 'IOTA.exe'),(Join-Path $stage 'README.txt'),(Join-Path $stage 'LICENSE'),(Join-Path $stage 'portable.flag') -DestinationPath $zip -Force
-$assets = @('IOTA.exe','IOTA-Setup-x64.exe','IOTA-portable-x64.zip')
+$zip = Join-Path $dist 'Jotila-portable-x64.zip'
+Compress-Archive -LiteralPath (Join-Path $stage 'Jotila.exe'),(Join-Path $stage 'README.txt'),(Join-Path $stage 'LICENSE'),(Join-Path $stage 'portable.flag') -DestinationPath $zip -Force
+$assets = @('Jotila.exe','Jotila-Setup-x64.exe','Jotila-portable-x64.zip')
 $lines = foreach ($name in $assets) {
     $hash = (Get-FileHash -LiteralPath (Join-Path $dist $name) -Algorithm SHA256).Hash.ToLowerInvariant()
     "$hash  $name"

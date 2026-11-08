@@ -1,11 +1,11 @@
 #include <windows.h>
 #include "resource.h"
-IDI_APP ICON "assets/iota.ico"
-IDR_APPLICATION RCDATA "dist/IOTA.exe"
+IDI_APP ICON "assets/jotila.ico"
+IDR_APPLICATION RCDATA "dist/Jotila.exe"
 IDR_LICENSE RCDATA "LICENSE"
 1 VERSIONINFO
- FILEVERSION 1,3,0,0
- PRODUCTVERSION 1,3,0,0
+ FILEVERSION 1,3,1,0
+ PRODUCTVERSION 1,3,1,0
  FILEOS VOS_NT_WINDOWS32
  FILETYPE VFT_APP
 BEGIN
@@ -13,10 +13,10 @@ BEGIN
  BEGIN
   BLOCK "040904B0"
   BEGIN
-   VALUE "FileDescription", "IOTA Setup\0"
-   VALUE "FileVersion", "1.3.0\0"
-   VALUE "ProductName", "IOTA\0"
-   VALUE "ProductVersion", "1.3.0\0"
+   VALUE "FileDescription", "Jotila Setup\0"
+   VALUE "FileVersion", "1.3.1\0"
+   VALUE "ProductName", "Jotila\0"
+   VALUE "ProductVersion", "1.3.1\0"
    VALUE "LegalCopyright", "MIT - Alessio Garau\0"
   END
  END

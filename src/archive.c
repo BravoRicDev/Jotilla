@@ -18,7 +18,7 @@
 #include "tags.h"
 #include "search.h"
 
-#define ARCHIVE_CLASS L"IOTA.Archive"
+#define ARCHIVE_CLASS L"Jotila.Archive"
 #define ARCHIVE_PATH_CAP 1024
 #define DELETE_NOTES 1
 #define ARCHIVE_REFRESH (WM_APP + 1)
@@ -274,7 +274,7 @@ static BOOL refresh_archive(Archive *archive, BOOL reload) {
     if (archive->worker) search_cancel(archive->worker);
     discard_results(archive);
     /* Keep cached previews and selected notes across additions/deletions.
-       Explicit refresh also rereads files edited outside IOTA. */
+       Explicit refresh also rereads files edited outside Jotila. */
     for (i = 0; i < count; ++i) {
         while (old < archive->count && compare_entries(&archive->entries[old], &entries[i]) < 0) ++old;
         if (old < archive->count && !compare_entries(&archive->entries[old], &entries[i])) {
@@ -636,7 +636,7 @@ static void archive_fonts(Archive *archive) {
 
 static void open_archive_item(Archive *archive, int index) {
     if (index >= 0 && index < archive->visible && !archive->actions.open(archive->entries[entry_index(archive, index)].id))
-        MessageBoxW(archive->window, L"This note could not be opened.", L"IOTA", MB_OK | MB_ICONERROR);
+        MessageBoxW(archive->window, L"This note could not be opened.", L"Jotila", MB_OK | MB_ICONERROR);
 }
 
 static void delete_archive_selection(Archive *archive) {
@@ -644,12 +644,12 @@ static void delete_archive_selection(Archive *archive) {
     wchar_t message[128];
     if (!count) return;
     swprintf_s(message, 128, L"Delete %d selected note%s from the archive?", count, count == 1 ? L"" : L"s");
-    if (MessageBoxW(archive->window, message, L"IOTA", MB_YESNO | MB_DEFBUTTON2 | MB_ICONQUESTION) != IDYES) return;
+    if (MessageBoxW(archive->window, message, L"Jotila", MB_YESNO | MB_DEFBUTTON2 | MB_ICONQUESTION) != IDYES) return;
     while ((index = ListView_GetNextItem(archive->list, index, LVNI_SELECTED)) >= 0)
         if (!archive->actions.remove(archive->entries[entry_index(archive, index)].id)) ++failures;
     if (!refresh_archive(archive, FALSE) || failures)
         MessageBoxW(archive->window, L"Some notes could not be deleted. Check that their files are writable.",
-                    L"IOTA", MB_OK | MB_ICONERROR);
+                    L"Jotila", MB_OK | MB_ICONERROR);
 }
 
 static void archive_context_menu(Archive *archive, POINT point) {
@@ -1117,7 +1117,7 @@ static LRESULT CALLBACK archive_proc(HWND window, UINT message, WPARAM wparam, L
             if (key == VK_RETURN) open_archive_item(archive, ListView_GetNextItem(archive->list, -1, LVNI_FOCUSED));
             if (key == VK_DELETE) delete_archive_selection(archive);
             if (key == VK_F5 && !refresh_archive(archive, TRUE))
-                MessageBoxW(window, L"The archive could not be refreshed.", L"IOTA", MB_OK | MB_ICONERROR);
+                MessageBoxW(window, L"The archive could not be refreshed.", L"Jotila", MB_OK | MB_ICONERROR);
             if (key == 'A' && GetKeyState(VK_CONTROL) < 0)
                 ListView_SetItemState(archive->list, -1, LVIS_SELECTED, LVIS_SELECTED);
             return 0;

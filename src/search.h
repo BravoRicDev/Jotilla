@@ -1,5 +1,5 @@
-#ifndef IOTA_SEARCH_H
-#define IOTA_SEARCH_H
+#ifndef JOTILA_SEARCH_H
+#define JOTILA_SEARCH_H
 #include <windows.h>
 
 #define SEARCH_CAP 512

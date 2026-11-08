@@ -1,10 +1,10 @@
-# <img src="assets/iota.png" width="36" height="36" alt="Greek iota on a yellow note"> IOTA
+# <img src="assets/jotila.png" width="36" height="36" alt="Greek iota on a yellow note"> Jotila
 
-IOTA is a small Windows app for taking quick notes on your desktop. Notes are saved and archived automatically, so you can find, reopen and update them later. Sticky notes, on silicon. :)
+Jotila is a small Windows app for taking quick notes on your desktop. Notes are saved and archived automatically, so you can find, reopen and update them later. Sticky notes, on silicon. :)
 
-**[Windows builds](https://github.com/GarauGarau/picoslip/actions/workflows/windows.yml)** · [Releases](https://github.com/GarauGarau/picoslip/releases)
+**[Windows builds](https://github.com/GarauGarau/Jotila/actions/workflows/windows.yml)** · [Releases](https://github.com/GarauGarau/Jotila/releases)
 
-The latest successful build includes the installer and portable ZIP in the **IOTA-windows-x64** artifact.
+The latest successful build includes the installer and portable ZIP in the **Jotila-windows-x64** artifact.
 
 Windows 10/11, x64. No administrator rights or extra dependencies required.
 
@@ -47,13 +47,13 @@ Minimizing the archive sends it to the notification area. Double-click the tray 
   </tr>
 </table>
 
-![Original note palettes, Faded Rose, Soft Black and the color wheel](docs/screenshots/palettes.png)
+![Notes in pastel, white, yellow, Faded Rose and Soft Black](docs/screenshots/palettes.png)
 
 <sub>Background: Stern View of Boat Going Down a Glacis, Nr Ning P-0</sub>
 
 ## Your notes
 
-Notes save automatically as UTF-8 text files in `%LOCALAPPDATA%\IOTA\notes`, or in `notes` beside the portable EXE. Empty notes are not saved. Open notes return on restart, and uninstalling leaves your archive intact.
+Notes save automatically as UTF-8 text files in `%LOCALAPPDATA%\Jotila\notes`, or in `notes` beside the portable EXE. Empty notes are not saved. Open notes return on restart, and uninstalling leaves your archive intact.
 
 Upgrading from an earlier release keeps your existing archive in its original location.
 

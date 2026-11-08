@@ -51,9 +51,9 @@ int wmain(int argc,wchar_t **argv) {
     ULONGLONG deadline,wall,start_cpu;
     if (argc!=2 || FindWindowW(APP_CONTROLLER,NULL)) return 1;
     if (!GetTempPathW(CAP,temporary)) return 1;
-    swprintf_s(root,CAP,L"%sIOTA-profile-%lu-%llu",temporary,GetCurrentProcessId(),GetTickCount64());
+    swprintf_s(root,CAP,L"%sJotila-profile-%lu-%llu",temporary,GetCurrentProcessId(),GetTickCount64());
     if (!CreateDirectoryW(root,NULL)) return 1;
-    swprintf_s(app,CAP,L"%s\\IOTA.exe",root);
+    swprintf_s(app,CAP,L"%s\\Jotila.exe",root);
     swprintf_s(flag,CAP,L"%s\\portable.flag",root);
     if (!CopyFileW(argv[1],app,TRUE)) return 1;
     handle=CreateFileW(flag,GENERIC_WRITE,0,NULL,CREATE_NEW,0,NULL);
