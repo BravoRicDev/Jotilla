@@ -1,10 +1,8 @@
-# <img src="assets/jotila.png" width="36" height="36" alt="Greek iota on a yellow note"> Jotila
+# <img src="assets/jotila.png" width="36" height="36" alt="Greek iota on a yellow note"> Jotila - Sticky notes, on silicon
 
-Jotila is a small Windows app for taking quick notes on your desktop. Notes are saved and archived automatically, so you can find, reopen and update them later. Sticky notes, on silicon. :)
+Jotila is a small Windows app for taking quick notes on your desktop. Notes are saved and archived automatically, so you can find, reopen and update them later.
 
-**[Windows builds](https://github.com/GarauGarau/Jotila/actions/workflows/windows.yml)** · [Releases](https://github.com/GarauGarau/Jotila/releases)
-
-The latest successful build includes the installer and portable ZIP in the **Jotila-windows-x64** artifact.
+**[Download for Windows](https://github.com/GarauGarau/Jotila/releases/latest/download/Jotila-Setup-x64.exe)** · [Portable ZIP](https://github.com/GarauGarau/Jotila/releases/latest/download/Jotila-portable-x64.zip) · [Releases](https://github.com/GarauGarau/Jotila/releases)
 
 Windows 10/11, x64. No administrator rights or extra dependencies required.
 
@@ -42,7 +40,7 @@ Minimizing the archive sends it to the notification area. Double-click the tray 
       <sub>Background: February Fill Dyke</sub>
     </td>
     <td width="50%" align="center" valign="top">
-      <img src="docs/screenshots/browser-demo.gif" width="100%" alt="Searching, filtering and reopening archived notes"><br>
+      <img src="docs/screenshots/browser-demo.gif" width="100%" alt="Searching archives and choosing colors for notes and selected text"><br>
       <sub>Background: Walton-on-the-Naze</sub>
     </td>
   </tr>

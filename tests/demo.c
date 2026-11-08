@@ -8,6 +8,8 @@ static BITMAP photo_info;
 static HFONT caption_font;
 static const wchar_t *caption;
 static BOOL show_cursor;
+static BOOL show_click;
+static POINT click_position;
 static int frame_number, menu_phase, menu_submenu, menu_choice, menu_retries;
 static HMENU recording_menu;
 static const wchar_t *frame_directory;
@@ -101,6 +103,15 @@ static void capture(const wchar_t *path) {
             if (icon.hbmMask) DeleteObject(icon.hbmMask);
         }
     }
+    if (show_click) {
+        int x=click_position.x-rect.left,y=click_position.y-rect.top;
+        HPEN halo=CreatePen(PS_SOLID,4,RGB(244,238,226));
+        HGDIOBJ previous_pen=SelectObject(memory,halo),previous_brush=SelectObject(memory,GetStockObject(NULL_BRUSH));
+        Ellipse(memory,x-11,y-11,x+12,y+12);
+        SelectObject(memory,GetStockObject(DC_PEN)); SetDCPenColor(memory,RGB(58,52,43));
+        Ellipse(memory,x-11,y-11,x+12,y+12);
+        SelectObject(memory,previous_pen); SelectObject(memory,previous_brush); DeleteObject(halo);
+    }
     size=(DWORD)((rect.right-rect.left)*(rect.bottom-rect.top)*4);
     header.bfType=0x4d42; header.bfOffBits=sizeof(header)+sizeof(BITMAPINFOHEADER); header.bfSize=header.bfOffBits+size;
     file=CreateFileW(path,GENERIC_WRITE,0,NULL,CREATE_ALWAYS,0,NULL);
@@ -114,7 +125,7 @@ static void capture(const wchar_t *path) {
 static Note *demo_note(int palette,int color,int size,int x,int y,const wchar_t *title,const wchar_t *body,int opacity) {
     Note *note;
     RECT rect;
-    current_palette=palette; next_color=color;
+    current_palette=palette; next_color=color; shuffled_palette=FALSE; colors_left=0;
     note=new_note(); require(note!=NULL,"create demonstration note");
     require(resize_note(note,size) && set_title(note,title),"configure demonstration note");
     replace_text(note,body); require(!wcscmp(note->accepted_text,body),"demonstration text fits");
@@ -217,6 +228,24 @@ static void set_background(const wchar_t *path) {
     if (photo) DeleteObject(photo);
     photo = next;
     if (backdrop) RedrawWindow(backdrop, NULL, NULL, RDW_INVALIDATE | RDW_UPDATENOW);
+}
+
+static void export_gif_colors(void) {
+    const COLORREF ui[]={RGB(244,238,226),RGB(58,52,43),RGB(41,40,32),RGB(100,94,80),
+        RGB(178,138,39),RGB(116,88,21),RGB(255,255,255),RGB(0,0,0),
+        GetSysColor(COLOR_HIGHLIGHT),GetSysColor(COLOR_HIGHLIGHTTEXT)};
+    FILE *file;
+    int p,c;
+    size_t i;
+    require(_wfopen_s(&file,L"build\\gif-ui-colors.ppm",L"w")==0,"export the actual application colors for GIF encoding");
+    fprintf(file,"P3\n%zu 1\n255\n",PALETTE_COUNT*COLOR_COUNT+sizeof(ui)/sizeof(ui[0]));
+    for(p=0;p<PALETTE_COUNT;++p) for(c=0;c<COLOR_COUNT;++c) {
+        COLORREF color=PALETTES[p][c];
+        fprintf(file,"%u %u %u\n",GetRValue(color),GetGValue(color),GetBValue(color));
+    }
+    for(i=0;i<sizeof(ui)/sizeof(ui[0]);++i)
+        fprintf(file,"%u %u %u\n",GetRValue(ui[i]),GetGValue(ui[i]),GetBValue(ui[i]));
+    require(!ferror(file) && fclose(file)==0,"finish the shared GIF color catalog");
 }
 
 static void begin_recording(const wchar_t *folder) {
@@ -507,6 +536,118 @@ static void send_key(WORD key,BOOL down) {
     require(SendInput(1,&input,sizeof(input))==1,"deliver demonstration key");
 }
 
+static HWND open_demo_palette(Note *note) {
+    RECT edit;
+    POINT corner;
+    HWND popup;
+    INPUT click[2]={{0},{0}};
+    GetWindowRect(note->edit,&edit);
+    corner.x=edit.right-scaled(note,10); corner.y=edit.bottom-scaled(note,10);
+    SetForegroundWindow(note->window); SetFocus(note->edit);
+    move_pointer(corner.x,corner.y); pump(80);
+    require(WindowFromPoint(corner)==note->edit,"open the wheel inside the note's lower-right corner");
+    click[0].type=click[1].type=INPUT_MOUSE;
+    click[0].mi.dwFlags=MOUSEEVENTF_RIGHTDOWN; click[1].mi.dwFlags=MOUSEEVENTF_RIGHTUP;
+    require(SendInput(1,click,sizeof(INPUT))==1,"press the right mouse button in the note editor");
+    click_position=corner; show_click=TRUE; frame_delay=80; capture_frame(); show_click=FALSE;
+    require(SendInput(1,click+1,sizeof(INPUT))==1,"release the right mouse button to open the wheel");
+    pump(180); popup=thread_window(PALETTE_PICKER_CLASS,NULL);
+    require(popup!=NULL,"the corner right-click opens the native color wheel");
+    frame_delay=100; capture_frame();
+    return popup;
+}
+
+static void choose_demo_color(HWND popup,int palette,int color,int steps) {
+    PaletteArt *art=palette_art_create((int)GetDpiForWindow(popup));
+    PaletteLayout layout;
+    POINT point;
+    wchar_t label[80];
+    double angle=(-90+(color+.5)*360/PALETTE_SIZES[palette])*3.141592653589793/180;
+    double radius;
+    int i;
+    require(art!=NULL,"read the native wheel geometry at the recording DPI");
+    layout=*palette_art_layout(art); palette_art_destroy(art);
+    point.x=(layout.next.left+layout.next.right)/2; point.y=(layout.next.top+layout.next.bottom)/2;
+    ClientToScreen(popup,&point); move_pointer(point.x,point.y);
+    for(i=0;i<steps;++i) { click_pointer(); pump(160); frame_delay=40; capture_frame(); }
+    GetWindowTextW(popup,label,80);
+    require(!wcscmp(label,PALETTE_NAMES[palette]),"record navigation to the intended palette");
+    radius=(layout.wheel.right-layout.wheel.left)*.5;
+    point.x=(LONG)(layout.wheel.left+radius+cos(angle)*radius*.6);
+    point.y=(LONG)(layout.wheel.top+radius+sin(angle)*radius*.6);
+    ClientToScreen(popup,&point); move_pointer(point.x,point.y);
+    pump(180); frame_delay=100; capture_frame();
+    click_pointer(); pump(180);
+    require(!IsWindow(popup),"choosing a visible wedge applies the color and closes the wheel");
+}
+
+static void record_note_colors(Note *note,HWND browser) {
+    RECT bounds,edit;
+    HWND popup;
+    POINT from,to;
+    POINTL first={0},last={0};
+    CHARRANGE selection;
+    CHARFORMAT2W format={0};
+    INPUT drag={0};
+    LONG line,start,end;
+    int i;
+    ShowWindow(browser,SW_HIDE);
+    GetWindowRect(backdrop,&bounds);
+    SetWindowPos(note->window,HWND_TOPMOST,bounds.left+160,bounds.top+170,0,0,SWP_NOSIZE);
+    pump(250); /* Let the archive's native hide animation finish before recording. */
+    SendMessageW(note->edit,EM_SETSEL,(WPARAM)-1,-1);
+    set_caption(L"Right-click near the lower-right corner: note color");
+    popup=open_demo_palette(note);
+    set_caption(L"Browse palettes, then click a color for the note");
+    choose_demo_color(popup,3,3,3);
+    require(note->palette==3 && note->color==3,"the demonstration applies the green note background");
+    frame_delay=150; capture_frame();
+
+    set_caption(L"Select a line to change only its text color");
+    line=(LONG)SendMessageW(note->edit,EM_GETLINECOUNT,0,0)-1;
+    start=(LONG)SendMessageW(note->edit,EM_LINEINDEX,line,0);
+    end=start+(LONG)SendMessageW(note->edit,EM_LINELENGTH,start,0);
+    require(start>=0 && end>start,"locate the live-update line for foreground formatting");
+    SendMessageW(note->edit,EM_POSFROMCHAR,(WPARAM)&first,start);
+    SendMessageW(note->edit,EM_POSFROMCHAR,(WPARAM)&last,end);
+    from.x=first.x; from.y=first.y+note->line_height/2;
+    to.x=last.x; to.y=last.y+note->line_height/2;
+    ClientToScreen(note->edit,&from); ClientToScreen(note->edit,&to);
+    move_pointer(from.x,from.y); pump(60);
+    drag.type=INPUT_MOUSE; drag.mi.dwFlags=MOUSEEVENTF_LEFTDOWN;
+    require(SendInput(1,&drag,sizeof(drag))==1,"start selecting the actual text");
+    pump(50);
+    for(i=1;i<=4;++i) {
+        move_pointer(from.x+MulDiv(to.x-from.x,i,4),to.y);
+        frame_delay=12; capture_frame();
+    }
+    drag.mi.dwFlags=MOUSEEVENTF_LEFTUP;
+    require(SendInput(1,&drag,sizeof(drag))==1,"finish the real text-selection drag");
+    pump(100); SendMessageW(note->edit,EM_EXGETSEL,0,(LPARAM)&selection);
+    if(selection.cpMin!=start || selection.cpMax<end || selection.cpMax>end+1)
+        fprintf(stderr,"Selection %ld..%ld, expected %ld..%ld; drag %ld,%ld to %ld,%ld.\n",
+                selection.cpMin,selection.cpMax,start,end,from.x,from.y,to.x,to.y);
+    /* Rich Edit may include the final paragraph mark when dragging to its end. */
+    require(selection.cpMin==start && selection.cpMax>=end && selection.cpMax<=end+1,
+            "the recorded drag selects the last line, including its optional paragraph mark");
+    frame_delay=100; capture_frame();
+    set_caption(L"Right-click in the same corner: selected text");
+    popup=open_demo_palette(note);
+    require(note->palette_selection.cpMin==selection.cpMin && note->palette_selection.cpMax==selection.cpMax,
+            "the lower-right right-click keeps the text selection");
+    set_caption(L"Choose a text color; the note keeps its background");
+    choose_demo_color(popup,5,3,2);
+    format.cbSize=sizeof(format);
+    SendMessageW(note->edit,EM_GETCHARFORMAT,SCF_SELECTION,(LPARAM)&format);
+    require(note->custom_ink && note->palette==3 && note->color==3 && format.crTextColor==PALETTES[5][3],
+            "only the selected line changes to the purple foreground");
+    GetWindowRect(note->edit,&edit);
+    move_pointer(edit.right-scaled(note,10),edit.bottom-scaled(note,10)); click_pointer(); pump(150);
+    set_caption(L"A little color, exactly where you want it");
+    frame_delay=210; capture_frame();
+    ShowWindow(browser,SW_SHOWNOACTIVATE);
+}
+
 static int delete_phase;
 static UINT_PTR delete_timer;
 static void CALLBACK animate_delete(HWND window,UINT message,UINT_PTR timer,DWORD time) {
@@ -623,6 +764,7 @@ static void record_archive_browser(void) {
     type_live(reopened,L"\rA live update."); pump(650);
     require(!reopened->dirty,"the live edit autosaves before the browser preview capture");
     frame_delay=180; capture_frame();
+    record_note_colors(reopened,window);
     SendMessageW(reopened->window,WM_CLOSE,0,0);
     position_demo_archive();
     set_caption(L"Ctrl-click to select more than one note");
@@ -652,7 +794,7 @@ static void record_archive_browser(void) {
     require(!wcscmp(preview,L"Winter break"),"other archived dates remain intact");
     frame_delay=160; capture_frame();
     end_recording();
-    puts("Recorded square browser demo: tray, archive locations, tags, search, date filters, live updates and multi-delete.");
+    puts("Recorded square browser demo: archive navigation, live updates, note/text palettes from the lower-right corner and multi-delete.");
 }
 
 int main(int argc,char **argv) {
@@ -714,6 +856,7 @@ int main(int argc,char **argv) {
     capture(L"build\\palettes.bmp"); clear_scene();
     if (stills_only) goto cleanup;
 animations:
+    export_gif_colors();
     if (!browser_only) record_postits();
     if (!notes_only) record_archive_browser();
 cleanup:

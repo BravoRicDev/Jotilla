@@ -57,15 +57,21 @@ try {
     elseif ($GifsOnly) { & ./build.cmd screenshots-only --gifs-only }
     else { & ./build.cmd screenshots-only }
     if ($LASTEXITCODE -ne 0) { throw 'Native application capture failed.' }
+    $uiPalette = Join-Path $root 'build/gif-ui-colors.ppm'
+    if ($recordings.Count) {
+        $uiColorCount = [int](& magick $uiPalette -unique-colors -format '%k' info:)
+        if ($LASTEXITCODE -ne 0 -or $uiColorCount -gt 128) { throw 'Invalid application GIF color catalog.' }
+    }
     foreach ($name in $recordings) {
         $framesDirectory = Join-Path $root "build/$name-gif"
         $timeline = @(Get-Content -LiteralPath (Join-Path $framesDirectory 'timing.txt') | ForEach-Object {
             $parts = $_ -split '\|',2
             [pscustomobject]@{Delay=$parts[0];Frame=$parts[1]}
         })
-        $sample = @(0, 0.25, 0.5, 0.75, 1 | ForEach-Object { $timeline[[int]($_ * ($timeline.Count - 1))].Frame })
+        $sample = @(0..12 | ForEach-Object { $timeline[[int]($_ * ($timeline.Count - 1) / 12)].Frame } | Select-Object -Unique)
         $palette = Join-Path $framesDirectory 'palette.png'
-        & magick @sample -append -colors 192 -unique-colors $palette
+        # Keep note/text swatches exact; the artwork uses the remaining GIF slots.
+        & magick @sample -append -colors (256 - $uiColorCount) -unique-colors $uiPalette +append -unique-colors $palette
         if ($LASTEXITCODE -ne 0) { throw 'GIF palette conversion failed.' }
         $gifArguments = @('-loop','0')
         foreach ($frame in $timeline) { $gifArguments += @('-delay',$frame.Delay,$frame.Frame) }
@@ -95,6 +101,7 @@ try {
     if ($finished) {
         foreach ($name in $recordings) { Clear-Frames $name }
         foreach ($name in $backgrounds.Keys) { Remove-Item -LiteralPath "build/$name.bmp" }
+        if ($recordings.Count) { Remove-Item -LiteralPath $uiPalette }
     }
     Pop-Location
 }
