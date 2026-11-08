@@ -13,6 +13,7 @@
 #include <dwmapi.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <limits.h>
 #include <wchar.h>
 #include <wctype.h>
 #include "resource.h"
@@ -65,12 +66,13 @@ struct Note {
     wchar_t *accepted_text, *title, *tags;
     size_t text_capacity;
     wchar_t id[80], path[PATH_CAP];
-    int color, palette, size, opacity, dpi, line_height, max_lines, hover, pressed;
+    int color, palette, size, opacity, dpi, hover, pressed;
     int width, height, wheel_delta;
+    SIZE text_extent;
     int saved_layout[LAYOUT_COUNT];
     unsigned dirty;
     DWORD selection_start, selection_end;
-    CHARRANGE palette_selection;
+    CHARRANGE palette_selection, wheel_selection;
     BOOL custom_ink;
     BOOL collapsed, ready, tags_dirty, save_failed, validating, layout_saved, persisted;
 };
@@ -569,9 +571,6 @@ static void show_note_palette(Note *note, POINT point) {
 static void update_style(Note *note) {
     HFONT old_font = note->font;
     HPEN old_pen = note->pen;
-    TEXTMETRICW metrics;
-    HDC dc;
-    HGDIOBJ old;
     int previous_dpi = note->dpi;
     note->dpi = (int)GetDpiForWindow(note->window);
     if (!note->dpi) note->dpi = 96;
@@ -587,10 +586,6 @@ static void update_style(Note *note) {
         SendMessageW(note->edit, EM_SETCHARFORMAT, SCF_DEFAULT, (LPARAM)&format);
     }
     SendMessageW(note->edit, EM_SETBKGNDCOLOR, 0, note_color(note));
-    dc = GetDC(note->edit); old = SelectObject(dc, note->font);
-    GetTextMetricsW(dc, &metrics);
-    note->line_height = metrics.tmHeight;
-    SelectObject(dc, old); ReleaseDC(note->edit, dc);
     note->pen = CreatePen(PS_SOLID, max(1, scaled(note, 1)), palette_bar_ink(note->palette,note->color));
     if (old_font) DeleteObject(old_font);
     if (old_pen) DeleteObject(old_pen);
@@ -598,13 +593,12 @@ static void update_style(Note *note) {
 
 static BOOL text_fits(Note *note) {
     RECT rect;
-    POINTL end = {0};
-    GETTEXTLENGTHEX length = {GTL_PRECISE | GTL_NUMCHARS, 1200};
-    LONG count = (LONG)SendMessageW(note->edit, EM_GETTEXTLENGTHEX, (WPARAM)&length, 0);
-    SendMessageW(note->edit, EM_GETRECT, 0, (LPARAM)&rect);
-    SendMessageW(note->edit, EM_POSFROMCHAR, (WPARAM)&end, count);
-    return end.y + note->line_height <= rect.bottom &&
-           (int)SendMessageW(note->edit, EM_GETLINECOUNT, 0, 0) <= note->max_lines;
+    /* Ask the existing layout engine: a fixed line height cannot measure
+       mixed font sizes, wrapped lines or the final paragraph correctly. */
+    note->text_extent.cx = note->text_extent.cy = LONG_MAX;
+    SendMessageW(note->edit, EM_REQUESTRESIZE, 0, 0);
+    GetClientRect(note->edit, &rect);
+    return note->text_extent.cx <= rect.right && note->text_extent.cy <= rect.bottom;
 }
 
 static BOOL remember_text(Note *note) {
@@ -660,13 +654,10 @@ static BOOL promote_title(Note *note) {
 }
 
 static void layout(Note *note) {
-    RECT rect;
     int padding = scaled(note, 10), bar = bar_height(note);
     /* A collapsed card keeps the same editor dimensions and text capacity. */
     MoveWindow(note->edit, padding, bar + scaled(note, 6), note->width - padding * 2,
                note->height - bar - scaled(note, 16), TRUE);
-    SendMessageW(note->edit, EM_GETRECT, 0, (LPARAM)&rect);
-    note->max_lines = note->line_height > 0 ? (rect.bottom - rect.top) / note->line_height : 0;
     ShowWindow(note->edit, note->collapsed ? SW_HIDE : SW_SHOW);
     InvalidateRect(note->window, NULL, FALSE);
 }
@@ -847,16 +838,22 @@ static BOOL todo_enter(Note *note, BOOL shift) {
 }
 
 static BOOL click_todo(Note *note, LPARAM position) {
-    POINTL point = {GET_X_LPARAM(position), GET_Y_LPARAM(position)}, origin;
+    POINTL point = {GET_X_LPARAM(position), GET_Y_LPARAM(position)}, origin={0}, end={0};
     LONG index = (LONG)SendMessageW(note->edit, EM_CHARFROMPOS, 0, (LPARAM)&point);
     CHARRANGE paragraph, selection;
+    ITextRange *glyph = NULL;
+    BOOL hit;
     wchar_t marker, replacement[2] = {0};
     paragraph_at(note->edit, index, &paragraph);
     marker = todo_marker(note->edit, &paragraph);
     if (!marker) return FALSE;
-    SendMessageW(note->edit, EM_POSFROMCHAR, (WPARAM)&origin, paragraph.cpMin);
-    if (point.x < origin.x || point.x >= origin.x + scaled(note, 16) ||
-        point.y < origin.y || point.y >= origin.y + note->line_height) return FALSE;
+    /* Let Rich Edit supply the glyph bounds after font-size changes. This
+       short-lived range is needed only when clicking a checklist paragraph. */
+    if (FAILED(note->document->lpVtbl->Range(note->document, paragraph.cpMin, paragraph.cpMin+1, &glyph))) return FALSE;
+    hit = glyph->lpVtbl->GetPoint(glyph,tomStart|tomClientCoord|tomAllowOffClient|TA_LEFT|TA_TOP,&origin.x,&origin.y)==S_OK &&
+          glyph->lpVtbl->GetPoint(glyph,tomStart|tomClientCoord|tomAllowOffClient|TA_RIGHT|TA_BOTTOM,&end.x,&end.y)==S_OK;
+    glyph->lpVtbl->Release(glyph);
+    if (!hit || point.x < origin.x || point.x >= end.x || point.y < origin.y || point.y >= end.y) return FALSE;
     begin_edit(note, &selection);
     replacement[0] = marker == L'\x2610' ? L'\x2611' : L'\x2610';
     SendMessageW(note->edit, EM_SETSEL, paragraph.cpMin, paragraph.cpMin + 1);
@@ -1178,12 +1175,53 @@ static BOOL fit_dimensions(Note *note, int width, int height) {
     return TRUE;
 }
 
+static BOOL resize_selected_text(Note *note, int direction) {
+    CHARRANGE selection;
+    CHARFORMAT2W format = {0};
+    BOOL changed;
+    format.cbSize = sizeof(format);
+    SendMessageW(note->edit, EM_GETCHARFORMAT, SCF_SELECTION, (LPARAM)&format);
+    if ((format.dwMask & CFM_SIZE) && ((direction < 0 && format.yHeight <= 20) ||
+                                      (direction > 0 && format.yHeight >= 32760))) return FALSE;
+    SendMessageW(note->edit, EM_EXGETSEL, 0, (LPARAM)&selection);
+    SendMessageW(note->edit, EM_STOPGROUPTYPING, 0, 0);
+    note->validating = TRUE;
+    /* Native size steps preserve each run's size, color and emphasis. One
+       message creates one undo operation; RTF already persists the result. */
+    changed = (BOOL)SendMessageW(note->edit, EM_SETFONTSIZE, (WPARAM)(INT_PTR)direction, 0);
+    if (changed && !text_fits(note)) {
+        SendMessageW(note->edit, EM_UNDO, 0, 0);
+        SendMessageW(note->edit, EM_EXSETSEL, 0, (LPARAM)&selection);
+        changed = FALSE;
+    }
+    note->validating = FALSE;
+    if (changed) mark_dirty(note, DIRTY_RICH);
+    return changed;
+}
+
 static void wheel_resize(Note *note, int delta) {
+    CHARRANGE selection = {0};
     int steps, width, height;
+    BOOL text;
+    if (!note->ready || note->validating) return;
+    if (!note->collapsed) SendMessageW(note->edit, EM_EXGETSEL, 0, (LPARAM)&selection);
+    text = selection.cpMin != selection.cpMax;
+    if (!text) selection.cpMin = selection.cpMax = 0;
+    if (selection.cpMin != note->wheel_selection.cpMin || selection.cpMax != note->wheel_selection.cpMax) {
+        note->wheel_delta = 0;
+        note->wheel_selection = selection;
+    }
+    /* Windows also translates ordinary touchpad pinch into Ctrl+wheel.
+       Accumulate its fractional deltas, without carrying them to a new target. */
     note->wheel_delta += delta;
     steps = note->wheel_delta / WHEEL_DELTA;
     note->wheel_delta %= WHEEL_DELTA;
     while (steps) {
+        if (text) {
+            if (!resize_selected_text(note, steps > 0 ? 1 : -1)) break;
+            steps += steps > 0 ? -1 : 1;
+            continue;
+        }
         width = MulDiv(note->width, steps > 0 ? 110 : 100, steps > 0 ? 100 : 110);
         height = MulDiv(note->height, width, note->width);
         if (!fit_dimensions(note, width, height)) break;
@@ -1191,7 +1229,7 @@ static void wheel_resize(Note *note, int delta) {
                      SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
         steps += steps > 0 ? -1 : 1;
     }
-    if (note->ready) SetTimer(note->window, SAVE_TIMER, 400, NULL);
+    if (!text) SetTimer(note->window, SAVE_TIMER, 400, NULL);
 }
 
 static void note_command(Note *note, UINT command) {
@@ -1305,7 +1343,7 @@ static LRESULT CALLBACK note_proc(HWND window, UINT message, WPARAM wparam, LPAR
         note->edit_proc = (WNDPROC)SetWindowLongPtrW(note->edit, GWLP_WNDPROC, (LONG_PTR)edit_proc);
         SendMessageW(note->edit, EM_SETLIMITTEXT, TEXT_LIMIT, 0);
         SendMessageW(note->edit, EM_SETMARGINS, EC_LEFTMARGIN | EC_RIGHTMARGIN, MAKELPARAM(0, 0));
-        SendMessageW(note->edit, EM_SETEVENTMASK, 0, ENM_CHANGE);
+        SendMessageW(note->edit, EM_SETEVENTMASK, 0, ENM_CHANGE | ENM_REQUESTRESIZE | ENM_SELCHANGE);
         SendMessageW(note->edit, EM_SETUNDOLIMIT, 100, 0);
         update_style(note);
         return 0;
@@ -1388,6 +1426,19 @@ static LRESULT CALLBACK note_proc(HWND window, UINT message, WPARAM wparam, LPAR
                 return 0;
             }
             mark_dirty(note, DIRTY_TEXT | DIRTY_RICH);
+        }
+        return 0;
+    case WM_NOTIFY:
+        if (((NMHDR *)lparam)->hwndFrom == note->edit) {
+            if (((NMHDR *)lparam)->code == EN_REQUESTRESIZE) {
+                const RECT *rect = &((REQRESIZE *)lparam)->rc;
+                note->text_extent.cx = rect->right - rect->left;
+                note->text_extent.cy = rect->bottom - rect->top;
+            } else if (((NMHDR *)lparam)->code == EN_SELCHANGE) {
+                const CHARRANGE *range = &((SELCHANGE *)lparam)->chrg;
+                if (range->cpMin != note->wheel_selection.cpMin || range->cpMax != note->wheel_selection.cpMax)
+                    note->wheel_delta = 0;
+            }
         }
         return 0;
     case WM_TIMER:

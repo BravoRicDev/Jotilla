@@ -14,7 +14,7 @@ Windows 10/11, x64. No administrator rights or extra dependencies required.
 
 - **Ctrl + Alt + +** creates a note; the numpad `+` works too.
 - Drag the title bar to move a note, double-click to rename it, or use **− / □** to collapse and expand it. **×** closes the note and keeps it in the archive.
-- Drag an edge or corner to resize, or use **Ctrl + mouse wheel**. Notes stay on top and prevent resizing below what the text needs.
+- Drag an edge or corner to resize. **Ctrl + mouse wheel** or a touchpad pinch resizes the note; with text selected, it resizes only that text. Resizing stops before content would be clipped.
 - Right-click the title bar for the archive, tags, opacity, sizes and the original three palettes for new notes.
 - Right-click inside a note for the color wheel with all **80 [Color-Hex Popular palettes](docs/palettes.md)**. **← / →** browse; click a wedge to apply and close. **Esc** cancels. New notes draw from that palette for the rest of the session; **★** saves it for future starts. Text defaults to black or white for contrast.
 - Select text before right-clicking to color just that selection. Custom text colors stay intact when you change the background.

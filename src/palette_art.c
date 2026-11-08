@@ -10,7 +10,7 @@
 #include <string.h>
 #include "palette_art.h"
 
-typedef struct Coverage { BYTE wedge,neighbor,blend,alpha,stroke; } Coverage;
+typedef struct Coverage { BYTE wedge,neighbor,blend,alpha,stroke,rim; } Coverage;
 struct PaletteArt {
     PaletteLayout layout;
     HDC dc;
@@ -51,7 +51,7 @@ static float rounded_distance(float x,float y,const RECT *r,float radius) {
 }
 static void geometry(PaletteArt *a,int count) {
     const POINT *rays=count==5?rays5:rays6;
-    float radius=a->side*.5f,stroke=1.8f*a->dpi/96;
+    float radius=a->side*.5f,stroke=1.8f*a->dpi/96,border=.5f*a->dpi/96;
     int x,y;
     a->count=count;
     for(y=0;y<a->side;++y) for(x=0;x<a->side;++x) {
@@ -67,6 +67,9 @@ static void geometry(PaletteArt *a,int count) {
         pixel->blend=coverage(.5f-edge);
         pixel->alpha=coverage(radial+.5f);
         pixel->stroke=coverage(stroke-min(edge,radial));
+        /* The black rim occupies exactly the outer half-DIP of coverage,
+           including fractional edge pixels, and survives hover highlighting. */
+        pixel->rim=pixel->alpha ? (BYTE)((pixel->alpha-coverage(radial-border+.5f))*255/pixel->alpha) : 0;
     }
 }
 static float segment_distance(float x,float y,float ax,float ay,float bx,float by) {
@@ -157,7 +160,7 @@ const PaletteLayout *palette_art_layout(const PaletteArt *a) { return &a->layout
 void palette_art_prepare(PaletteArt *a,int palette,int favorite,BOOL text_mode) {
     const PaletteLayout *l=&a->layout;
     float cx=(l->wheel.left+l->wheel.right)*.5f,cy=(l->wheel.top+l->wheel.bottom)*.5f;
-    float radius=a->side*.5f,soft=5.0f*a->dpi/96,corner=5.0f*a->dpi/96;
+    float radius=a->side*.5f,soft=6.0f*a->dpi/96,corner=5.0f*a->dpi/96;
     RECT label={l->previous.right,l->previous.top,l->favorite.left,l->previous.bottom},measured;
     RECT mode={l->footer.left,l->previous.bottom,l->footer.right,l->footer.bottom-scale(a,4)};
     HGDIOBJ old;
@@ -169,7 +172,7 @@ void palette_art_prepare(PaletteArt *a,int palette,int favorite,BOOL text_mode) 
         float circle=sqrtf(dx*dx+dy*dy)-radius;
         float footer=rounded_distance(x+.5f,y+.5f,&l->footer,corner);
         float shadow=min(circle,footer-scale(a,2)),t=max(0,min(1,1-shadow/soft));
-        DWORD pixel=(DWORD)(28*t*t)<<24;
+        DWORD pixel=(DWORD)(24*t*t)<<24;
         if(footer<.5f) {
             DWORD fill=mix(0x292820,0xf4eee2,coverage(-footer-.6f));
             pixel=over(pixel,fill,coverage(.5f-footer));
@@ -204,6 +207,7 @@ HDC palette_art_frame(PaletteArt *a,const BYTE weight[COLOR_COUNT],int hover,BOO
         color=mix(a->colors[w],a->inks[w],(unsigned)weight[w]*p->stroke/255);
         neighbor=mix(a->colors[n],a->inks[n],(unsigned)weight[n]*p->stroke/255);
         color=mix(color,neighbor,p->blend);
+        if(p->rim) color=mix(color,0,p->rim);
         pixel=a->pixels+(size_t)(y+l->wheel.top)*l->size.cx+x+l->wheel.left;
         *pixel=over(*pixel,color,p->alpha);
     }

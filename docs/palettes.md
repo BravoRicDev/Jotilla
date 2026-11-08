@@ -1,7 +1,8 @@
 # Note colors
 
 Right-click the text area to open the wheel. Each original color fills one wedge;
-the hovered or selected wedge gets a smooth contrasting outline. Click to apply and close.
+the hovered or selected wedge gets a smooth contrasting outline. A DPI-scaled
+0.5 px black rim and faint shadow define the circle in both modes. Click to apply and close.
 Left/Right, or the arrows below the circle, browse palettes. Up/Down or Tab move
 between wedges; Enter selects and Escape cancels. The palette name stays below
 the circle. Browsing never changes the note.

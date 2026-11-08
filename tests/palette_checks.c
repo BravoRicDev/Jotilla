@@ -126,6 +126,18 @@ static void palette_art_checks(void) {
                 if(distance>radius-.5 && distance<radius+.5 && a>0 && a<255) ++partial;
             }
             require(partial>100,"circle edges carry fractional pixel coverage at every tested DPI");
+            {
+                int edge=l->wheel.right-1,middle=(l->wheel.top+l->wheel.bottom)/2;
+                COLORREF rim=GetPixel(dc,edge,middle),inside=GetPixel(dc,edge-MulDiv(3,dpis[d],96),middle);
+                DWORD shadow=pixels[(size_t)middle*l->size.cx+l->wheel.right+MulDiv(1,dpis[d],96)];
+                require(GetRValue(rim)<GetRValue(inside)*.6 && GetGValue(rim)<GetGValue(inside)*.6 &&
+                        GetBValue(rim)<GetBValue(inside)*.6,"the half-DIP black rim remains distinct at every DPI");
+                require((shadow>>24)>0 && (shadow>>24)<=24 && !(shadow&0xffffff),"the circle has a subtle black shadow outside its rim");
+                palette_art_prepare(art,p,-1,TRUE); palette_art_frame(art,weights,PICK_NONE,FALSE);
+                require(GetPixel(dc,edge,middle)==rim &&
+                        pixels[(size_t)middle*l->size.cx+l->wheel.right+MulDiv(1,dpis[d],96)]==shadow,
+                        "text and note color modes share the same rim and shadow");
+            }
             for(c=0;c<PALETTE_SIZES[p];++c) {
                 double angle=(-90+(c+.5)*360/PALETTE_SIZES[p])*3.141592653589793/180;
                 POINT point={(LONG)(l->wheel.left+radius+cos(angle)*radius*.6),

@@ -602,11 +602,20 @@ static DWORD effects_at(Note *note, LONG position) {
     return format.dwEffects;
 }
 
+static int default_line_height(Note *note) {
+    TEXTMETRICW metrics;
+    HDC dc=GetDC(note->edit);
+    HGDIOBJ old=SelectObject(dc,note->font);
+    require(trace_metrics(dc,&metrics),"measure the default font for test input coordinates");
+    SelectObject(dc,old); ReleaseDC(note->edit,dc);
+    return metrics.tmHeight;
+}
+
 static void click_checkbox(Note *note, LONG position) {
     POINTL point;
     LPARAM click;
     SendMessageW(note->edit, EM_POSFROMCHAR, (WPARAM)&point, position);
-    click = MAKELPARAM(point.x + 2, point.y + note->line_height / 2);
+    click = MAKELPARAM(point.x + 2, point.y + default_line_height(note) / 2);
     SendMessageW(note->edit, WM_LBUTTONDOWN, MK_LBUTTON, click);
     SendMessageW(note->edit, WM_LBUTTONUP, 0, click);
 }
@@ -657,7 +666,7 @@ static void keyboard_checks(void) {
     require(!wcscmp(note->accepted_text, L"\x2610 Pane\r\n\x2610 Latte\r\nFin\r\n"),
             "real Enter outside the todo inserts only one line break");
     SendMessageW(note->edit, EM_POSFROMCHAR, (WPARAM)&position, 0);
-    checkbox.x = position.x + 2; checkbox.y = position.y + note->line_height / 2;
+    checkbox.x = position.x + 2; checkbox.y = position.y + default_line_height(note) / 2;
     ClientToScreen(note->edit, &checkbox); GetCursorPos(&previous); SetCursorPos(checkbox.x, checkbox.y);
     click[0].type = click[1].type = INPUT_MOUSE;
     click[0].mi.dwFlags = MOUSEEVENTF_LEFTDOWN; click[1].mi.dwFlags = MOUSEEVENTF_LEFTUP;
@@ -1757,6 +1766,7 @@ static void location_checks(void) {
 }
 
 #include "palette_checks.c"
+#include "text_size_checks.c"
 
 int main(int argc, char **argv) {
     wchar_t temporary[PATH_CAP], root[PATH_CAP], id[80], path[PATH_CAP], text[256], pattern[PATH_CAP];
@@ -1810,6 +1820,9 @@ int main(int argc, char **argv) {
     }
     if (argc==2 && !strcmp(argv[1],"--palette-only")) {
         palette_checks(); branding_location_checks(); goto cleanup;
+    }
+    if (argc==2 && !strcmp(argv[1],"--text-size-only")) {
+        text_size_checks(); resizing_checks(); goto cleanup;
     }
     tray_checks();
     first = new_note();
@@ -1909,6 +1922,7 @@ int main(int argc, char **argv) {
     if (interactive_tests) keyboard_checks();
     editing_checks();
     resizing_checks();
+    text_size_checks();
     archive_checks();
     tags_search_checks();
     empty_note_checks();

@@ -380,7 +380,7 @@ static void select_demo_date(HWND tree,unsigned date,BOOL expand) {
     require(TreeView_GetItemRect(tree,item,&rect,TRUE),"locate the date label");
     point.x=(rect.left+rect.right)/2; point.y=(rect.top+rect.bottom)/2;
     ClientToScreen(tree,&point); move_pointer(point.x,point.y); frame_delay=45; capture_frame();
-    click_pointer(); pump(120);
+    move_pointer(point.x,point.y); click_pointer(); pump(120);
     require(TreeView_GetSelection(tree)==item,"the real click selects the requested date");
     if (expand && !(TreeView_GetItemState(tree,item,TVIS_EXPANDED)&TVIS_EXPANDED)) {
         TVHITTESTINFO hit={0};
@@ -533,7 +533,7 @@ static void record_postits(void) {
     require(todo_marker(note->edit,&paragraph)==L'\x2610',"locate the new unchecked item");
     set_caption(L"Click a checkbox to complete its task");
     SendMessageW(note->edit,EM_POSFROMCHAR,(WPARAM)&checkbox,paragraph.cpMin);
-    point.x=checkbox.x+2; point.y=checkbox.y+note->line_height/2;
+    point.x=checkbox.x+2; point.y=checkbox.y+default_line_height(note)/2;
     ClientToScreen(note->edit,&point); move_pointer(point.x,point.y); frame_delay=90; capture_frame();
     click_pointer(); pump(150);
     require(todo_marker(note->edit,&paragraph)==L'\x2611',"the actual click completes the demonstration task");
@@ -633,8 +633,8 @@ static void record_note_colors(Note *note,HWND browser) {
     require(start>=0 && end>start,"locate the live-update line for foreground formatting");
     SendMessageW(note->edit,EM_POSFROMCHAR,(WPARAM)&first,start);
     SendMessageW(note->edit,EM_POSFROMCHAR,(WPARAM)&last,end);
-    from.x=first.x; from.y=first.y+note->line_height/2;
-    to.x=last.x; to.y=last.y+note->line_height/2;
+    from.x=first.x; from.y=first.y+default_line_height(note)/2;
+    to.x=last.x; to.y=last.y+default_line_height(note)/2;
     ClientToScreen(note->edit,&from); ClientToScreen(note->edit,&to);
     move_pointer(from.x,from.y); pump(60);
     drag.type=INPUT_MOUSE; drag.mi.dwFlags=MOUSEEVENTF_LEFTDOWN;
@@ -760,7 +760,7 @@ static void record_archive_browser(void) {
     SetWindowTextW(GetDlgItem(window, 3), L"#work"); wait_search_ui(window);
     require(ListView_GetItemCount(list)==5, "the demonstration search shows five work notes");
     frame_delay=160; capture_frame();
-    SetWindowTextW(GetDlgItem(window, 3), L"");
+    SetWindowTextW(GetDlgItem(window, 3), L""); wait_search_ui(window);
     SendMessageW(GetDlgItem(window, 8), BM_CLICK, 0, 0); pump(150);
     set_caption(L"Choose a year, a month, then a day");
     select_demo_date(tree,20260000,TRUE);

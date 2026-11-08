@@ -12,6 +12,9 @@ Run Jotila.exe. Ctrl+Alt++ creates a note.
 Single-click the tray icon for a new note; double-click to browse notes.
 Minimizing the browser hides it beside the clock; double-click restores it.
 Drag the bar to move it; use - to collapse and X to close.
+Ctrl+mouse wheel or a touchpad pinch resizes the note.
+With text selected, the same gesture changes only its font size.
+Sizing stops before text would be clipped; Ctrl+Z/Ctrl+Y undo/redo font changes.
 Right-click the bar for the archive, opacity, title, size and three original palettes.
 Right-click the text for the color wheel; Left/Right browse all 80 Color-Hex Popular palettes.
 Click a color to apply and close; Escape cancels.
