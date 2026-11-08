@@ -178,35 +178,66 @@ const wchar_t *tags_store_get(const TagStore *store, const wchar_t *id) {
     return record ? record->tags : L"";
 }
 
+typedef struct TagSpan {
+    const wchar_t *name;
+    int length;
+    unsigned uses;
+} TagSpan;
+_Static_assert(sizeof(TagCount)>=sizeof(TagSpan), "Catalog expansion must preserve unread spans.");
+
+static int span_compare(const void *a, const void *b) {
+    const TagSpan *left=(const TagSpan *)a, *right=(const TagSpan *)b;
+    return CompareStringOrdinal(left->name,left->length,right->name,right->length,TRUE)-CSTR_EQUAL;
+}
+
 BOOL tags_catalog_build(const TagStore *store, TagCatalog *catalog) {
-    size_t i, count = 0, capacity = 0;
-    wchar_t name[TAG_NAME_CAP];
+    size_t i, count = 0, capacity = 0, distinct = 0;
+    TagSpan *spans = NULL;
+    TagCount *items;
     memset(catalog, 0, sizeof(*catalog));
     for (i = 0; i < store->count; ++i) {
         const wchar_t *cursor = store->items[i].tags;
-        while (tags_next(&cursor, name)) {
+        while (cursor && *cursor) {
+            size_t length=wcscspn(cursor,L";");
             if (count == capacity) {
                 size_t size = capacity ? capacity * 2 : 32;
-                TagCount *items = (TagCount *)realloc(catalog->items, size * sizeof(*items));
-                if (!items) { tags_catalog_free(catalog); return FALSE; }
-                catalog->items = items; capacity = size;
+                TagSpan *grown = (TagSpan *)realloc(spans, size * sizeof(*spans));
+                if (!grown) { free(spans); return FALSE; }
+                spans = grown; capacity = size;
             }
-            wcscpy_s(catalog->items[count].name, TAG_NAME_CAP, name);
-            catalog->items[count++].uses = 1;
+            spans[count].name=cursor; spans[count].length=(int)min(length,TAG_NAME_CAP-1);
+            spans[count++].uses=1; cursor+=length+(cursor[length]==L';');
         }
     }
-    if (count > 1) qsort(catalog->items, count, sizeof(*catalog->items), name_compare);
+    if (!count) return TRUE;
+    /* Monotone assignments, including single-tag archives, need no sort. */
+    for (i=1;i<count && span_compare(&spans[i-1],&spans[i])<=0;++i) {}
+    if (i<count) {
+        for (i=1;i<count && span_compare(&spans[i-1],&spans[i])>=0;++i) {}
+        if (i<count) qsort(spans, count, sizeof(*spans), span_compare);
+        else for (i=0;i<count/2;++i) {
+            TagSpan swap=spans[i]; spans[i]=spans[count-1-i]; spans[count-1-i]=swap;
+        }
+    }
     for (i = 0; i < count; ++i) {
-        if (catalog->count && !name_compare(catalog->items[catalog->count - 1].name, catalog->items[i].name))
-            ++catalog->items[catalog->count - 1].uses;
-        else catalog->items[catalog->count++] = catalog->items[i];
+        if (distinct && !span_compare(&spans[distinct-1],&spans[i])) ++spans[distinct-1].uses;
+        else spans[distinct++]=spans[i];
     }
-    /* The catalog outlives this build: retain distinct names, not one slot
-       per tag assignment across the entire archive. Shrinking is optional. */
-    if (catalog->count && catalog->count < capacity) {
-        TagCount *items = (TagCount *)realloc(catalog->items, catalog->count * sizeof(*items));
-        if (items) catalog->items = items;
+    /* Sort borrowed spans, then copy each distinct name just once. Expand
+       backwards in the same allocation so unread spans cannot be overwritten. */
+    items=(TagCount *)realloc(spans,distinct*sizeof(*items));
+    if (!items) {
+        if (distinct*sizeof(*items)>capacity*sizeof(*spans)) { free(spans); return FALSE; }
+        items=(TagCount *)spans; /* A failed optional shrink retains enough space. */
     }
+    spans=(TagSpan *)items;
+    for (i=distinct;i>0;) {
+        TagSpan span=spans[--i];
+        memcpy(items[i].name,span.name,(size_t)span.length*sizeof(wchar_t));
+        items[i].name[span.length]=0;
+        items[i].uses=span.uses;
+    }
+    catalog->items=items; catalog->count=distinct;
     return TRUE;
 }
 

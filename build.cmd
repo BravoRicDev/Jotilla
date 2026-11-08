@@ -41,6 +41,8 @@ if /i "%~1"=="screenshots-only" goto screenshots
 if /i "%~1"=="profile-only" goto profile
 if /i "%~1"=="search-profile" goto searchprofile
 if /i "%~1"=="storage-profile" goto storageprofile
+if /i "%~1"=="calendar-profile" goto calendarprofile
+if /i "%~1"=="tags-profile" goto tagsprofile
 if /i "%~1"=="test-checked" goto tests
 cl %JOTILA_CFLAGS% src\jotila.c /Fo"build\jotila.obj" /Fe"dist\Jotila.exe" /link build\jotila.res /SUBSYSTEM:WINDOWS %JOTILA_MANIFEST% %JOTILA_LIBS%
 if errorlevel 1 exit /b 1
@@ -61,6 +63,14 @@ if errorlevel 1 exit /b 1
 cl %JOTILA_CFLAGS% tests\setup_checks.c /Fo"build\setup_checks.obj" /Fe"build\setup_checks.exe" /link /SUBSYSTEM:CONSOLE %JOTILA_MANIFEST% user32.lib shell32.lib ole32.lib uuid.lib advapi32.lib
 if errorlevel 1 exit /b 1
 build\setup_checks.exe
+if errorlevel 1 exit /b 1
+cl %JOTILA_CFLAGS% tests\calendar_paint.c /Fo"build\calendar_paint.obj" /Fe"build\calendar_paint.exe" /link build\date.obj user32.lib gdi32.lib comctl32.lib %JOTILA_MANIFEST%
+if errorlevel 1 exit /b 1
+build\calendar_paint.exe
+if errorlevel 1 exit /b 1
+cl %JOTILA_CFLAGS% tests\archive_cache.c /Fo"build\archive_cache.obj" /Fe"build\archive_cache.exe" /link %JOTILA_MANIFEST% %JOTILA_LIBS:build\archive.obj =%
+if errorlevel 1 exit /b 1
+build\archive_cache.exe
 exit /b %errorlevel%
 
 :screenshots
@@ -85,6 +95,18 @@ exit /b %errorlevel%
 cl %JOTILA_CFLAGS% tools\storage_profile.c /Fo"build\storage_profile.obj" /Fe"build\storage_profile.exe" /link build\jotila.res /SUBSYSTEM:CONSOLE %JOTILA_MANIFEST% %JOTILA_LIBS%
 if errorlevel 1 exit /b 1
 build\storage_profile.exe
+exit /b %errorlevel%
+
+:calendarprofile
+cl %JOTILA_CFLAGS% tools\calendar_profile.c /Fo"build\calendar_profile.obj" /Fe"build\calendar_profile.exe" /link build\date.obj user32.lib gdi32.lib comctl32.lib %JOTILA_MANIFEST%
+if errorlevel 1 exit /b 1
+build\calendar_profile.exe
+exit /b %errorlevel%
+
+:tagsprofile
+cl %JOTILA_CFLAGS% tools\tags_profile.c /Fo"build\tags_profile.obj" /Fe"build\tags_profile.exe" /link build\metadata.obj normaliz.lib
+if errorlevel 1 exit /b 1
+build\tags_profile.exe
 exit /b %errorlevel%
 
 :analyze

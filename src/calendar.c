@@ -24,10 +24,14 @@ typedef struct Calendar {
     HWND window, owner, year_edit, tooltip;
     HFONT font, bold;
     HBRUSH paper;
+    HDC buffer;
+    HBITMAP bitmap, original_bitmap;
+    HRGN damage;
+    SIZE buffer_size;
     int dpi, year, month, scroll, columns, cell, month_width, month_height, wheel;
-    unsigned selected, focus, hover, pressed, counts[366];
+    unsigned selected, focus, hover, pressed, today, counts[366];
     UINT message;
-    BOOL picker, changing;
+    BOOL picker, changing, tracking;
     wchar_t tip[96];
 } Calendar;
 typedef struct DayList {
@@ -90,6 +94,19 @@ BOOL calendar_day_rect(HWND window, unsigned date, RECT *rect) {
     rect->top = month_box.top + c->cell * 2 + slot / 7 * c->cell;
     rect->right = rect->left + c->cell; rect->bottom = rect->top + c->cell;
     return TRUE;
+}
+
+static void invalidate_day(Calendar *c, unsigned date) {
+    RECT rect, clip;
+    if (!calendar_day_rect(c->window,date,&rect)) return;
+    GetClientRect(c->window,&clip); clip.top=px(c,46);
+    if (c->picker) clip.bottom-=px(c,44);
+    if (IntersectRect(&rect,&rect,&clip)) InvalidateRect(c->window,&rect,FALSE);
+}
+
+static void focus_day(Calendar *c, unsigned date) {
+    if (date==c->focus) return;
+    invalidate_day(c,c->focus); c->focus=date; invalidate_day(c,date);
 }
 
 static unsigned hit_day(Calendar *c, POINT p) {
@@ -156,11 +173,17 @@ void calendar_set_year(HWND window, int year) {
     Calendar *c = (Calendar *)GetWindowLongPtrW(window,GWLP_USERDATA);
     wchar_t text[16];
     BOOL changed;
+    unsigned focus;
+    int month, day;
     if (!c) return;
     year = max(DATE_MIN_YEAR,min(DATE_MAX_YEAR,year)); changed = year != c->year;
-    c->year = year; c->changing = TRUE;
+    month=c->picker ? c->month : (int)(c->focus/100%100);
+    day=min((int)(c->focus%100),date_days(year,month));
+    focus=year*10000u+month*100u+day;
+    c->changing = TRUE;
     swprintf_s(text,16,L"%04d",year); SetWindowTextW(c->year_edit,text); c->changing = FALSE;
-    c->focus = year * 10000u + (c->picker ? c->month : (int)(c->focus / 100 % 100)) * 100u + 1;
+    if (!changed && focus==c->focus) return;
+    c->year=year; c->focus=focus;
     c->hover = 0;
     if (changed && !c->picker) { memset(c->counts,0,sizeof(c->counts)); notify_calendar(c,CALENDAR_YEAR,year * 10000u); }
     InvalidateRect(window,NULL,FALSE);
@@ -168,7 +191,12 @@ void calendar_set_year(HWND window, int year) {
 
 void calendar_counts(HWND window, const unsigned counts[366]) {
     Calendar *c = (Calendar *)GetWindowLongPtrW(window,GWLP_USERDATA);
-    if (c) { memcpy(c->counts,counts,sizeof(c->counts)); InvalidateRect(window,NULL,FALSE); }
+    int month, day, ordinal=0;
+    if (!c || !memcmp(c->counts,counts,sizeof(c->counts))) return;
+    for (month=1;month<=12;++month)
+        for (day=1;day<=date_days(c->year,month);++day,++ordinal)
+            if (c->counts[ordinal]!=counts[ordinal]) invalidate_day(c,c->year*10000u+month*100u+day);
+    memcpy(c->counts,counts,sizeof(c->counts));
 }
 
 static void choose_day(Calendar *c, unsigned date) {
@@ -224,23 +252,25 @@ static void draw_calendar(Calendar *c, HDC dc) {
         static const wchar_t *week[] = {L"M",L"T",L"W",L"T",L"F",L"S",L"S"};
         RECT box = month_rect(c,month), label = box;
         int day;
-        if (box.bottom < clip.top || box.top >= clip.bottom) continue;
+        if (!RectVisible(dc,&box)) continue;
         label.bottom = label.top + c->cell;
         SelectObject(dc,c->bold); SetTextColor(dc,INK);
-        DrawTextW(dc,months[month-1],-1,&label,DT_CENTER|DT_VCENTER|DT_SINGLELINE);
+        if (RectVisible(dc,&label)) DrawTextW(dc,months[month-1],-1,&label,DT_CENTER|DT_VCENTER|DT_SINGLELINE);
         SelectObject(dc,c->font);
         for (day = 0; day < 7; ++day) {
             label.left = box.left + (c->month_width-c->cell*7)/2 + day*c->cell;
             label.right = label.left+c->cell; label.top = box.top+c->cell; label.bottom = label.top+c->cell;
             SetTextColor(dc,RGB(125,111,88));
-            DrawTextW(dc,week[day],-1,&label,DT_CENTER|DT_VCENTER|DT_SINGLELINE);
+            if (RectVisible(dc,&label)) DrawTextW(dc,week[day],-1,&label,DT_CENTER|DT_VCENTER|DT_SINGLELINE);
         }
         for (day = 1; day <= date_days(c->year,month); ++day) {
             unsigned date = c->year * 10000u + month * 100u + day;
             unsigned count = c->counts[date_ordinal(date)];
             wchar_t number[8];
             RECT cell, ring;
-            calendar_day_rect(c->window,date,&cell); ring = cell; InflateRect(&ring,-px(c,1),-px(c,1));
+            calendar_day_rect(c->window,date,&cell);
+            if (!RectVisible(dc,&cell)) continue;
+            ring = cell; InflateRect(&ring,-px(c,1),-px(c,1));
             if (count || date == c->selected || date == c->hover) {
                 SetDCPenColor(dc,count || date == c->selected ? INK : EDGE);
                 SetDCBrushColor(dc,count || date == c->selected ? ACCENT : SHADE);
@@ -260,6 +290,42 @@ static void draw_calendar(Calendar *c, HDC dc) {
         }
     }
     RestoreDC(dc,saved); SelectObject(dc,brush); SelectObject(dc,pen); SelectObject(dc,font);
+}
+
+/* Reuse the surface and damage region. Background and glyphs become visible
+   together; ordinary hover never creates a bitmap or repaints other months. */
+static BOOL prepare_buffer(Calendar *c, HDC dc, const RECT *client) {
+    HBITMAP bitmap;
+    if (client->right<=0 || client->bottom<=0) return FALSE;
+    if (!c->buffer) c->buffer=CreateCompatibleDC(dc);
+    if (!c->damage) c->damage=CreateRectRgn(0,0,0,0);
+    if (!c->buffer || !c->damage) return FALSE;
+    if (c->bitmap && c->buffer_size.cx==client->right && c->buffer_size.cy==client->bottom) return TRUE;
+    bitmap=CreateCompatibleBitmap(dc,client->right,client->bottom);
+    if (!bitmap) return FALSE;
+    if (c->bitmap) { SelectObject(c->buffer,bitmap); DeleteObject(c->bitmap); }
+    else c->original_bitmap=(HBITMAP)SelectObject(c->buffer,bitmap);
+    c->bitmap=bitmap; c->buffer_size.cx=client->right; c->buffer_size.cy=client->bottom;
+    SetRectRgn(c->damage,0,0,client->right,client->bottom);
+    return TRUE;
+}
+
+static void paint_calendar(Calendar *c) {
+    PAINTSTRUCT paint;
+    RECT client;
+    HDC dc;
+    unsigned today=calendar_today();
+    if (today!=c->today) {
+        invalidate_day(c,c->today); c->today=today; invalidate_day(c,today);
+    }
+    if (c->damage) GetUpdateRgn(c->window,c->damage,FALSE);
+    dc=BeginPaint(c->window,&paint); GetClientRect(c->window,&client);
+    if (prepare_buffer(c,dc,&client)) {
+        SelectClipRgn(c->buffer,c->damage); draw_calendar(c,c->buffer); SelectClipRgn(c->buffer,NULL);
+        BitBlt(dc,paint.rcPaint.left,paint.rcPaint.top,paint.rcPaint.right-paint.rcPaint.left,
+            paint.rcPaint.bottom-paint.rcPaint.top,c->buffer,paint.rcPaint.left,paint.rcPaint.top,SRCCOPY);
+    } else draw_calendar(c,dc);
+    EndPaint(c->window,&paint);
 }
 
 static LRESULT CALLBACK calendar_proc(HWND window, UINT message, WPARAM wparam, LPARAM lparam) {
@@ -303,7 +369,7 @@ static LRESULT CALLBACK calendar_proc(HWND window, UINT message, WPARAM wparam, 
         calendar_fonts(c); calendar_set_year(window,c->year); layout_calendar(c); return 0;
     }
     case WM_ERASEBKGND: return 1;
-    case WM_PAINT: { PAINTSTRUCT ps; HDC dc=BeginPaint(window,&ps); draw_calendar(c,dc); EndPaint(window,&ps); return 0; }
+    case WM_PAINT: paint_calendar(c); return 0;
     case WM_PRINTCLIENT: draw_calendar(c,(HDC)wparam); return 0;
     case WM_SIZE: layout_calendar(c); return 0;
     case WM_DPICHANGED_AFTERPARENT:
@@ -364,11 +430,13 @@ static LRESULT CALLBACK calendar_proc(HWND window, UINT message, WPARAM wparam, 
     case WM_MOUSEMOVE: {
         POINT point={GET_X_LPARAM(lparam),GET_Y_LPARAM(lparam)};
         unsigned date=hit_day(c,point);
-        TRACKMOUSEEVENT track={sizeof(track),TME_LEAVE,window,0}; TrackMouseEvent(&track);
-        if(date!=c->hover) { c->hover=date; InvalidateRect(window,NULL,FALSE); }
+        if(!c->tracking) {
+            TRACKMOUSEEVENT track={sizeof(track),TME_LEAVE,window,0}; c->tracking=TrackMouseEvent(&track);
+        }
+        if(date!=c->hover) { invalidate_day(c,c->hover); c->hover=date; invalidate_day(c,date); }
         return 0;
     }
-    case WM_MOUSELEAVE: c->hover=0; InvalidateRect(window,NULL,FALSE); return 0;
+    case WM_MOUSELEAVE: invalidate_day(c,c->hover); c->hover=0; c->tracking=FALSE; return 0;
     case WM_LBUTTONDOWN: {
         POINT point={GET_X_LPARAM(lparam),GET_Y_LPARAM(lparam)};
         SetFocus(window); c->pressed=hit_day(c,point); if(c->pressed) SetCapture(window); return 0;
@@ -377,11 +445,11 @@ static LRESULT CALLBACK calendar_proc(HWND window, UINT message, WPARAM wparam, 
         POINT point={GET_X_LPARAM(lparam),GET_Y_LPARAM(lparam)};
         unsigned date=hit_day(c,point), pressed=c->pressed;
         c->pressed=0; if(GetCapture()==window) ReleaseCapture();
-        if(date && date==pressed) { c->focus=date; choose_day(c,date); }
+        if(date && date==pressed) { focus_day(c,date); choose_day(c,date); }
         return 0;
     }
     case WM_CAPTURECHANGED: c->pressed=0; return 0;
-    case WM_SETFOCUS: case WM_KILLFOCUS: InvalidateRect(window,NULL,FALSE); return 0;
+    case WM_SETFOCUS: case WM_KILLFOCUS: invalidate_day(c,c->focus); return 0;
     case WM_KEYDOWN:
         if(!c->picker && ((wparam=='F' && GetKeyState(VK_CONTROL)<0) || wparam==VK_F5))
             return SendMessageW(c->owner,message,wparam,lparam);
@@ -396,16 +464,18 @@ static LRESULT CALLBACK calendar_proc(HWND window, UINT message, WPARAM wparam, 
         if(wparam==VK_LEFT || wparam==VK_RIGHT || wparam==VK_UP || wparam==VK_DOWN) {
             unsigned date=date_shift(c->focus,wparam==VK_LEFT ? -1 : wparam==VK_RIGHT ? 1 : wparam==VK_UP ? -7 : 7);
             RECT rect,client;
+            int previous_month=c->month, previous_scroll=c->scroll;
             c->month=date/100%100;
             if((int)(date/10000)!=c->year) calendar_set_year(window,(int)(date/10000));
-            c->focus=date;
+            focus_day(c,date);
             if(!c->picker && calendar_day_rect(window,date,&rect)) {
                 GetClientRect(window,&client);
                 if(rect.top<px(c,46)) c->scroll=max(0,c->scroll+rect.top-px(c,46));
                 if(rect.bottom>client.bottom) c->scroll+=rect.bottom-client.bottom;
-                layout_calendar(c);
+                if(c->scroll!=previous_scroll) layout_calendar(c);
             }
-            InvalidateRect(window,NULL,FALSE); return 0;
+            if(c->picker && c->month!=previous_month) InvalidateRect(window,NULL,FALSE);
+            return 0;
         }
         break;
     case WM_NOTIFY:
@@ -421,6 +491,9 @@ static LRESULT CALLBACK calendar_proc(HWND window, UINT message, WPARAM wparam, 
     case WM_NCDESTROY:
         if(active_picker==window) active_picker=NULL;
         if(c->tooltip) DestroyWindow(c->tooltip);
+        if(c->buffer) { SelectObject(c->buffer,c->original_bitmap); DeleteDC(c->buffer); }
+        if(c->bitmap) DeleteObject(c->bitmap);
+        if(c->damage) DeleteObject(c->damage);
         DeleteObject(c->font); DeleteObject(c->bold); DeleteObject(c->paper);
         SetWindowLongPtrW(window,GWLP_USERDATA,0); free(c); break;
     }

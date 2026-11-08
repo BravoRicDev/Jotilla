@@ -1,9 +1,16 @@
 /* Included by tests.c. Exercise the production windows and real archive files. */
+static int immediate_day_count;
 static void click_calendar_day(HWND calendar, unsigned date) {
     RECT rect;
+    SetForegroundWindow(GetAncestor(calendar,GA_ROOT));
+    SetFocus(calendar);
     require(calendar_day_rect(calendar,date,&rect),"locate a real calendar day");
     SendMessageW(calendar,WM_LBUTTONDOWN,MK_LBUTTON,MAKELPARAM((rect.left+rect.right)/2,(rect.top+rect.bottom)/2));
     SendMessageW(calendar,WM_LBUTTONUP,0,MAKELPARAM((rect.left+rect.right)/2,(rect.top+rect.bottom)/2));
+    {
+        HWND list=thread_window(CALENDAR_LIST_CLASS,NULL);
+        immediate_day_count=list?(int)SendDlgItemMessageW(list,1,LB_GETCOUNT,0,0):0;
+    }
     pump(40);
 }
 
@@ -23,6 +30,17 @@ static void calendar_checks(void) {
         unsigned end=year*10000u+1231, next=(year+1)*10000u+101;
         require(date_shift(end,1)==next && date_shift(next,-1)==end,"every supported year boundary is reversible");
     }
+    {
+        unsigned date=20000101;
+        int ordinal=0, weekday=5, days=0;
+        while (date<24000101) {
+            require(date_ordinal(date)==ordinal && date_weekday(date)==weekday,
+                "every day of a complete Gregorian cycle has the expected ordinal and weekday");
+            ++days; weekday=(weekday+1)%7; date=date_shift(date,1);
+            ordinal=date%10000==101 ? 0 : ordinal+1;
+        }
+        require(days==146097,"Gregorian cycle covers 146097 consecutive days");
+    }
     require(date_shift(16010101,-7)==16010101 && date_shift(99991231,7)==99991231,"navigation clamps at supported endpoints");
     require(first && second && !first->calendar_date,"older and new notes start unassigned");
     replace_text(first,L"Calendar first body"); require(set_title(first,L"Leap meeting"),"name the first calendar note");
@@ -38,6 +56,7 @@ static void calendar_checks(void) {
     require(first && first->calendar_date==20280229 && !wcscmp(first->id,first_id),"assigned day survives reopening without changing identity");
     require(set_tags(first,L"calendar;test") && save_note(first),"Unicode-capable tag writes preserve the scheduled day");
     browser=browse_notes(); require(browser!=NULL,"open archive for calendar integration");
+    require(!GetDlgItem(browser,11),"ordinary note browsing creates no calendar windows");
     SendMessageW(browser,WM_COMMAND,10,0); calendar=GetDlgItem(browser,11);
     require(IsWindowVisible(calendar) && !IsWindowVisible(GetDlgItem(browser,2)),"calendar replaces the note browser in the same window");
     require(!GetDlgItem(calendar,1) && !GetDlgItem(calendar,4) && !GetDlgItem(calendar,5),"annual view has no year step buttons");
@@ -85,6 +104,12 @@ static void calendar_checks(void) {
         }
         SendMessageW(browser,WM_KEYDOWN,VK_F5,0); click_calendar_day(calendar,20280229);
         list=thread_window(CALENDAR_LIST_CLASS,NULL);
+        if(!list || SendDlgItemMessageW(list,1,LB_GETCOUNT,0,0)!=12) {
+            GetWindowTextW(browser,label,256);
+            fwprintf(stderr,L"Day list diagnostic: immediate=%d, after=%lld, year=%d, title=%s, archive=%s\n",
+                immediate_day_count,list?(long long)SendDlgItemMessageW(list,1,LB_GETCOUNT,0,0):0,
+                calendar_year(calendar),label,directory);
+        }
         require(list && SendDlgItemMessageW(list,1,LB_GETCOUNT,0,0)==12,"large days use a scrollable compact list");
         SendDlgItemMessageW(list,1,WM_KEYDOWN,VK_DOWN,0);
         require(SendDlgItemMessageW(list,1,LB_GETCURSEL,0,0)==1,"Down selects the next title without opening it");

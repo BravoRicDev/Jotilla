@@ -1355,6 +1355,47 @@ static void CALLBACK fill_tags_dialog(HWND unused, UINT message, UINT_PTR timer,
     SendMessageW(dialog, WM_COMMAND, IDOK, 0);
 }
 
+static void catalog_checks(void) {
+    TagStore store={0};
+    TagCatalog catalog;
+    int mode,i,j;
+    require(tags_catalog_build(&store,&catalog) && !catalog.count && !catalog.items,"empty tag catalogs allocate nothing");
+    store.count=1000; store.items=(TagRecord *)calloc(store.count,sizeof(*store.items));
+    require(store.items!=NULL,"allocate catalog fixtures");
+    for(mode=0;mode<4;++mode) {
+        for(i=0;i<(int)store.count;++i) {
+            wchar_t names[TAGS_CAP]; int used=0;
+            for(j=0;j<TAGS_MAX;++j) {
+                int tag=mode?i*TAGS_MAX+j:j;
+                if(mode==2) tag=24000-1-tag;
+                if(mode==3) tag=(int)((unsigned long long)tag*104729%24000);
+                used+=swprintf_s(names+used,TAGS_CAP-(size_t)used,L"%stag%06d",j?L";":L"",tag);
+            }
+            free(store.items[i].tags); store.items[i].tags=_wcsdup(names);
+            require(store.items[i].tags!=NULL,"allocate tag assignments");
+        }
+        require(tags_catalog_build(&store,&catalog) && catalog.count==(mode?24000u:24u),"catalog merges shared tags and retains unique tags");
+        for(i=0;i<(int)catalog.count;++i) {
+            wchar_t expected[TAG_NAME_CAP]; swprintf_s(expected,TAG_NAME_CAP,L"tag%06d",i);
+            require(!wcscmp(catalog.items[i].name,expected) && catalog.items[i].uses==(mode?1u:1000u),
+                "every catalog name, order and assignment count is exact");
+        }
+        tags_catalog_free(&catalog);
+    }
+    tags_store_free(&store);
+    {
+        TagRecord records[3]={0};
+        wchar_t a[]=L"a;alpha;école;東京", b[]=L"A;ALPHA;ÉCOLE;東京", c[TAG_NAME_CAP];
+        wmemset(c,L'z',TAG_NAME_CAP-1); c[TAG_NAME_CAP-1]=0;
+        records[0].tags=a; records[1].tags=b; records[2].tags=c;
+        store.items=records; store.count=3;
+        require(tags_catalog_build(&store,&catalog) && catalog.count==5,"Unicode, case, prefixes and maximum-length names stay distinct as expected");
+        for(i=0;i<5;++i) require(catalog.items[i].uses==(!wcscmp(catalog.items[i].name,c)?1u:2u),"Unicode catalog counts remain case-insensitive");
+        tags_catalog_free(&catalog);
+    }
+    puts("PASS: empty, shared, 24000 distinct, Unicode, prefix and maximum-length tag catalogs.");
+}
+
 static void tags_search_checks(void) {
     Note *note = new_note();
     wchar_t normalized[TAGS_CAP], id[80], path[PATH_CAP], *saved;
@@ -1371,6 +1412,7 @@ static void tags_search_checks(void) {
     HWND window, edit, list, tree;
     int i;
     BYTE previous[256], keyboard[256];
+    catalog_checks();
     require(note && long_text, "allocate tag/search fixtures");
     wcscpy_s(id, 80, note->id);
     replace_text(note, L"Budget for the November release.");

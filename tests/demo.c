@@ -725,6 +725,16 @@ static void CALLBACK record_archive_choices(HWND window, UINT message, UINT_PTR 
     SendMessageW(dialog, TDM_CLICK_BUTTON, IDCANCEL, 0);
 }
 
+static void record_day_hover(HWND calendar,unsigned day) {
+    set_caption(L"Move the pointer across the days"); frame_delay=45;
+    for(unsigned date=day-3;date<day;++date) {
+        RECT cell; POINT point;
+        calendar_day_rect(calendar,date,&cell);
+        point.x=(cell.left+cell.right)/2; point.y=(cell.top+cell.bottom)/2;
+        ClientToScreen(calendar,&point); move_pointer(point.x,point.y); capture_frame();
+    }
+}
+
 static void record_calendar(Note *note, HWND browser) {
     RECT bounds,cell; POINT point; HWND picker,calendar,list;
     Note *other;
@@ -748,6 +758,8 @@ static void record_calendar(Note *note, HWND browser) {
         while(month>11) { SendMessageW(picker,WM_COMMAND,7,0); --month; }
     }
     require(calendar_day_rect(picker,day,&cell),"the picker shows November in the chosen year");
+    record_day_hover(picker,day);
+    frame_delay=120;
     set_caption(L"Choose a day; the same post-it stays in the archive");
     point.x=(cell.left+cell.right)/2; point.y=(cell.top+cell.bottom)/2; ClientToScreen(picker,&point);
     move_pointer(point.x,point.y); capture_frame(); capture(L"build\\calendar-picker-review.bmp");
@@ -769,6 +781,8 @@ static void record_calendar(Note *note, HWND browser) {
     SetWindowTextW(GetDlgItem(calendar,3),L"2028"); SendMessageW(GetDlgItem(calendar,3),WM_KEYDOWN,VK_RETURN,0); pump(100);
     SendMessageW(calendar,WM_VSCROLL,SB_BOTTOM,0);
     require(calendar_day_rect(calendar,day,&cell),"locate the assigned day in the annual view");
+    record_day_hover(calendar,day);
+    frame_delay=150;
     set_caption(L"Circled days contain notes; a dot means several");
     point.x=(cell.left+cell.right)/2; point.y=(cell.top+cell.bottom)/2; ClientToScreen(calendar,&point);
     move_pointer(point.x,point.y); capture_frame(); capture(L"build\\calendar-year-review.bmp");

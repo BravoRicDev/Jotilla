@@ -33,6 +33,6 @@ Search by text or tags: `#work`, `"release plan"`, or `-#` for untagged notes. *
 
 Notes save as UTF-8 text in `%LOCALAPPDATA%\Jotila\notes`, or beside the portable EXE. Empty notes stay unsaved. **Archive** moves or switches folders; back up the whole folder, including `notes.ini` and RTF files. Updates and uninstall preserve your notes.
 
-Build with MSVC and the Windows SDK: `build.cmd`. Checks: `build.cmd test`, `build.cmd test-checked`, `build.cmd analyze`. Package downloads: `tools/package.ps1`. Binaries are unsigned.
+Build with MSVC and the Windows SDK: `build.cmd`. Checks: `build.cmd test`, `build.cmd test-checked`, `build.cmd analyze`. [Performance measurements](docs/performance.md). Package downloads: `tools/package.ps1`. Binaries are unsigned.
 
 `tools/capture.ps1` regenerates the real-app screenshots and GIFs using ImageMagick and local artwork (`-BackgroundRoot`). Backgrounds: Birmingham Museums Trust — *Sundown, Loch Rannoch*, *February Fill Dyke* and *Walton-on-the-Naze*.

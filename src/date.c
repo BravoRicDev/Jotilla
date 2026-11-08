@@ -14,10 +14,11 @@ int date_valid(unsigned date) {
 }
 
 int date_ordinal(unsigned date) {
-    int month, day = (int)(date % 100) - 1;
-    if (!date_valid(date)) return -1;
-    for (month = 1; month < (int)(date / 100 % 100); ++month) day += date_days((int)(date / 10000), month);
-    return day;
+    static const int starts[] = {0,31,59,90,120,151,181,212,243,273,304,334};
+    int year=(int)(date/10000), month=date/100%100;
+    if (month<1 || month>12 || !date_valid(date)) return -1;
+    return starts[month-1]+(int)(date%100)-1+
+        (month>2 && year%4==0 && (year%100!=0 || year%400==0));
 }
 
 int date_weekday(unsigned date) {

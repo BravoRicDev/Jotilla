@@ -693,11 +693,11 @@ static void archive_layout(Archive *archive) {
         };
         batch = BeginDeferWindowPos(10);
         for (i = 0; batch && i < 10; ++i)
-            batch = DeferWindowPos(batch, positions[i].window, NULL, positions[i].x, positions[i].y,
+            if (positions[i].window) batch = DeferWindowPos(batch, positions[i].window, NULL, positions[i].x, positions[i].y,
                                    positions[i].width, positions[i].height, SWP_NOZORDER | SWP_NOACTIVATE);
         if (!batch || !EndDeferWindowPos(batch))
             for (i = 0; i < 10; ++i)
-                SetWindowPos(positions[i].window, NULL, positions[i].x, positions[i].y,
+                if (positions[i].window) SetWindowPos(positions[i].window, NULL, positions[i].x, positions[i].y,
                              positions[i].width, positions[i].height, SWP_NOZORDER | SWP_NOACTIVATE);
     }
     /* Windows preserves old client pixels on resize. The frame belongs to the
@@ -709,6 +709,12 @@ static void archive_layout(Archive *archive) {
 
 static void calendar_mode(Archive *archive, BOOL enabled) {
     if (archive->calendar_view==enabled) return;
+    if (enabled && !archive->calendar) {
+        archive->calendar=calendar_create(archive->window,CALENDAR_VIEW);
+        if (!archive->calendar) {
+            MessageBoxW(archive->window,L"The calendar could not be opened.",L"Jotila",MB_OK|MB_ICONERROR); return;
+        }
+    }
     calendar_list_close(archive->window);
     if (enabled) {
         remember_selection(archive); ListView_GetOrigin(archive->list,&archive->note_scroll);
@@ -1031,10 +1037,9 @@ static LRESULT CALLBACK archive_proc(HWND window, UINT message, WPARAM wparam, L
             0, 0, 1, 1, window, (HMENU)(INT_PTR)LOCATION_BUTTON, app, NULL);
         archive->calendar_button=CreateWindowExW(0,L"BUTTON",L"Show calendar",WS_CHILD|WS_VISIBLE|WS_TABSTOP|BS_OWNERDRAW,
             0,0,1,1,window,(HMENU)(INT_PTR)CALENDAR_BUTTON,app,NULL);
-        archive->calendar=calendar_create(window,CALENDAR_VIEW);
         if (!archive->tree || !archive->list || !archive->search || !archive->clear ||
             !archive->tag_tree || !archive->tag_button || !archive->date_button || !archive->location ||
-            !archive->calendar_button || !archive->calendar) return -1;
+            !archive->calendar_button) return -1;
         SendMessageW(archive->search, EM_SETLIMITTEXT, SEARCH_CAP - 1, 0);
         SendMessageW(archive->search, EM_SETCUEBANNER, TRUE, (LPARAM)L"Search notes and tags");
         {
@@ -1357,7 +1362,7 @@ void archive_changed(const wchar_t *id, BOOL present, unsigned changes) {
     if (!archive_window) return;
     archive = (Archive *)GetWindowLongPtrW(archive_window, GWLP_USERDATA);
     calendar_list_close(archive_window);
-    if ((changes & ARCHIVE_DATE_CHANGED) || !present) archive->calendar_dirty=TRUE;
+    if (!present) archive->calendar_dirty=TRUE;
     entry = find_entry(archive, id);
     if ((changes & ARCHIVE_TAGS_CHANGED) || !entry || !present) archive->tags_dirty = TRUE;
     if (changes & ARCHIVE_TAGS_CHANGED) search_reload(archive->worker);
@@ -1379,6 +1384,21 @@ void archive_changed(const wchar_t *id, BOOL present, unsigned changes) {
     if (!entry && !present) return;
     if (!archive->rebuilding && !archive->refresh_pending)
         archive->refresh_pending = PostMessageW(archive_window, ARCHIVE_REFRESH, 0, 0);
+}
+
+/* The successful writer already knows the date. Keep previews and search
+   results; only calendar membership changed. F5 still reloads external edits. */
+void archive_date_changed(const wchar_t *id, unsigned date) {
+    Archive *archive;
+    ArchiveEntry *entry;
+    if (!archive_window) return;
+    archive=(Archive *)GetWindowLongPtrW(archive_window,GWLP_USERDATA);
+    entry=find_entry(archive,id);
+    if (!entry) {
+        archive->calendar_dirty=TRUE; archive_changed(id,TRUE,0); return;
+    }
+    entry->scheduled=date;
+    if (!archive->rebuilding) calendar_update(archive);
 }
 
 void archive_close(void) {

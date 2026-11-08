@@ -79,7 +79,7 @@ struct Note {
     DWORD selection_start, selection_end;
     CHARRANGE palette_selection, wheel_selection;
     BOOL custom_ink;
-    BOOL collapsed, ready, tags_dirty, save_failed, validating, layout_saved, persisted;
+    BOOL collapsed, ready, tags_dirty, save_failed, validating, layout_saved, persisted, tracking;
 };
 static const SIZE NOTE_SIZES[] = {{240,180}, {NOTE_WIDTH,NOTE_HEIGHT}, {420,340}, {540,440}, {300,300}};
 static const wchar_t *SIZE_NAMES[] = {L"Small", L"Medium", L"Large", L"Extra large", L"Square"};
@@ -391,7 +391,7 @@ static BOOL set_note_date(Note *note, unsigned date) {
     swprintf_s(value,16,L"%08u",date);
     if (!WritePrivateProfileStringW(note->id,L"calendar_date",date ? value : NULL,state_path)) return FALSE;
     note->calendar_date = date;
-    archive_changed(note->id,TRUE,ARCHIVE_DATE_CHANGED); redraw_bar(note);
+    archive_date_changed(note->id,date); redraw_bar(note);
     return TRUE;
 }
 
@@ -445,8 +445,8 @@ static BOOL load_text(Note *note) {
     if (!text) { free(data); return FALSE; }
     if (count) MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, data + offset, (int)read - offset, text, count);
     free(data);
-    /* This flag records an explicit Enter gesture. A literal #first line
-       entered with Shift+Enter must never become a title just by reopening. */
+    /* Only explicit title promotion sets this flag. A literal #first line
+       followed by Enter must never become a title just by reopening. */
     if (note->saved_layout[LAYOUT_TITLE] && text[0] == L'#') {
         size_t end = wcscspn(text, L"\r\n"), body = end;
         if (end > 1) {
@@ -1521,12 +1521,15 @@ static LRESULT CALLBACK note_proc(HWND window, UINT message, WPARAM wparam, LPAR
     case WM_PAINT: paint_note(note); return 0;
     case WM_MOUSEMOVE: {
         int hover = button_at(note, lparam);
-        TRACKMOUSEEVENT track = {sizeof(track), TME_LEAVE, window, 0};
-        TrackMouseEvent(&track);
+        if (!note->tracking) {
+            TRACKMOUSEEVENT track = {sizeof(track), TME_LEAVE, window, 0};
+            note->tracking=TrackMouseEvent(&track);
+        }
         if (hover != note->hover) { note->hover = hover; redraw_bar(note); }
         return 0;
     }
     case WM_MOUSELEAVE:
+        note->tracking=FALSE;
         if (note->hover) { note->hover = 0; redraw_bar(note); }
         return 0;
     case WM_LBUTTONDOWN:
