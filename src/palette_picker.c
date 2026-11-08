@@ -17,7 +17,7 @@ typedef struct Picker {
     PalettePickerOptions options;
     PaletteArt *art;
     HWND owner, tooltip;
-    int palette, hover, pressed;
+    int palette, order, hover, pressed;
     BYTE weight[COLOR_COUNT], from[COLOR_COUNT], target[COLOR_COUNT], alpha, from_alpha;
     ULONGLONG started;
     BOOL tracking, animate;
@@ -57,7 +57,8 @@ static void tooltip_text(HWND window, Picker *p, UINT message) {
 }
 
 static void change_palette(HWND window, Picker *p, int step) {
-    p->palette=(p->palette+step+PALETTE_COUNT)%PALETTE_COUNT;
+    p->order=(p->order+step+POPULAR_PALETTE_COUNT)%POPULAR_PALETTE_COUNT;
+    p->palette=POPULAR_PALETTES[p->order];
     p->hover=p->pressed=PICK_NONE;
     memset(p->weight,0,sizeof(p->weight));
     palette_art_prepare(p->art,p->palette,p->options.favorite,p->options.text_mode);
@@ -220,10 +221,13 @@ HWND palette_picker_show(HWND owner, POINT anchor, const PalettePickerOptions *o
     cls.hInstance=(HINSTANCE)GetWindowLongPtrW(owner,GWLP_HINSTANCE);
     cls.hCursor=LoadCursorW(NULL,IDC_ARROW); cls.lpfnWndProc=picker_proc; cls.lpszClassName=PALETTE_PICKER_CLASS;
     if(!RegisterClassW(&cls) && GetLastError()!=ERROR_CLASS_ALREADY_EXISTS) return NULL;
-    initial.owner=owner; initial.options=*options; initial.palette=options->palette;
+    initial.owner=owner; initial.options=*options;
+    initial.order=PALETTE_POPULAR_INDEX[options->palette];
+    if(initial.order<0) initial.order=0;
+    initial.palette=POPULAR_PALETTES[initial.order];
     initial.hover=initial.pressed=PICK_NONE;
     window=CreateWindowExW(WS_EX_TOOLWINDOW|WS_EX_TOPMOST|WS_EX_LAYERED,PALETTE_PICKER_CLASS,
-        PALETTE_NAMES[options->palette],WS_POPUP,0,0,0,0,owner,NULL,cls.hInstance,&initial);
+        PALETTE_NAMES[initial.palette],WS_POPUP,0,0,0,0,owner,NULL,cls.hInstance,&initial);
     if(!window) return NULL;
     p=(Picker *)GetWindowLongPtrW(window,GWLP_USERDATA); layout=palette_art_layout(p->art);
     x=max(monitor.rcWork.left,min(anchor.x-layout->size.cx/2,monitor.rcWork.right-layout->size.cx));

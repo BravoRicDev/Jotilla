@@ -3,16 +3,58 @@
 #include <math.h>
 #include "../src/palette_art.h"
 
-static HWND test_picker(Note *note,POINT anchor,int palette,int color) {
-    PalettePickerOptions options={palette,color,favorite_palette,FALSE,select_note_color,save_favorite,note};
-    return palette_picker_show(note->window,anchor,&options);
-}
-
 static double color_luminance(COLORREF color) {
     double channel[3]={GetRValue(color)/255.0,GetGValue(color)/255.0,GetBValue(color)/255.0};
     int i;
     for (i=0;i<3;++i) channel[i]=channel[i]<=.04045 ? channel[i]/12.92 : pow((channel[i]+.055)/1.055,2.4);
     return .2126*channel[0]+.7152*channel[1]+.0722*channel[2];
+}
+
+static HWND test_picker(Note *note,POINT anchor,int palette,int color) {
+    PalettePickerOptions options={palette,color,favorite_palette,FALSE,select_note_color,save_favorite,note};
+    return palette_picker_show(note->window,anchor,&options);
+}
+
+static void browse_picker(HWND popup,int target) {
+    wchar_t name[80];
+    int i,order=-1,step;
+    GetWindowTextW(popup,name,80);
+    for(i=0;i<POPULAR_PALETTE_COUNT;++i)
+        if(!wcscmp(name,PALETTE_NAMES[POPULAR_PALETTES[i]])) { order=i; break; }
+    require(order>=0 && PALETTE_POPULAR_INDEX[target]>=0,"navigate between catalog palettes only");
+    step=(PALETTE_POPULAR_INDEX[target]-order+POPULAR_PALETTE_COUNT)%POPULAR_PALETTE_COUNT;
+    if(step>POPULAR_PALETTE_COUNT/2) step-=POPULAR_PALETTE_COUNT;
+    for(i=0;i<abs(step);++i) SendMessageW(popup,WM_KEYDOWN,step<0?VK_LEFT:VK_RIGHT,0);
+}
+
+static void palette_catalog_checks(void) {
+    BOOL seen[PALETTE_COUNT]={0};
+    int i,p,c;
+    require(POPULAR_PALETTE_COUNT==80 && PALETTE_COUNT==83,"include all 80 Popular palettes alongside the three legacy defaults");
+    for(i=0;i<DEFAULT_PALETTE_COUNT;++i)
+        require(PALETTE_POPULAR_INDEX[i]==-1 && PALETTE_SIZES[i]==6,"the original palettes are excluded from wheel navigation");
+    for(i=0;i<POPULAR_PALETTE_COUNT;++i) {
+        p=POPULAR_PALETTES[i];
+        require(p>=DEFAULT_PALETTE_COUNT && p<PALETTE_COUNT && !seen[p] &&
+            PALETTE_POPULAR_INDEX[p]==i && PALETTE_SIZES[p]==5,"catalog navigation visits every five-color palette exactly once");
+        seen[p]=TRUE;
+    }
+    require(!wcscmp(PALETTE_NAMES[POPULAR_PALETTES[0]],L"Cappuccino") &&
+        !wcscmp(PALETTE_NAMES[POPULAR_PALETTES[79]],L"PwC Corp"),"browse order matches the complete source collection");
+    require(PALETTES[3][0]==RGB(255,179,186) && PALETTES[4][1]==RGB(162,121,143) &&
+        PALETTES[5][3]==RGB(94,60,88) && PALETTES[6][4]==RGB(14,17,17) &&
+        PALETTES[7][0]==RGB(210,212,220) && PALETTES[8][3]==RGB(254,255,163) &&
+        PALETTES[9][4]==RGB(255,255,227),"all seven pre-existing palette IDs keep their original RGB values");
+    for(p=0;p<PALETTE_COUNT;++p) for(c=0;c<PALETTE_SIZES[p];++c) {
+        double body=color_luminance(PALETTES[p][c]),bar=color_luminance(palette_bar(PALETTES[p][c]));
+        double ink=color_luminance(palette_ink(p,c)),title=color_luminance(palette_bar_ink(p,c));
+        require((max(ink,body)+.05)/(min(ink,body)+.05)>=4.5 &&
+            (max(title,bar)+.05)/(min(title,bar)+.05)>=4.5,"every body and title color has independently readable ink");
+        require((palette_ink(p,c)==RGB(255,255,255))==(1.05/(body+.05)>(body+.05)/.05) &&
+            (palette_bar_ink(p,c)==RGB(255,255,255))==(1.05/(bar+.05)>(bar+.05)/.05),
+            "each precomputed ink bit chooses the stronger black-or-white contrast");
+    }
+    puts("PASS: all 80 Popular palettes, original RGB ordering, stable legacy IDs, exclusive wheel navigation and per-color body/title contrast.");
 }
 
 static void palette_preview(HWND list,COLORREF paper,BOOL highlighted) {
@@ -119,7 +161,7 @@ static void palette_preference_checks(void) {
     PaletteLayout layout;
     PalettePickerOptions options={0};
     unsigned timer_count=0,seen=0;
-    int i,base=setting(L"app",L"palette",0),sequence=next_color;
+    int i,base=setting(L"app",L"palette",0),sequence=next_color,favorite=PALETTE_COUNT-1;
     HANDLE lock;
     require(write_setting(L"app",L"palette",2) && write_setting(L"app",L"next_color",0) &&
             write_setting(L"app",L"favorite_palette",-1),"set isolated original palette preferences");
@@ -143,7 +185,7 @@ static void palette_preference_checks(void) {
             "session-only selection leaves startup preferences unchanged");
     art=palette_art_create(note->dpi); require(art!=NULL,"read star layout at owner DPI");
     layout=*palette_art_layout(art); palette_art_destroy(art);
-    popup=test_picker(note,anchor,3,0);
+    popup=test_picker(note,anchor,favorite,0);
     require(SetWindowSubclass(popup,count_picker_timers,1,(DWORD_PTR)&timer_count),"observe popup animation lifetime");
     pump(220); timer_count=0; pump(180);
     require(timer_count==0,"a settled popup has no animation timer");
@@ -154,17 +196,17 @@ static void palette_preference_checks(void) {
         (layout.favorite.top+layout.favorite.bottom)/2));
     SendMessageW(popup,WM_LBUTTONUP,0,MAKELPARAM((layout.favorite.left+layout.favorite.right)/2,
         (layout.favorite.top+layout.favorite.bottom)/2));
-    require(IsWindow(popup) && favorite_palette==3 && current_palette==4 && note->palette==4 &&
-            setting(L"app",L"favorite_palette",-1)==3,"star durably saves the startup palette without recoloring or closing");
+    require(IsWindow(popup) && favorite_palette==favorite && current_palette==4 && note->palette==4 &&
+            setting(L"app",L"favorite_palette",-1)==favorite,"star durably saves a newly appended palette without recoloring or closing");
     { Note view={0}; view.window=popup; screenshot(&view,L"build\\palette-favorite.bmp"); }
     if(IsWindow(popup)) SendMessageW(popup,WM_KEYDOWN,VK_ESCAPE,0);
     load_preferences();
-    require(current_palette==3 && favorite_palette==3 && shuffled_palette,"startup uses the saved favorite");
-    { Note *next=new_note(); require(next && next->palette==3,"favorite governs actual new notes after reload"); destroy_note(next); }
+    require(current_palette==favorite && favorite_palette==favorite && shuffled_palette,"startup uses the saved favorite");
+    { Note *next=new_note(); require(next && next->palette==favorite,"favorite governs actual new notes after reload"); destroy_note(next); }
     lock=CreateFileW(state_path,GENERIC_READ,FILE_SHARE_READ,NULL,OPEN_EXISTING,0,NULL);
-    require(lock!=INVALID_HANDLE_VALUE && !save_favorite(note,6) && favorite_palette==3,
+    require(lock!=INVALID_HANDLE_VALUE && !save_favorite(note,6) && favorite_palette==favorite,
             "a failed favorite save leaves the active preference intact"); CloseHandle(lock);
-    popup=test_picker(note,anchor,3,0); SendMessageW(popup,WM_KEYDOWN,'F',0);
+    popup=test_picker(note,anchor,favorite,0); SendMessageW(popup,WM_KEYDOWN,'F',0);
     require(favorite_palette==-1 && setting(L"app",L"favorite_palette",0)==-1,"F removes the displayed favorite");
     SendMessageW(popup,WM_KEYDOWN,VK_ESCAPE,0); load_preferences();
     require(current_palette==2 && !shuffled_palette,"removing the favorite restores the original startup preference");
@@ -210,7 +252,7 @@ static void palette_text_checks(void) {
     CHARFORMAT2W format;
     WIN32_FILE_ATTRIBUTE_DATA before,after;
     wchar_t id[80];
-    int i,session,background,color;
+    int session,background,color;
     note=new_note(); require(note!=NULL,"create foreground formatting fixture");
     require(recolor_note(note,0,0),"use a readable light note");
     replace_text(note,L"Blue and plain");
@@ -222,7 +264,7 @@ static void palette_text_checks(void) {
     require(range.cpMin==0 && range.cpMax==4,"right-down outside the range never collapses selected text");
     SendMessageW(note->edit,WM_RBUTTONUP,0,MAKELPARAM(180,80));
     popup=thread_window(PALETTE_PICKER_CLASS,NULL); require(popup!=NULL,"right-up with a selection opens foreground mode");
-    for(i=0;i<6;++i) SendMessageW(popup,WM_KEYDOWN,VK_RIGHT,0);
+    browse_picker(popup,6);
     SendMessageW(popup,WM_KEYDOWN,VK_UP,0); SendMessageW(popup,WM_KEYDOWN,VK_RETURN,0);
     require(!IsWindow(popup) && note->custom_ink && note->palette==background && note->color==color && current_palette==session,
             "text color closes immediately without changing background or session palette");
@@ -249,8 +291,8 @@ static void palette_text_checks(void) {
     SendMessageW(note->edit,EM_SETSEL,0,-1);
     SendMessageW(note->edit,WM_CONTEXTMENU,(WPARAM)note->edit,MAKELPARAM(-1,-1));
     popup=thread_window(PALETTE_PICKER_CLASS,NULL); require(popup!=NULL,"keyboard context request supports select-all");
-    for(i=0;i<5;++i) SendMessageW(popup,WM_KEYDOWN,VK_LEFT,0);
-    SendMessageW(popup,WM_KEYDOWN,VK_DOWN,0); SendMessageW(popup,WM_KEYDOWN,VK_RETURN,0);
+    browse_picker(popup,POPULAR_PALETTES[9]); /* Facebook ends with exact white. */
+    SendMessageW(popup,WM_KEYDOWN,VK_UP,0); SendMessageW(popup,WM_KEYDOWN,VK_RETURN,0);
     format=selection_format(note,0,-1);
     require((format.dwMask&CFM_COLOR) && format.crTextColor==RGB(255,255,255),"select-all applies one foreground color to the complete text");
     require(save_note(note),"save full foreground selection"); destroy_note(note);
@@ -268,14 +310,9 @@ static void palette_checks(void) {
     CHARFORMAT2W format={0};
     WIN32_FILE_ATTRIBUTE_DATA before_file, after_file;
     wchar_t id[80], label[80];
-    int p,c,sequence,side,footer_y;
+    int p,c,sequence,side,footer_y,neighbor=POPULAR_PALETTES[2];
     DWORD gdi,user;
-    for (p=0;p<PALETTE_COUNT;++p) for (c=0;c<PALETTE_SIZES[p];++c) {
-        double ink=color_luminance(palette_ink(p,c));
-        double body=color_luminance(PALETTES[p][c]),bar=color_luminance(palette_bar(PALETTES[p][c]));
-        require((max(ink,body)+.05)/(min(ink,body)+.05)>=4.5 &&
-                (max(ink,bar)+.05)/(min(ink,bar)+.05)>=4.5,"every note and title color has readable ink");
-    }
+    palette_catalog_checks();
     current_palette=0; shuffled_palette=FALSE;
     note=new_note(); require(note!=NULL,"create color-picker note");
     art=palette_art_create(note->dpi); require(art!=NULL,"create native coverage renderer");
@@ -290,11 +327,16 @@ static void palette_checks(void) {
     require(GetFileAttributesExW(note->path,GetFileExInfoStandard,&before_file),"snapshot TXT before color-only edits");
     metadata_writes=0;
     SendMessageW(note->edit,WM_CONTEXTMENU,(WPARAM)note->edit,MAKELPARAM(anchor.x,anchor.y));
-    popup=FindWindowW(PALETTE_PICKER_CLASS,NULL); require(popup!=NULL,"editor right-click opens the color wheel");
+    popup=thread_window(PALETTE_PICKER_CLASS,NULL); require(popup!=NULL,"editor right-click opens the color wheel");
+    for(p=0;p<POPULAR_PALETTE_COUNT;++p) {
+        GetWindowTextW(popup,label,80);
+        require(!wcscmp(label,PALETTE_NAMES[POPULAR_PALETTES[p]]),"arrows expose all 80 palettes in source order, without standard palettes");
+        SendMessageW(popup,WM_KEYDOWN,VK_RIGHT,0);
+    }
     SendMessageW(popup,WM_KEYDOWN,VK_LEFT,0);
-    GetWindowTextW(popup,label,80); require(!wcscmp(label,PALETTE_NAMES[PALETTE_COUNT-1]),"left arrow wraps palettes");
+    GetWindowTextW(popup,label,80); require(!wcscmp(label,PALETTE_NAMES[POPULAR_PALETTES[POPULAR_PALETTE_COUNT-1]]),"left arrow wraps palettes");
     SendMessageW(popup,WM_KEYDOWN,VK_RIGHT,0);
-    GetWindowTextW(popup,label,80); require(!wcscmp(label,PALETTE_NAMES[0]),"right arrow wraps palettes");
+    GetWindowTextW(popup,label,80); require(!wcscmp(label,PALETTE_NAMES[POPULAR_PALETTES[0]]),"right arrow wraps palettes");
     SendMessageW(popup,WM_KEYDOWN,VK_ESCAPE,0);
     require(!IsWindow(popup) && note->palette==0 && metadata_writes==0,"browsing and Escape never save or recolor");
     require(recolor_note(note,6,0),"choose a readable dark color");
@@ -323,9 +365,10 @@ static void palette_checks(void) {
         require(recolor_note(note,3,1) && setting(note->id,L"palette",-1)==3 && setting(note->id,L"color",-1)==1,
                 "choosing the same color retries an earlier failed save");
     }
-    for (p=0;p<PALETTE_COUNT;++p) for (c=0;c<PALETTE_SIZES[p];++c) {
+    for (p=DEFAULT_PALETTE_COUNT;p<PALETTE_COUNT;++p) for (c=0;c<PALETTE_SIZES[p];++c) {
         double a=(-90.0+(c+.5)*360.0/PALETTE_SIZES[p])*3.141592653589793/180;
         LPARAM point;
+        LOGPEN pen;
         popup=test_picker(note,anchor,p,0);
         require(popup!=NULL,"open each complete palette"); GetClientRect(popup,&bounds);
         side=bounds.right;
@@ -334,7 +377,12 @@ static void palette_checks(void) {
         SendMessageW(popup,WM_LBUTTONDOWN,MK_LBUTTON,point); SendMessageW(popup,WM_LBUTTONUP,0,point);
         require(!IsWindow(popup) && note->palette==p && note->color==c && current_palette==p,
                 "each visible wedge selects its own color, sets the session palette and closes");
+        SendMessageW(note->edit,EM_GETCHARFORMAT,SCF_DEFAULT,(LPARAM)&format);
+        require(format.crTextColor==palette_ink(p,c) && GetObjectW(note->pen,sizeof(pen),&pen)==sizeof(pen) &&
+                pen.lopnColor==palette_bar_ink(p,c),"actual editor defaults and title controls use their own contrast choice");
     }
+    destroy_note(note); note=open_note(id,0,TRUE);
+    require(note && note->palette==PALETTE_COUNT-1 && note->color==4,"new palette IDs survive saving and reopening");
     require(shuffled_palette && next_color==sequence,"background selection enables palette drawing without consuming a color");
     popup=test_picker(note,anchor,3,0);
     GetWindowRect(popup,&bounds);
@@ -345,13 +393,13 @@ static void palette_checks(void) {
     side=(layout.next.left+layout.next.right)/2; footer_y=(layout.next.top+layout.next.bottom)/2;
     SendMessageW(popup,WM_LBUTTONDOWN,MK_LBUTTON,MAKELPARAM(side,footer_y));
     SendMessageW(popup,WM_LBUTTONUP,0,MAKELPARAM(side,footer_y));
-    GetWindowTextW(popup,label,80); require(!wcscmp(label,PALETTE_NAMES[4]),"footer arrow navigates without selecting");
+    GetWindowTextW(popup,label,80); require(!wcscmp(label,PALETTE_NAMES[neighbor]),"footer arrow navigates without selecting");
     SendMessageW(popup,WM_KEYDOWN,VK_DOWN,0); SendMessageW(popup,WM_KEYDOWN,VK_RETURN,0);
-    require(!IsWindow(popup) && note->palette==4 && note->color==0,"keyboard can select and commit a wedge");
+    require(!IsWindow(popup) && note->palette==neighbor && note->color==0,"keyboard can select and commit a wedge");
     popup=test_picker(note,anchor,3,0);
     view.window=popup; screenshot(&view,L"build\\palette-picker.bmp");
     if (IsWindow(popup)) SendMessageW(popup,WM_ACTIVATE,WA_INACTIVE,0);
-    require(!IsWindow(popup) && note->palette==4,"outside activation cancels without recoloring");
+    require(!IsWindow(popup) && note->palette==neighbor,"outside activation cancels without recoloring");
     SetForegroundWindow(note->window); SetFocus(note->edit); pump(30);
     gdi=GetGuiResources(GetCurrentProcess(),GR_GDIOBJECTS); user=GetGuiResources(GetCurrentProcess(),GR_USEROBJECTS);
     for (c=0;c<32;++c) {

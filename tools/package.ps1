@@ -6,14 +6,14 @@ New-Item -ItemType Directory -Path $stage -Force | Out-Null
 Copy-Item -LiteralPath (Join-Path $dist 'Jotila.exe') -Destination $stage
 Copy-Item -LiteralPath (Join-Path $root 'LICENSE') -Destination $stage
 $readme = @'
-Jotila - Tiny Sticky Notes for Windows
+Jotila - Sticky notes, on silicon
 
 Run Jotila.exe. Ctrl+Alt++ creates a note.
 Single-click the tray icon for a new note; double-click to browse notes.
 Minimizing the browser hides it beside the clock; double-click restores it.
 Drag the bar to move it; use - to collapse and X to close.
-Right-click the bar for the archive, opacity, title, size and palette.
-Right-click the text for the color wheel; Left/Right browse palettes.
+Right-click the bar for the archive, opacity, title, size and three original palettes.
+Right-click the text for the color wheel; Left/Right browse all 80 Color-Hex Popular palettes.
 Click a color to apply and close; Escape cancels.
 New notes draw from the selected palette; the star saves a startup favorite.
 Select text before right-clicking to change only its text color.

@@ -15,6 +15,7 @@ static HMENU recording_menu;
 static const wchar_t *frame_directory;
 static int frame_delay=85, menu_offset=200;
 static FILE *frame_timing;
+static BOOL recorded_palettes[PALETTE_COUNT];
 static const wchar_t *WELCOME_BODY=L"Welcome my son\r\nWelcome to the machine\r\nWhere have you been?";
 static const wchar_t *WELCOME_ARCHIVE_ID=L"note-2025-06-18_09-30-00-000-001";
 
@@ -211,7 +212,17 @@ static void populate_demo_archive(void) {
 }
 
 static void capture_frame(void) {
-    wchar_t path[80];
+    wchar_t path[80],label[80];
+    Note *note;
+    HWND popup=thread_window(PALETTE_PICKER_CLASS,NULL);
+    int i;
+    for(note=notes;note;note=note->next)
+        if(IsWindowVisible(note->window)) recorded_palettes[note->palette]=TRUE;
+    if(popup) {
+        GetWindowTextW(popup,label,80);
+        for(i=0;i<POPULAR_PALETTE_COUNT;++i)
+            if(!wcscmp(label,PALETTE_NAMES[POPULAR_PALETTES[i]])) recorded_palettes[POPULAR_PALETTES[i]]=TRUE;
+    }
     swprintf_s(path,80,L"%s\\frame-%03d.bmp",frame_directory,frame_number++);
     capture(path);
     if (frame_timing) fprintf(frame_timing,"%d|%ls\n",frame_delay,path);
@@ -235,17 +246,20 @@ static void export_gif_colors(void) {
         RGB(178,138,39),RGB(116,88,21),RGB(255,255,255),RGB(0,0,0),
         GetSysColor(COLOR_HIGHLIGHT),GetSysColor(COLOR_HIGHLIGHTTEXT)};
     FILE *file;
+    wchar_t path[80];
     int p,c;
-    size_t i;
-    require(_wfopen_s(&file,L"build\\gif-ui-colors.ppm",L"w")==0,"export the actual application colors for GIF encoding");
-    fprintf(file,"P3\n%zu 1\n255\n",PALETTE_COUNT*COLOR_COUNT+sizeof(ui)/sizeof(ui[0]));
-    for(p=0;p<PALETTE_COUNT;++p) for(c=0;c<COLOR_COUNT;++c) {
+    size_t i,count=sizeof(ui)/sizeof(ui[0]);
+    for(p=0;p<PALETTE_COUNT;++p) if(recorded_palettes[p]) count+=PALETTE_SIZES[p];
+    swprintf_s(path,80,L"%s\\colors.ppm",frame_directory);
+    require(_wfopen_s(&file,path,L"w")==0,"export only the application palettes shown in this recording");
+    fprintf(file,"P3\n%zu 1\n255\n",count);
+    for(p=0;p<PALETTE_COUNT;++p) if(recorded_palettes[p]) for(c=0;c<PALETTE_SIZES[p];++c) {
         COLORREF color=PALETTES[p][c];
         fprintf(file,"%u %u %u\n",GetRValue(color),GetGValue(color),GetBValue(color));
     }
     for(i=0;i<sizeof(ui)/sizeof(ui[0]);++i)
         fprintf(file,"%u %u %u\n",GetRValue(ui[i]),GetGValue(ui[i]),GetBValue(ui[i]));
-    require(!ferror(file) && fclose(file)==0,"finish the shared GIF color catalog");
+    require(!ferror(file) && fclose(file)==0,"finish the recording's GIF color catalog");
 }
 
 static void begin_recording(const wchar_t *folder) {
@@ -253,6 +267,7 @@ static void begin_recording(const wchar_t *folder) {
     clear_scene(); clear_demo_archive();
     SetWindowPos(backdrop,NULL,20,20,1000,1000,SWP_NOZORDER|SWP_NOACTIVATE);
     frame_directory=folder; frame_number=0; frame_delay=80; menu_offset=160; show_cursor=TRUE;
+    memset(recorded_palettes,0,sizeof(recorded_palettes));
     require(CreateDirectoryW(folder,NULL) || GetLastError()==ERROR_ALREADY_EXISTS,"create square recording directory");
     swprintf_s(timeline,80,L"%s\\timing.txt",folder);
     require(_wfopen_s(&frame_timing,timeline,L"w")==0,"create square recording timeline");
@@ -260,6 +275,7 @@ static void begin_recording(const wchar_t *folder) {
 
 static void end_recording(void) {
     fclose(frame_timing); frame_timing=NULL;
+    export_gif_colors();
     show_cursor=FALSE; caption=NULL;
 }
 
@@ -368,14 +384,19 @@ static void select_demo_date(HWND tree,unsigned date,BOOL expand) {
     require(TreeView_GetSelection(tree)==item,"the real click selects the requested date");
     if (expand && !(TreeView_GetItemState(tree,item,TVIS_EXPANDED)&TVIS_EXPANDED)) {
         TVHITTESTINFO hit={0};
-        int offset,indent=TreeView_GetIndent(tree);
+        int offset,first=0,last=0,indent=TreeView_GetIndent(tree);
+        require(TreeView_GetItemRect(tree,item,&rect,TRUE),"refresh the selected row after native scrolling");
         hit.pt.y=(rect.top+rect.bottom)/2;
         for (offset=1;offset<=indent;++offset) {
             hit.pt.x=rect.left-offset;
-            if (TreeView_HitTest(tree,&hit)==item && (hit.flags&TVHT_ONITEMBUTTON)) break;
+            if (TreeView_HitTest(tree,&hit)==item && (hit.flags&TVHT_ONITEMBUTTON)) {
+                if(!first) first=offset;
+                last=offset;
+            }
         }
-        require(offset<=indent,"locate the native tree expansion button");
-        point=hit.pt; ClientToScreen(tree,&point); move_pointer(point.x,point.y); click_pointer(); pump(120);
+        require(first!=0,"locate the native tree expansion button");
+        point.x=rect.left-(first+last)/2; point.y=hit.pt.y;
+        ClientToScreen(tree,&point); move_pointer(point.x,point.y); pump(50); click_pointer(); pump(120);
         require(TreeView_GetItemState(tree,item,TVIS_EXPANDED)&TVIS_EXPANDED,"expand the year or month with its native button");
     }
     frame_delay=90; capture_frame();
@@ -560,6 +581,7 @@ static HWND open_demo_palette(Note *note) {
 static void choose_demo_color(HWND popup,int palette,int color,int steps) {
     PaletteArt *art=palette_art_create((int)GetDpiForWindow(popup));
     PaletteLayout layout;
+    RECT arrow;
     POINT point;
     wchar_t label[80];
     double angle=(-90+(color+.5)*360/PALETTE_SIZES[palette])*3.141592653589793/180;
@@ -567,9 +589,10 @@ static void choose_demo_color(HWND popup,int palette,int color,int steps) {
     int i;
     require(art!=NULL,"read the native wheel geometry at the recording DPI");
     layout=*palette_art_layout(art); palette_art_destroy(art);
-    point.x=(layout.next.left+layout.next.right)/2; point.y=(layout.next.top+layout.next.bottom)/2;
+    arrow=steps<0?layout.previous:layout.next;
+    point.x=(arrow.left+arrow.right)/2; point.y=(arrow.top+arrow.bottom)/2;
     ClientToScreen(popup,&point); move_pointer(point.x,point.y);
-    for(i=0;i<steps;++i) { click_pointer(); pump(160); frame_delay=40; capture_frame(); }
+    for(i=0;i<abs(steps);++i) { click_pointer(); pump(160); frame_delay=40; capture_frame(); }
     GetWindowTextW(popup,label,80);
     require(!wcscmp(label,PALETTE_NAMES[palette]),"record navigation to the intended palette");
     radius=(layout.wheel.right-layout.wheel.left)*.5;
@@ -599,7 +622,7 @@ static void record_note_colors(Note *note,HWND browser) {
     set_caption(L"Right-click near the lower-right corner: note color");
     popup=open_demo_palette(note);
     set_caption(L"Browse palettes, then click a color for the note");
-    choose_demo_color(popup,3,3,3);
+    choose_demo_color(popup,3,3,1);
     require(note->palette==3 && note->color==3,"the demonstration applies the green note background");
     frame_delay=150; capture_frame();
 
@@ -636,11 +659,11 @@ static void record_note_colors(Note *note,HWND browser) {
     require(note->palette_selection.cpMin==selection.cpMin && note->palette_selection.cpMax==selection.cpMax,
             "the lower-right right-click keeps the text selection");
     set_caption(L"Choose a text color; the note keeps its background");
-    choose_demo_color(popup,5,3,2);
+    choose_demo_color(popup,POPULAR_PALETTES[0],1,-1);
     format.cbSize=sizeof(format);
     SendMessageW(note->edit,EM_GETCHARFORMAT,SCF_SELECTION,(LPARAM)&format);
-    require(note->custom_ink && note->palette==3 && note->color==3 && format.crTextColor==PALETTES[5][3],
-            "only the selected line changes to the purple foreground");
+    require(note->custom_ink && note->palette==3 && note->color==3 && format.crTextColor==PALETTES[POPULAR_PALETTES[0]][1],
+            "only the selected line changes to the chosen foreground");
     GetWindowRect(note->edit,&edit);
     move_pointer(edit.right-scaled(note,10),edit.bottom-scaled(note,10)); click_pointer(); pump(150);
     set_caption(L"A little color, exactly where you want it");
@@ -856,7 +879,6 @@ int main(int argc,char **argv) {
     capture(L"build\\palettes.bmp"); clear_scene();
     if (stills_only) goto cleanup;
 animations:
-    export_gif_colors();
     if (!browser_only) record_postits();
     if (!notes_only) record_archive_browser();
 cleanup:

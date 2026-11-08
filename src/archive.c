@@ -45,7 +45,7 @@ typedef struct ArchiveEntry {
     int highlight, highlight_length;
     unsigned date;
     UINT state;
-    COLORREF paper, ink;
+    COLORREF paper, ink, bar_ink;
     BOOL loaded, titled;
 } ArchiveEntry;
 
@@ -409,6 +409,7 @@ static void load_preview(Archive *archive, ArchiveEntry *entry) {
     if (color < 0 || color >= PALETTE_SIZES[palette]) color = 0;
     entry->paper = PALETTES[palette][color];
     entry->ink = palette_ink(palette,color);
+    entry->bar_ink = palette_bar_ink(palette,color);
     entry->titled = GetPrivateProfileIntW(entry->id, L"has_title", FALSE, archive->settings) != 0;
     entry->loaded = TRUE;
     tags_read(archive->settings, entry->id, &entry->tags);
@@ -531,7 +532,7 @@ static LRESULT draw_preview(Archive *archive, NMLVCUSTOMDRAW *draw) {
     if (entry->tags) body.bottom = footer.top - archive_scaled(archive, 6);
     text = entry->preview ? entry->preview : L"Preview unavailable";
     after = text;
-    SetBkMode(dc, TRANSPARENT); SetTextColor(dc, entry->ink);
+    SetBkMode(dc, TRANSPARENT); SetTextColor(dc, entry->bar_ink);
     previous = SelectObject(dc, archive->bold);
     if (entry->titled && *text == L'#') {
         size_t heading = wcscspn(++text, L"\r\n"); after = text + heading;
@@ -539,7 +540,7 @@ static LRESULT draw_preview(Archive *archive, NMLVCUSTOMDRAW *draw) {
         if (*after == L'\n') ++after;
         DrawTextW(dc, text, (int)heading, &title, DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX);
     }
-    SelectObject(dc, archive->font);
+    SelectObject(dc, archive->font); SetTextColor(dc,entry->ink);
     if (archive->results) load_excerpt(archive, entry, &archive->results->hits[index]);
     if (entry->excerpt) draw_excerpt(dc, entry->excerpt, body, entry->highlight, entry->highlight_length);
     else DrawTextW(dc, after, -1, &body, DT_WORDBREAK | DT_EDITCONTROL | DT_END_ELLIPSIS | DT_NOPREFIX);

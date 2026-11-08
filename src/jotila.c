@@ -454,7 +454,7 @@ static BOOL recolor_note(Note *note, int palette, int color) {
     if (note->palette == palette && note->color == color) return save_note(note);
     paper = PALETTES[palette][color]; ink = palette_ink(palette,color);
     brush = CreateSolidBrush(paper);
-    pen = CreatePen(PS_SOLID,max(1,scaled(note,1)),ink);
+    pen = CreatePen(PS_SOLID,max(1,scaled(note,1)),palette_bar_ink(palette,color));
     if (!brush || !pen) {
         if (brush) DeleteObject(brush);
         if (pen) DeleteObject(pen);
@@ -510,7 +510,7 @@ static int draw_note_color(void) {
 
 static BOOL save_favorite(void *context, int palette) {
     Note *note = (Note *)context;
-    if (palette < -1 || palette >= PALETTE_COUNT) return FALSE;
+    if (palette < -1 || palette >= PALETTE_COUNT || (palette >= 0 && PALETTE_POPULAR_INDEX[palette] < 0)) return FALSE;
     if (palette == favorite_palette) return TRUE;
     if (!write_setting(L"app", L"favorite_palette", palette)) {
         report_error(note->window,L"The favorite palette could not be saved. Please check the archive folder.");
@@ -591,7 +591,7 @@ static void update_style(Note *note) {
     GetTextMetricsW(dc, &metrics);
     note->line_height = metrics.tmHeight;
     SelectObject(dc, old); ReleaseDC(note->edit, dc);
-    note->pen = CreatePen(PS_SOLID, max(1, scaled(note, 1)), ink_color(note));
+    note->pen = CreatePen(PS_SOLID, max(1, scaled(note, 1)), palette_bar_ink(note->palette,note->color));
     if (old_font) DeleteObject(old_font);
     if (old_pen) DeleteObject(old_pen);
 }
@@ -707,7 +707,7 @@ static void paint_note(Note *note) {
     if (note->title) {
         RECT title_rect = {scaled(note, 10), 0, rect.right - bar * 2 - scaled(note, 6), bar};
         HGDIOBJ old_font = SelectObject(dc, note->font);
-        SetBkMode(dc, TRANSPARENT); SetTextColor(dc, note->save_failed ? RGB(0,0,0) : ink_color(note));
+        SetBkMode(dc, TRANSPARENT); SetTextColor(dc, note->save_failed ? RGB(0,0,0) : palette_bar_ink(note->palette,note->color));
         DrawTextW(dc, note->title, -1, &title_rect,
                   DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX);
         SelectObject(dc, old_font);

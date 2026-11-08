@@ -158,7 +158,7 @@ void palette_art_prepare(PaletteArt *a,int palette,int favorite,BOOL text_mode) 
     const PaletteLayout *l=&a->layout;
     float cx=(l->wheel.left+l->wheel.right)*.5f,cy=(l->wheel.top+l->wheel.bottom)*.5f;
     float radius=a->side*.5f,soft=5.0f*a->dpi/96,corner=5.0f*a->dpi/96;
-    RECT label={l->previous.right,l->previous.top,l->favorite.left,l->previous.bottom};
+    RECT label={l->previous.right,l->previous.top,l->favorite.left,l->previous.bottom},measured;
     RECT mode={l->footer.left,l->previous.bottom,l->footer.right,l->footer.bottom-scale(a,4)};
     HGDIOBJ old;
     int x,y,i;
@@ -178,7 +178,10 @@ void palette_art_prepare(PaletteArt *a,int palette,int favorite,BOOL text_mode) 
     }
     old=SelectObject(a->dc,a->font);
     SetBkMode(a->dc,TRANSPARENT); SetTextColor(a->dc,RGB(41,40,32));
-    DrawTextW(a->dc,PALETTE_NAMES[palette],-1,&label,DT_CENTER|DT_VCENTER|DT_SINGLELINE|DT_NOPREFIX);
+    measured=label;
+    DrawTextW(a->dc,PALETTE_NAMES[palette],-1,&measured,DT_CENTER|DT_WORDBREAK|DT_CALCRECT|DT_NOPREFIX);
+    label.top+=max(0,((label.bottom-label.top)-(measured.bottom-measured.top))/2);
+    DrawTextW(a->dc,PALETTE_NAMES[palette],-1,&label,DT_CENTER|DT_WORDBREAK|DT_NOPREFIX);
     SelectObject(a->dc,a->small); SetTextColor(a->dc,RGB(100,94,80));
     DrawTextW(a->dc,text_mode?L"Selected text":L"Note color",-1,&mode,DT_CENTER|DT_VCENTER|DT_SINGLELINE);
     SelectObject(a->dc,old); GdiFlush();

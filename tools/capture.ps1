@@ -30,7 +30,7 @@ function Clear-Frames([string]$name) {
     $directory = Join-Path $root "build/$name-gif"
     if (!(Test-Path -LiteralPath $directory)) { return }
     $files = @(Get-ChildItem -LiteralPath $directory -Force)
-    if (@($files | Where-Object { $_.PSIsContainer -or $_.Name -notmatch '^(frame-\d+\.bmp|timing\.txt|palette\.png)$' }).Count) {
+    if (@($files | Where-Object { $_.PSIsContainer -or $_.Name -notmatch '^(frame-\d+\.bmp|timing\.txt|palette\.png|colors\.ppm)$' }).Count) {
         throw 'Unexpected files in the recording directory.'
     }
     foreach ($file in $files) { Remove-Item -LiteralPath $file.FullName }
@@ -57,13 +57,11 @@ try {
     elseif ($GifsOnly) { & ./build.cmd screenshots-only --gifs-only }
     else { & ./build.cmd screenshots-only }
     if ($LASTEXITCODE -ne 0) { throw 'Native application capture failed.' }
-    $uiPalette = Join-Path $root 'build/gif-ui-colors.ppm'
-    if ($recordings.Count) {
-        $uiColorCount = [int](& magick $uiPalette -unique-colors -format '%k' info:)
-        if ($LASTEXITCODE -ne 0 -or $uiColorCount -gt 128) { throw 'Invalid application GIF color catalog.' }
-    }
     foreach ($name in $recordings) {
         $framesDirectory = Join-Path $root "build/$name-gif"
+        $uiPalette = Join-Path $framesDirectory 'colors.ppm'
+        $uiColorCount = [int](& magick $uiPalette -unique-colors -format '%k' info:)
+        if ($LASTEXITCODE -ne 0 -or $uiColorCount -gt 128) { throw 'Invalid application GIF color catalog.' }
         $timeline = @(Get-Content -LiteralPath (Join-Path $framesDirectory 'timing.txt') | ForEach-Object {
             $parts = $_ -split '\|',2
             [pscustomobject]@{Delay=$parts[0];Frame=$parts[1]}
@@ -101,7 +99,6 @@ try {
     if ($finished) {
         foreach ($name in $recordings) { Clear-Frames $name }
         foreach ($name in $backgrounds.Keys) { Remove-Item -LiteralPath "build/$name.bmp" }
-        if ($recordings.Count) { Remove-Item -LiteralPath $uiPalette }
     }
     Pop-Location
 }
