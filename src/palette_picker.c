@@ -1,255 +1,235 @@
-/* Event-driven native color wheel. One allocation per opening, no timers,
-   animation, worker, render-time allocation or floating-point hit testing. */
+/* Owner-bound native popup. Its cached alpha surface is redrawn only on input
+   or during a short transition; settling always removes the animation timer. */
 #define UNICODE
 #define _UNICODE
 #define WIN32_LEAN_AND_MEAN
 #define _WIN32_WINNT 0x0A00
 #include <windows.h>
 #include <windowsx.h>
-#include <stdint.h>
+#include <commctrl.h>
 #include <stdlib.h>
+#include <string.h>
 #include "palette_picker.h"
-#include "colors.h"
+#include "palette_art.h"
 
-enum { HIT_NONE = -1, HIT_PREVIOUS = -2, HIT_NEXT = -3 };
+enum { ANIMATION_TIMER=1, TRANSITION_MS=120 };
 typedef struct Picker {
-    HWND owner;
-    void *context;
-    PaletteSelection select;
-    HFONT font;
-    HPEN outer_pen, inner_pen;
-    POINT edge[COLOR_COUNT + 1];
-    int palette, selected_palette, selected_color, hover, pressed;
-    int side, gap, footer, arrow, dpi;
-    BOOL tracking;
+    PalettePickerOptions options;
+    PaletteArt *art;
+    HWND owner, tooltip;
+    int palette, hover, pressed;
+    BYTE weight[COLOR_COUNT], from[COLOR_COUNT], target[COLOR_COUNT], alpha, from_alpha;
+    ULONGLONG started;
+    BOOL tracking, animate;
 } Picker;
 static HWND active_picker;
 
-/* Clockwise rays from twelve o'clock, scaled by 10000. */
-static const POINT rays5[] = {{0,-10000},{9511,-3090},{5878,8090},{-5878,8090},{-9511,-3090},{0,-10000}};
-static const POINT rays6[] = {{0,-10000},{8660,-5000},{8660,5000},{0,10000},{-8660,5000},{-8660,-5000},{0,-10000}};
-
-static void geometry(Picker *picker) {
-    int count = PALETTE_SIZES[picker->palette], i, center = picker->side / 2;
-    const POINT *rays = count == 5 ? rays5 : rays6;
-    for (i = 0; i <= count; ++i) {
-        picker->edge[i].x = center + MulDiv(rays[i].x, center, 10000);
-        picker->edge[i].y = center + MulDiv(rays[i].y, center, 10000);
-    }
+static void render(HWND window, Picker *p) {
+    BLENDFUNCTION blend={AC_SRC_OVER,0,p->alpha,AC_SRC_ALPHA};
+    POINT source={0,0};
+    const PaletteLayout *layout=palette_art_layout(p->art);
+    SIZE size=layout->size;
+    HDC dc=palette_art_frame(p->art,p->weight,p->hover,p->pressed==p->hover && p->pressed!=PICK_NONE);
+    UpdateLayeredWindow(window,NULL,NULL,&size,dc,&source,0,&blend,ULW_ALPHA);
 }
 
-static int hit_test(const Picker *picker, POINT point) {
-    int center = picker->side / 2, x = point.x - center, y = point.y - center, i;
-    int count = PALETTE_SIZES[picker->palette];
-    const POINT *rays = count == 5 ? rays5 : rays6;
-    if (point.x < 0 || point.x >= picker->side || point.y < 0) return HIT_NONE;
-    if (point.y >= picker->side + picker->gap && point.y < picker->side + picker->gap + picker->footer) {
-        if (point.x < picker->arrow) return HIT_PREVIOUS;
-        if (point.x >= picker->side - picker->arrow) return HIT_NEXT;
+static void transition(HWND window, Picker *p) {
+    int i;
+    memcpy(p->from,p->weight,sizeof(p->from)); p->from_alpha=p->alpha;
+    for(i=0;i<COLOR_COUNT;++i)
+        p->target[i]=(BYTE)(p->hover==i ? 220 :
+            p->palette==p->options.palette && i==p->options.color ? 100 : 0);
+    p->started=GetTickCount64();
+    if(!p->animate || (p->alpha==255 && !memcmp(p->from,p->target,sizeof(p->from))) ||
+        !SetTimer(window,ANIMATION_TIMER,16,NULL)) {
+        memcpy(p->weight,p->target,sizeof(p->weight)); p->alpha=255;
+        KillTimer(window,ANIMATION_TIMER);
     }
-    if ((int64_t)x*x + (int64_t)y*y > (int64_t)center*center) return HIT_NONE;
-    for (i = 0; i < count; ++i)
-        if ((int64_t)rays[i].x*y - (int64_t)rays[i].y*x >= 0 &&
-            (int64_t)x*rays[i+1].y - (int64_t)y*rays[i+1].x >= 0) return i;
-    return HIT_NONE;
+    render(window,p);
 }
 
-static void wedge(HDC dc, const Picker *picker, int color) {
-    Pie(dc, 0, 0, picker->side, picker->side,
-        picker->edge[color].x, picker->edge[color].y,
-        picker->edge[color+1].x, picker->edge[color+1].y);
+static void tooltip_text(HWND window, Picker *p, UINT message) {
+    TOOLINFOW tool={sizeof(tool)};
+    tool.uFlags=TTF_SUBCLASS; tool.hwnd=window; tool.uId=1;
+    tool.rect=palette_art_layout(p->art)->favorite;
+    tool.lpszText=p->palette==p->options.favorite ? L"Remove startup favorite (F)" : L"Use this palette when Jotila starts (F)";
+    SendMessageW(p->tooltip,message,0,(LPARAM)&tool);
 }
 
-static void paint_picker(HWND window, HDC dc) {
-    Picker *picker = (Picker *)GetWindowLongPtrW(window, GWLP_USERDATA);
-    RECT footer = {0, picker->side + picker->gap, picker->side, picker->side + picker->gap + picker->footer};
-    RECT label = footer;
-    HGDIOBJ old_pen = SelectObject(dc, GetStockObject(NULL_PEN));
-    HGDIOBJ old_brush = SelectObject(dc, GetStockObject(DC_BRUSH));
-    HGDIOBJ old_font = SelectObject(dc, picker->font);
-    int i, count = PALETTE_SIZES[picker->palette], direction = SetArcDirection(dc, AD_CLOCKWISE);
-    for (i = 0; i < count; ++i) {
-        SetDCBrushColor(dc, PALETTES[picker->palette][i]); wedge(dc, picker, i);
-    }
-    SelectObject(dc, GetStockObject(NULL_BRUSH));
-    SelectObject(dc, GetStockObject(BLACK_PEN));
-    Ellipse(dc, 0, 0, picker->side, picker->side);
-    i = picker->hover >= 0 ? picker->hover :
-        picker->palette == picker->selected_palette ? picker->selected_color : -1;
-    if (i >= 0) {
-        SelectObject(dc, picker->outer_pen); wedge(dc, picker, i);
-        SelectObject(dc, picker->inner_pen); wedge(dc, picker, i);
-    }
-    FillRect(dc, &footer, GetSysColorBrush(COLOR_MENU));
-    FrameRect(dc, &footer, GetSysColorBrush(COLOR_MENUTEXT));
-    SetBkMode(dc, TRANSPARENT); SetTextColor(dc, GetSysColor(COLOR_MENUTEXT));
-    label.left += picker->arrow; label.right -= picker->arrow;
-    DrawTextW(dc, PALETTE_NAMES[picker->palette], -1, &label, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
-    for (i = 0; i < 2; ++i) {
-        RECT arrow = footer;
-        int hit = i ? HIT_NEXT : HIT_PREVIOUS;
-        if (i) arrow.left = arrow.right - picker->arrow; else arrow.right = picker->arrow;
-        InflateRect(&arrow, -1, -1);
-        if (picker->hover == hit) FillRect(dc, &arrow, GetSysColorBrush(COLOR_HIGHLIGHT));
-        SetTextColor(dc, GetSysColor(picker->hover == hit ? COLOR_HIGHLIGHTTEXT : COLOR_MENUTEXT));
-        DrawTextW(dc, i ? L"\x2192" : L"\x2190", 1, &arrow, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
-    }
-    SetArcDirection(dc, direction);
-    SelectObject(dc, old_font); SelectObject(dc, old_brush); SelectObject(dc, old_pen);
+static void change_palette(HWND window, Picker *p, int step) {
+    p->palette=(p->palette+step+PALETTE_COUNT)%PALETTE_COUNT;
+    p->hover=p->pressed=PICK_NONE;
+    memset(p->weight,0,sizeof(p->weight));
+    palette_art_prepare(p->art,p->palette,p->options.favorite,p->options.text_mode);
+    SetWindowTextW(window,PALETTE_NAMES[p->palette]);
+    tooltip_text(window,p,TTM_UPDATETIPTEXTW);
+    transition(window,p);
 }
 
-static void change_palette(HWND window, Picker *picker, int step) {
-    picker->palette = (picker->palette + step + PALETTE_COUNT) % PALETTE_COUNT;
-    picker->hover = HIT_NONE; picker->pressed = HIT_NONE;
-    geometry(picker);
-    SetWindowTextW(window, PALETTE_NAMES[picker->palette]);
-    InvalidateRect(window, NULL, FALSE);
+static void favorite(HWND window, Picker *p) {
+    int value=p->palette==p->options.favorite ? -1 : p->palette;
+    if(!p->options.favorite_changed) return;
+    /* A failed save may display a dialog, deactivating and destroying us. */
+    if(!p->options.favorite_changed(p->options.context,value) || !IsWindow(window) ||
+        (Picker *)GetWindowLongPtrW(window,GWLP_USERDATA)!=p) return;
+    p->options.favorite=value;
+    palette_art_prepare(p->art,p->palette,value,p->options.text_mode);
+    tooltip_text(window,p,TTM_UPDATETIPTEXTW);
+    render(window,p);
 }
 
-static void finish(HWND window, Picker *picker, int color, BOOL restore_focus) {
-    HWND owner = picker->owner;
-    PaletteSelection select = picker->select;
-    void *context = picker->context;
-    int palette = picker->palette;
+static void finish(HWND window, Picker *p, int color, BOOL restore_focus) {
+    HWND owner=p->owner;
+    PaletteSelection select=p->options.select;
+    void *context=p->options.context;
+    int palette=p->palette;
     DestroyWindow(window);
-    if (!IsWindow(owner)) return;
-    if (color >= 0) select(context, palette, color);
-    if (restore_focus && IsWindow(owner)) {
-        SetForegroundWindow(owner);
-        SetFocus(GetDlgItem(owner, 10));
+    if(!IsWindow(owner)) return;
+    if(color>=0) select(context,palette,color);
+    if(restore_focus && IsWindow(owner)) {
+        SetForegroundWindow(owner); SetFocus(GetDlgItem(owner,10));
     }
 }
 
 static LRESULT CALLBACK picker_proc(HWND window, UINT message, WPARAM wparam, LPARAM lparam) {
-    Picker *picker = (Picker *)GetWindowLongPtrW(window, GWLP_USERDATA);
-    if (message == WM_NCCREATE) {
-        const Picker *initial = (const Picker *)((CREATESTRUCTW *)lparam)->lpCreateParams;
-        picker = (Picker *)malloc(sizeof(*picker));
-        if (!picker) return FALSE;
-        *picker = *initial;
-        SetWindowLongPtrW(window, GWLP_USERDATA, (LONG_PTR)picker);
+    Picker *p=(Picker *)GetWindowLongPtrW(window,GWLP_USERDATA);
+    if(message==WM_NCCREATE) {
+        const Picker *initial=(const Picker *)((CREATESTRUCTW *)lparam)->lpCreateParams;
+        p=(Picker *)malloc(sizeof(*p));
+        if(!p) return FALSE;
+        *p=*initial; SetWindowLongPtrW(window,GWLP_USERDATA,(LONG_PTR)p);
     }
-    if (!picker) return DefWindowProcW(window, message, wparam, lparam);
-    switch (message) {
+    if(!p) return DefWindowProcW(window,message,wparam,lparam);
+    switch(message) {
     case WM_CREATE: {
-        HRGN circle, footer;
-        picker->font = CreateFontW(-MulDiv(10, picker->dpi, 72),0,0,0,FW_NORMAL,FALSE,FALSE,FALSE,
-            DEFAULT_CHARSET,OUT_DEFAULT_PRECIS,CLIP_DEFAULT_PRECIS,CLEARTYPE_QUALITY,FIXED_PITCH,L"Consolas");
-        picker->outer_pen = CreatePen(PS_SOLID, max(3, MulDiv(4,picker->dpi,96)), RGB(255,255,255));
-        picker->inner_pen = CreatePen(PS_SOLID, max(1, MulDiv(2,picker->dpi,96)), RGB(0,0,0));
-        if (!picker->font || !picker->outer_pen || !picker->inner_pen) return -1;
-        circle = CreateEllipticRgn(0,0,picker->side,picker->side);
-        footer = CreateRectRgn(0,picker->side+picker->gap,picker->side,picker->side+picker->gap+picker->footer);
-        if (!circle || !footer) {
-            if (circle) DeleteObject(circle);
-            if (footer) DeleteObject(footer);
-            return -1;
-        }
-        CombineRgn(circle,circle,footer,RGN_OR); DeleteObject(footer);
-        if (!SetWindowRgn(window,circle,FALSE)) { DeleteObject(circle); return -1; }
-        geometry(picker);
+        int dpi=(int)GetDpiForWindow(p->owner);
+        p->art=palette_art_create(dpi?dpi:96);
+        if(!p->art) return -1;
+        palette_art_prepare(p->art,p->palette,p->options.favorite,p->options.text_mode);
+        p->animate=TRUE;
+        SystemParametersInfoW(SPI_GETCLIENTAREAANIMATION,0,&p->animate,0);
+        p->tooltip=CreateWindowExW(WS_EX_TOPMOST|WS_EX_NOACTIVATE,TOOLTIPS_CLASSW,NULL,
+            WS_POPUP|TTS_ALWAYSTIP,0,0,0,0,window,NULL,GetModuleHandleW(NULL),NULL);
+        if(p->tooltip) tooltip_text(window,p,TTM_ADDTOOLW);
         return 0;
     }
     case WM_ERASEBKGND: return 1;
     case WM_PAINT: {
         PAINTSTRUCT paint;
-        HDC dc = BeginPaint(window,&paint); paint_picker(window,dc); EndPaint(window,&paint); return 0;
+        BeginPaint(window,&paint); EndPaint(window,&paint); return 0;
     }
-    case WM_PRINTCLIENT: paint_picker(window,(HDC)wparam); return 0;
+    case WM_PRINTCLIENT: {
+        const PaletteLayout *l=palette_art_layout(p->art);
+        HDC dc=palette_art_frame(p->art,p->weight,p->hover,FALSE);
+        BitBlt((HDC)wparam,0,0,l->size.cx,l->size.cy,dc,0,0,SRCCOPY); return 0;
+    }
+    case WM_TIMER:
+        if(wparam==ANIMATION_TIMER) {
+            ULONGLONG elapsed=GetTickCount64()-p->started;
+            unsigned t=(unsigned)min(elapsed,TRANSITION_MS)*256/TRANSITION_MS;
+            unsigned ease=256-(256-t)*(256-t)*(256-t)/65536;
+            int i;
+            for(i=0;i<COLOR_COUNT;++i)
+                p->weight[i]=(BYTE)((p->from[i]*(256-ease)+p->target[i]*ease+128)/256);
+            p->alpha=(BYTE)((p->from_alpha*(256-ease)+255*ease+128)/256);
+            if(elapsed>=TRANSITION_MS) KillTimer(window,ANIMATION_TIMER);
+            render(window,p); return 0;
+        }
+        break;
+    case WM_NCHITTEST: {
+        POINT point={GET_X_LPARAM(lparam),GET_Y_LPARAM(lparam)};
+        ScreenToClient(window,&point);
+        return palette_art_contains(p->art,point)?HTCLIENT:HTTRANSPARENT;
+    }
     case WM_MOUSEMOVE: {
-        POINT point = {GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)};
-        int hit = hit_test(picker,point);
-        if (picker->hover != hit) { picker->hover = hit; InvalidateRect(window,NULL,FALSE); }
-        if (!picker->tracking) {
-            TRACKMOUSEEVENT track = {sizeof(track),TME_LEAVE,window,0};
-            picker->tracking = TrackMouseEvent(&track);
+        POINT point={GET_X_LPARAM(lparam),GET_Y_LPARAM(lparam)};
+        int hit=palette_art_hit(p->art,point);
+        if(p->hover!=hit) { p->hover=hit; transition(window,p); }
+        if(!p->tracking) {
+            TRACKMOUSEEVENT track={sizeof(track),TME_LEAVE,window,0};
+            p->tracking=TrackMouseEvent(&track);
         }
         return 0;
     }
     case WM_MOUSELEAVE:
-        picker->tracking = FALSE; picker->hover = HIT_NONE;
-        InvalidateRect(window,NULL,FALSE); return 0;
+        p->tracking=FALSE; p->hover=PICK_NONE; transition(window,p); return 0;
     case WM_LBUTTONDOWN: {
-        POINT point = {GET_X_LPARAM(lparam),GET_Y_LPARAM(lparam)};
-        picker->pressed = hit_test(picker,point);
-        if (picker->pressed != HIT_NONE) SetCapture(window);
-        return 0;
+        POINT point={GET_X_LPARAM(lparam),GET_Y_LPARAM(lparam)};
+        p->pressed=palette_art_hit(p->art,point);
+        if(p->pressed!=PICK_NONE) SetCapture(window);
+        render(window,p); return 0;
     }
     case WM_LBUTTONUP: {
-        POINT point = {GET_X_LPARAM(lparam),GET_Y_LPARAM(lparam)};
-        int hit = hit_test(picker,point), pressed = picker->pressed;
-        if (GetCapture() == window) ReleaseCapture();
-        picker->pressed = HIT_NONE;
-        if (hit == HIT_NONE || hit != pressed) return 0;
-        if (hit >= 0) finish(window,picker,hit,TRUE);
-        else change_palette(window,picker,hit == HIT_PREVIOUS ? -1 : 1);
+        POINT point={GET_X_LPARAM(lparam),GET_Y_LPARAM(lparam)};
+        int hit=palette_art_hit(p->art,point),pressed=p->pressed;
+        if(GetCapture()==window) ReleaseCapture();
+        p->pressed=PICK_NONE;
+        if(hit==PICK_NONE || hit!=pressed) { render(window,p); return 0; }
+        if(hit>=0) finish(window,p,hit,TRUE);
+        else if(hit==PICK_FAVORITE) favorite(window,p);
+        else change_palette(window,p,hit==PICK_PREVIOUS?-1:1);
         return 0;
     }
-    case WM_CAPTURECHANGED: picker->pressed = HIT_NONE; return 0;
-    case WM_GETDLGCODE: return DLGC_WANTARROWS | DLGC_WANTTAB | DLGC_WANTALLKEYS;
+    case WM_CAPTURECHANGED: p->pressed=PICK_NONE; render(window,p); return 0;
+    case WM_GETDLGCODE: return DLGC_WANTARROWS|DLGC_WANTTAB|DLGC_WANTALLKEYS;
     case WM_KEYDOWN:
-        if (wparam == VK_LEFT || wparam == VK_RIGHT) {
-            change_palette(window,picker,wparam == VK_LEFT ? -1 : 1); return 0;
+        if(wparam==VK_LEFT || wparam==VK_RIGHT) { change_palette(window,p,wparam==VK_LEFT?-1:1); return 0; }
+        if(wparam==VK_UP || wparam==VK_DOWN || wparam==VK_TAB) {
+            int count=PALETTE_SIZES[p->palette];
+            int step=wparam==VK_UP || (wparam==VK_TAB && GetKeyState(VK_SHIFT)<0)?-1:1;
+            p->hover=p->hover<0?(step<0?count-1:0):(p->hover+step+count)%count;
+            transition(window,p); return 0;
         }
-        if (wparam == VK_UP || wparam == VK_DOWN || wparam == VK_TAB) {
-            int count = PALETTE_SIZES[picker->palette];
-            int step = wparam == VK_UP || (wparam == VK_TAB && GetKeyState(VK_SHIFT) < 0) ? -1 : 1;
-            picker->hover = picker->hover < 0 ? (step < 0 ? count-1 : 0) : (picker->hover+step+count)%count;
-            InvalidateRect(window,NULL,FALSE); return 0;
+        if(wparam==VK_RETURN || wparam==VK_SPACE) {
+            int color=p->hover>=0?p->hover:
+                p->palette==p->options.palette && p->options.color>=0?p->options.color:0;
+            finish(window,p,color,TRUE); return 0;
         }
-        if (wparam == VK_RETURN || wparam == VK_SPACE) {
-            int color = picker->hover >= 0 ? picker->hover :
-                picker->palette == picker->selected_palette ? picker->selected_color : 0;
-            finish(window,picker,color,TRUE); return 0;
-        }
-        if (wparam == VK_ESCAPE) { finish(window,picker,-1,TRUE); return 0; }
+        if(wparam=='F') { favorite(window,p); return 0; }
+        if(wparam==VK_ESCAPE) { finish(window,p,-1,TRUE); return 0; }
         break;
     case WM_ACTIVATE:
-        if (LOWORD(wparam) == WA_INACTIVE) DestroyWindow(window);
+        if(LOWORD(wparam)==WA_INACTIVE) DestroyWindow(window);
         return 0;
     case WM_DPICHANGED:
     case WM_DISPLAYCHANGE:
-    case WM_CLOSE: finish(window,picker,-1,FALSE); return 0;
+    case WM_CLOSE: finish(window,p,-1,FALSE); return 0;
     case WM_NCDESTROY:
-        if (active_picker == window) active_picker = NULL;
-        if (picker->font) DeleteObject(picker->font);
-        if (picker->outer_pen) DeleteObject(picker->outer_pen);
-        if (picker->inner_pen) DeleteObject(picker->inner_pen);
-        SetWindowLongPtrW(window,GWLP_USERDATA,0); free(picker);
+        KillTimer(window,ANIMATION_TIMER);
+        if(active_picker==window) active_picker=NULL;
+        if(p->tooltip) DestroyWindow(p->tooltip);
+        palette_art_destroy(p->art);
+        SetWindowLongPtrW(window,GWLP_USERDATA,0); free(p);
         break;
     }
     return DefWindowProcW(window,message,wparam,lparam);
 }
 
-HWND palette_picker_show(HWND owner, POINT anchor, int palette, int color,
-                         PaletteSelection select, void *context) {
-    WNDCLASSW cls = {0};
-    MONITORINFO monitor = {sizeof(monitor)};
-    Picker initial = {0};
+HWND palette_picker_show(HWND owner, POINT anchor, const PalettePickerOptions *options) {
+    WNDCLASSW cls={0};
+    MONITORINFO monitor={sizeof(monitor)};
+    Picker initial={0},*p;
+    const PaletteLayout *layout;
     HWND window;
-    int x,y,height;
-    if (!IsWindow(owner) || !select || palette < 0 || palette >= PALETTE_COUNT ||
-        color < 0 || color >= PALETTE_SIZES[palette]) return NULL;
-    if (active_picker) DestroyWindow(active_picker);
-    cls.hInstance = (HINSTANCE)GetWindowLongPtrW(owner,GWLP_HINSTANCE);
-    cls.hCursor = LoadCursorW(NULL,IDC_ARROW); cls.lpfnWndProc = picker_proc;
-    cls.lpszClassName = PALETTE_PICKER_CLASS; cls.style = CS_DROPSHADOW;
-    if (!RegisterClassW(&cls) && GetLastError() != ERROR_CLASS_ALREADY_EXISTS) return NULL;
-    initial.owner = owner; initial.context = context; initial.select = select;
-    initial.palette = initial.selected_palette = palette; initial.selected_color = color;
-    initial.hover = initial.pressed = HIT_NONE;
-    initial.dpi = (int)GetDpiForWindow(owner); if (!initial.dpi) initial.dpi = 96;
-    initial.side = MulDiv(240,initial.dpi,96); initial.gap = MulDiv(6,initial.dpi,96);
-    initial.footer = initial.arrow = MulDiv(34,initial.dpi,96);
-    height = initial.side + initial.gap + initial.footer;
-    if (!GetMonitorInfoW(MonitorFromPoint(anchor,MONITOR_DEFAULTTONEAREST),&monitor)) return NULL;
-    x = max(monitor.rcWork.left,min(anchor.x-initial.side/2,monitor.rcWork.right-initial.side));
-    y = max(monitor.rcWork.top,min(anchor.y-initial.side/2,monitor.rcWork.bottom-height));
-    window = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_TOPMOST,PALETTE_PICKER_CLASS,PALETTE_NAMES[palette],
-        WS_POPUP,x,y,initial.side,height,owner,NULL,cls.hInstance,&initial);
-    if (window) {
-        active_picker = window;
-        ShowWindow(window,SW_SHOWNORMAL); SetForegroundWindow(window); SetFocus(window);
-    }
+    int x,y;
+    if(!IsWindow(owner) || !options || !options->select || options->palette<0 || options->palette>=PALETTE_COUNT ||
+        options->color<-1 || options->color>=PALETTE_SIZES[options->palette] ||
+        options->favorite<-1 || options->favorite>=PALETTE_COUNT) return NULL;
+    if(active_picker) DestroyWindow(active_picker);
+    if(!GetMonitorInfoW(MonitorFromPoint(anchor,MONITOR_DEFAULTTONEAREST),&monitor)) return NULL;
+    cls.hInstance=(HINSTANCE)GetWindowLongPtrW(owner,GWLP_HINSTANCE);
+    cls.hCursor=LoadCursorW(NULL,IDC_ARROW); cls.lpfnWndProc=picker_proc; cls.lpszClassName=PALETTE_PICKER_CLASS;
+    if(!RegisterClassW(&cls) && GetLastError()!=ERROR_CLASS_ALREADY_EXISTS) return NULL;
+    initial.owner=owner; initial.options=*options; initial.palette=options->palette;
+    initial.hover=initial.pressed=PICK_NONE;
+    window=CreateWindowExW(WS_EX_TOOLWINDOW|WS_EX_TOPMOST|WS_EX_LAYERED,PALETTE_PICKER_CLASS,
+        PALETTE_NAMES[options->palette],WS_POPUP,0,0,0,0,owner,NULL,cls.hInstance,&initial);
+    if(!window) return NULL;
+    p=(Picker *)GetWindowLongPtrW(window,GWLP_USERDATA); layout=palette_art_layout(p->art);
+    x=max(monitor.rcWork.left,min(anchor.x-layout->size.cx/2,monitor.rcWork.right-layout->size.cx));
+    y=max(monitor.rcWork.top,min(anchor.y-(layout->wheel.top+layout->wheel.bottom)/2,monitor.rcWork.bottom-layout->size.cy));
+    SetWindowPos(window,NULL,x,y,layout->size.cx,layout->size.cy,SWP_NOACTIVATE|SWP_NOZORDER);
+    active_picker=window; transition(window,p);
+    ShowWindow(window,SW_SHOWNORMAL); SetForegroundWindow(window); SetFocus(window);
     return window;
 }

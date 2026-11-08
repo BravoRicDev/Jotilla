@@ -7,7 +7,7 @@ if not exist build mkdir build
 if not exist dist mkdir dist
 set "JOTILA_CFLAGS=/nologo /TC /std:c17 /W4 /WX /O2 /MT /utf-8 /Fd"build\compiler.pdb""
 if /i "%~1"=="test-checked" set "JOTILA_CFLAGS=/nologo /TC /std:c17 /W4 /WX /Od /MTd /RTC1 /Zi /utf-8 /Fd"build\compiler.pdb""
-set "JOTILA_LIBS=build\archive.obj build\tags.obj build\search.obj build\location.obj build\colors.obj build\palette_picker.obj user32.lib gdi32.lib shell32.lib dwmapi.lib comctl32.lib uxtheme.lib normaliz.lib ole32.lib uuid.lib"
+set "JOTILA_LIBS=build\archive.obj build\tags.obj build\search.obj build\location.obj build\colors.obj build\palette_picker.obj build\palette_art.obj user32.lib gdi32.lib shell32.lib dwmapi.lib comctl32.lib uxtheme.lib normaliz.lib ole32.lib uuid.lib"
 set "JOTILA_MANIFEST=/MANIFEST:EMBED /MANIFESTINPUT:src\app.manifest"
 if /i "%~1"=="analyze" goto analyze
 cl %JOTILA_CFLAGS% tools\make_icon.c /Fo"build\make_icon.obj" /Fe"build\make_icon.exe" /link ole32.lib windowscodecs.lib uuid.lib
@@ -27,6 +27,8 @@ if errorlevel 1 exit /b 1
 cl %JOTILA_CFLAGS% /c src\colors.c /Fo"build\colors.obj"
 if errorlevel 1 exit /b 1
 cl %JOTILA_CFLAGS% /c src\palette_picker.c /Fo"build\palette_picker.obj"
+if errorlevel 1 exit /b 1
+cl %JOTILA_CFLAGS% /c src\palette_art.c /Fo"build\palette_art.obj"
 if errorlevel 1 exit /b 1
 if /i "%~1"=="test-only" goto tests
 if /i "%~1"=="screenshots-only" goto screenshots
@@ -82,7 +84,7 @@ exit /b %errorlevel%
 :analyze
 rem C6553 comes from the SDK's LCMapStringEx annotation, not application code.
 rem The single search worker uses a bounded 26 KiB streaming buffer on its 1 MiB stack.
-cl %JOTILA_CFLAGS% /analyze /analyze:stacksize 32768 /wd6553 /c src\jotila.c src\archive.c src\tags.c src\search.c src\location.c src\colors.c src\palette_picker.c src\setup.c /Fo"build\\"
+cl %JOTILA_CFLAGS% /analyze /analyze:stacksize 32768 /wd6553 /c src\jotila.c src\archive.c src\tags.c src\search.c src\location.c src\colors.c src\palette_picker.c src\palette_art.c src\setup.c /Fo"build\\"
 exit /b %errorlevel%
 
 :compiler

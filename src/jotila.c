@@ -49,10 +49,10 @@
 typedef struct Note Note;
 enum {
     LAYOUT_X, LAYOUT_Y, LAYOUT_COLOR, LAYOUT_TITLE, LAYOUT_COLLAPSED, LAYOUT_OPEN,
-    LAYOUT_PALETTE, LAYOUT_SIZE, LAYOUT_OPACITY, LAYOUT_WIDTH, LAYOUT_HEIGHT, LAYOUT_COUNT
+    LAYOUT_PALETTE, LAYOUT_SIZE, LAYOUT_OPACITY, LAYOUT_WIDTH, LAYOUT_HEIGHT, LAYOUT_CUSTOM_INK, LAYOUT_COUNT
 };
 static const wchar_t *LAYOUT_KEYS[LAYOUT_COUNT] = {
-    L"x", L"y", L"color", L"has_title", L"collapsed", L"open", L"palette", L"size", L"opacity", L"width", L"height"
+    L"x", L"y", L"color", L"has_title", L"collapsed", L"open", L"palette", L"size", L"opacity", L"width", L"height", L"custom_ink"
 };
 struct Note {
     Note *next;
@@ -70,6 +70,8 @@ struct Note {
     int saved_layout[LAYOUT_COUNT];
     unsigned dirty;
     DWORD selection_start, selection_end;
+    CHARRANGE palette_selection;
+    BOOL custom_ink;
     BOOL collapsed, ready, tags_dirty, save_failed, validating, layout_saved, persisted;
 };
 static const SIZE NOTE_SIZES[] = {{240,180}, {NOTE_WIDTH,NOTE_HEIGHT}, {420,340}, {540,440}, {300,300}};
@@ -86,6 +88,11 @@ static UINT taskbar_created;
 static int next_color;
 static int saved_next_color;
 static int current_palette;
+static int favorite_palette = -1;
+static BOOL shuffled_palette;
+static BYTE color_bag[COLOR_COUNT];
+static int colors_left;
+static DWORD color_random;
 static BOOL testing;
 static HMODULE rich_edit;
 static const IID TEXT_DOCUMENT_IID = {0x8cc497c0, 0xa1df, 0x11ce, {0x80,0x98,0x00,0xaa,0x00,0x47,0xbe,0x5d}};
@@ -195,6 +202,7 @@ static BOOL save_layout(Note *note, BOOL open) {
     values[3] = note->title != NULL; values[4] = note->collapsed; values[5] = open;
     values[6] = note->palette; values[7] = note->size; values[8] = note->opacity;
     values[9] = MulDiv(note->width, 96, note->dpi); values[10] = MulDiv(note->height, 96, note->dpi);
+    values[11] = note->custom_ink;
     for (i = 0; i < LAYOUT_COUNT; ++i)
         if (!note->layout_saved || values[i] != note->saved_layout[i]) { ++changed; last = i; }
     if (!changed) return TRUE;
@@ -425,6 +433,9 @@ static BOOL set_editor_ink(Note *note, COLORREF ink) {
     CHARFORMAT2W format = {0};
     LONG count;
     BOOL ok, validating = note->validating;
+    /* Once the user formats foreground colors, RTF owns them. Theme changes
+       must never silently replace intentional colors, including after Undo. */
+    if (note->custom_ink) return TRUE;
     if (FAILED(note->document->lpVtbl->Undo(note->document, tomSuspend, &count))) return FALSE;
     note->validating = TRUE;
     format.cbSize = sizeof(format); format.dwMask = CFM_COLOR; format.crTextColor = ink;
@@ -440,7 +451,7 @@ static BOOL recolor_note(Note *note, int palette, int color) {
     HBRUSH brush;
     HPEN pen;
     if (palette < 0 || palette >= PALETTE_COUNT || color < 0 || color >= PALETTE_SIZES[palette]) return FALSE;
-    if (note->palette == palette && note->color == color) return TRUE;
+    if (note->palette == palette && note->color == color) return save_note(note);
     paper = PALETTES[palette][color]; ink = palette_ink(palette,color);
     brush = CreateSolidBrush(paper);
     pen = CreatePen(PS_SOLID,max(1,scaled(note,1)),ink);
@@ -449,7 +460,7 @@ static BOOL recolor_note(Note *note, int palette, int color) {
         if (pen) DeleteObject(pen);
         return FALSE;
     }
-    if (ink != ink_color(note)) {
+    if (!note->custom_ink && ink != ink_color(note)) {
         if (!set_editor_ink(note,ink)) { DeleteObject(brush); DeleteObject(pen); return FALSE; }
         mark_dirty(note,DIRTY_RICH);
     }
@@ -460,17 +471,98 @@ static BOOL recolor_note(Note *note, int palette, int color) {
     return save_note(note);
 }
 
+static void use_session_palette(int palette) {
+    if (!shuffled_palette || current_palette != palette) colors_left = 0;
+    current_palette = palette; shuffled_palette = TRUE;
+}
+
+/* A six-byte shuffled bag. A failed note creation does not consume its color;
+   the original title-bar palettes keep their old sequence until opted into. */
+static int draw_note_color(void) {
+    int i, count = colors_left;
+    if (!shuffled_palette) return next_color;
+    if (count < 1 || count > COLOR_COUNT) {
+        if (!color_random) {
+            LARGE_INTEGER seed;
+            QueryPerformanceCounter(&seed);
+            color_random = seed.LowPart ^ (DWORD)seed.HighPart ^ GetCurrentProcessId();
+            if (!color_random) color_random = 0x9e3779b9u;
+        }
+        count = 1; color_bag[0] = 0;
+        for (i = 1; i < PALETTE_SIZES[current_palette] && i < COLOR_COUNT; ++i) {
+            int j;
+            for (j = 0; j < count; ++j)
+                if (PALETTES[current_palette][color_bag[j]] == PALETTES[current_palette][i]) break;
+            if (j == count && count < COLOR_COUNT) color_bag[count++] = (BYTE)i;
+        }
+        for (i = count - 1; i > 0; --i) {
+            int j;
+            BYTE swap;
+            color_random ^= color_random << 13; color_random ^= color_random >> 17; color_random ^= color_random << 5;
+            j = (int)(color_random % (DWORD)(i + 1));
+            _Analysis_assume_(j >= 0 && j <= i); /* Unsigned remainder bounds the swap. */
+            swap = color_bag[i]; color_bag[i] = color_bag[j]; color_bag[j] = swap;
+        }
+        colors_left = count;
+    }
+    return color_bag[count - 1];
+}
+
+static BOOL save_favorite(void *context, int palette) {
+    Note *note = (Note *)context;
+    if (palette < -1 || palette >= PALETTE_COUNT) return FALSE;
+    if (palette == favorite_palette) return TRUE;
+    if (!write_setting(L"app", L"favorite_palette", palette)) {
+        report_error(note->window,L"The favorite palette could not be saved. Please check the archive folder.");
+        return FALSE;
+    }
+    favorite_palette = palette;
+    return TRUE;
+}
+
 static void select_note_color(void *context, int palette, int color) {
     Note *note = (Note *)context;
     if (!recolor_note(note,palette,color)) report_error(note->window,L"The note color could not be saved. Please check the archive folder.");
+    else use_session_palette(palette);
+}
+
+static void select_text_color(void *context, int palette, int color) {
+    Note *note = (Note *)context;
+    CHARFORMAT2W format = {0};
+    BOOL ok;
+    if (palette < 0 || palette >= PALETTE_COUNT || color < 0 || color >= PALETTE_SIZES[palette] ||
+        note->palette_selection.cpMin >= note->palette_selection.cpMax) return;
+    format.cbSize = sizeof(format); format.dwMask = CFM_COLOR; format.crTextColor = PALETTES[palette][color];
+    SendMessageW(note->edit,EM_EXSETSEL,0,(LPARAM)&note->palette_selection);
+    SendMessageW(note->edit,EM_STOPGROUPTYPING,0,0);
+    note->validating = TRUE;
+    ok = SendMessageW(note->edit,EM_SETCHARFORMAT,SCF_SELECTION,(LPARAM)&format) != 0;
+    note->validating = FALSE;
+    if (ok) { note->custom_ink = TRUE; mark_dirty(note,DIRTY_RICH); ok = save_note(note); }
+    if (!ok) report_error(note->window,L"The text color could not be saved. Please check the archive folder.");
 }
 
 static void show_note_palette(Note *note, POINT point) {
+    PalettePickerOptions options = {0};
+    SendMessageW(note->edit,EM_EXGETSEL,0,(LPARAM)&note->palette_selection);
+    options.palette = note->palette; options.color = note->color; options.favorite = favorite_palette;
+    options.text_mode = note->palette_selection.cpMin != note->palette_selection.cpMax;
+    options.select = options.text_mode ? select_text_color : select_note_color;
+    options.favorite_changed = save_favorite; options.context = note;
+    if (options.text_mode) {
+        CHARFORMAT2W format = {0};
+        int i;
+        format.cbSize = sizeof(format); options.color = -1;
+        SendMessageW(note->edit,EM_GETCHARFORMAT,SCF_SELECTION,(LPARAM)&format);
+        if (format.dwMask & CFM_COLOR)
+            for (i = 0; i < PALETTE_SIZES[options.palette]; ++i)
+                if (format.crTextColor == PALETTES[options.palette][i]) { options.color = i; break; }
+    }
     if (point.x == -1 && point.y == -1) {
         point.x = note->width / 2; point.y = bar_height(note) + scaled(note,50);
         ClientToScreen(note->window,&point);
     }
-    if (!palette_picker_show(note->window,point,note->palette,note->color,select_note_color,note))
+    if (!palette_picker_show(note->window,point,&options))
         report_error(note->window,L"The color picker could not be opened.");
 }
 
@@ -791,6 +883,13 @@ static BOOL remove_todo_marker(Note *note) {
 
 static LRESULT CALLBACK edit_proc(HWND window, UINT message, WPARAM wparam, LPARAM lparam) {
     Note *note = (Note *)GetWindowLongPtrW(GetParent(window), GWLP_USERDATA);
+    /* Rich Edit normally moves the caret on right-down. Keep the selection
+       intact so right-up can choose foreground formatting deliberately. */
+    if (message == WM_RBUTTONDOWN || message == WM_RBUTTONDBLCLK) { SetFocus(window); return 0; }
+    if (message == WM_RBUTTONUP) {
+        POINT point = {GET_X_LPARAM(lparam),GET_Y_LPARAM(lparam)};
+        ClientToScreen(window,&point); show_note_palette(note,point); return 0;
+    }
     if (message == WM_CONTEXTMENU) {
         POINT point = {GET_X_LPARAM(lparam),GET_Y_LPARAM(lparam)};
         show_note_palette(note,point); return 0;
@@ -1118,6 +1217,7 @@ static void note_command(Note *note, UINT command) {
         int palette = (int)command - CMD_PALETTE;
         if (write_setting(L"app", L"palette", palette) && write_setting(L"app", L"next_color", 0)) {
             current_palette = palette; next_color = saved_next_color = 0;
+            shuffled_palette = FALSE; colors_left = 0;
         } else report_error(note->window, L"The palette preference could not be saved.");
     }
 }
@@ -1191,7 +1291,7 @@ static LRESULT CALLBACK note_proc(HWND window, UINT message, WPARAM wparam, LPAR
             DwmSetWindowAttribute(window, DWMWA_NCRENDERING_POLICY, &policy, sizeof(policy));
         }
         note->brush = CreateSolidBrush(note_color(note));
-        note->edit = CreateWindowExW(0, MSFTEDIT_CLASS, L"", WS_CHILD | WS_VISIBLE | ES_MULTILINE | ES_WANTRETURN,
+        note->edit = CreateWindowExW(0, MSFTEDIT_CLASS, L"", WS_CHILD | WS_VISIBLE | ES_MULTILINE | ES_WANTRETURN | ES_NOHIDESEL,
                                     0, 0, 1, 1, window, (HMENU)(INT_PTR)10, instance, NULL);
         if (!note->edit || !note->brush) return -1;
         {
@@ -1389,6 +1489,7 @@ static Note *open_note(const wchar_t *id, int color, BOOL restore) {
     note->dpi = (int)GetDpiForSystem();
     note->color = restore ? layout_setting(note, LAYOUT_COLOR, color) : color;
     note->palette = restore ? layout_setting(note, LAYOUT_PALETTE, 0) : current_palette;
+    note->custom_ink = restore && layout_setting(note, LAYOUT_CUSTOM_INK, FALSE) != 0;
     if (note->palette < 0 || note->palette >= PALETTE_COUNT) note->palette = 0;
     if (note->color < 0 || note->color >= PALETTE_SIZES[note->palette]) note->color = 0;
     note->size = restore ? layout_setting(note, LAYOUT_SIZE, 1) : 1;
@@ -1455,7 +1556,7 @@ static Note *new_note(void) {
     SYSTEMTIME now;
     wchar_t id[80], path[PATH_CAP];
     Note *note;
-    int suffix, color = next_color;
+    int suffix, color = draw_note_color();
     GetLocalTime(&now);
     for (suffix = 0; suffix < 10000; ++suffix) {
         swprintf_s(id, 80, L"note-%04u-%02u-%02u_%02u-%02u-%02u-%03u-%03d", now.wYear, now.wMonth,
@@ -1469,7 +1570,8 @@ static Note *new_note(void) {
     if (suffix == 10000) return NULL;
     note = open_note(id, color, FALSE);
     if (note) {
-        next_color = (color + 1) % COLOR_COUNT;
+        if (shuffled_palette) --colors_left;
+        next_color = (next_color + 1) % COLOR_COUNT;
     }
     return note;
 }
@@ -1590,6 +1692,10 @@ static void load_preferences(void) {
     saved_next_color = next_color;
     current_palette = setting(L"app", L"palette", 0);
     if (current_palette < 0 || current_palette >= DEFAULT_PALETTE_COUNT) current_palette = 0;
+    favorite_palette = setting(L"app", L"favorite_palette", -1);
+    if (favorite_palette < -1 || favorite_palette >= PALETTE_COUNT) favorite_palette = -1;
+    shuffled_palette = favorite_palette >= 0; colors_left = 0;
+    if (shuffled_palette) current_palette = favorite_palette;
 }
 
 static BOOL switch_archive(const wchar_t *target, BOOL move, BOOL *copies_left) {

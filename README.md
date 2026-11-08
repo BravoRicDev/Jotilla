@@ -18,7 +18,8 @@ Windows 10/11, x64. No administrator rights or extra dependencies required.
 - Drag the title bar to move a note, double-click to rename it, or use **− / □** to collapse and expand it. **×** closes the note and keeps it in the archive.
 - Drag an edge or corner to resize, or use **Ctrl + mouse wheel**. Notes stay on top and prevent resizing below what the text needs.
 - Right-click the title bar for the archive, tags, opacity, sizes and the original three palettes for new notes.
-- Right-click inside a note for the color wheel. **← / →** browse palettes; click a wedge to apply it and close. **Esc** cancels. Text switches between black and white for readability; new-note defaults stay unchanged.
+- Right-click inside a note for the color wheel. **← / →** browse palettes; click a wedge to apply and close. **Esc** cancels. New notes draw from that palette for the rest of the session; **★** saves it for future starts.
+- Select text before right-clicking to color just that selection. Custom text colors stay intact when you change the background.
 
 | Action | Shortcut |
 |---|---|

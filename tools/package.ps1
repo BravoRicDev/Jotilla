@@ -15,6 +15,8 @@ Drag the bar to move it; use - to collapse and X to close.
 Right-click the bar for the archive, opacity, title, size and palette.
 Right-click the text for the color wheel; Left/Right browse palettes.
 Click a color to apply and close; Escape cancels.
+New notes draw from the selected palette; the star saves a startup favorite.
+Select text before right-clicking to change only its text color.
 #Title + Enter makes a title; Shift+Enter keeps it as text.
 
 Notes initially save in the notes folder beside the EXE.
