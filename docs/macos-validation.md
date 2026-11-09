@@ -12,6 +12,13 @@ checks. New right-click regressions cover background/text modes, selection
 preservation, screen placement and repeated application/cancellation. Universal
 ZIP/PKG packaging verifies both CPU slices and the ad hoc app signatures.
 
+Release 0.1.2 adds a 300-note native grid regression: every card remains separate
+at five window widths and the grid returns correctly from the calendar. Both CPU
+architectures passed the updated suite in
+[this release run](https://github.com/GarauGarau/Jotila/actions/runs/42625516338).
+The synchronized Windows sources also refresh the list control's cached tile
+dimensions after a monitor DPI change, preventing overlapping archive rows.
+
 ## Feature coverage
 
 The reference is `src/jotila.c`, `src/archive.c`, `src/calendar.c`,
@@ -54,7 +61,7 @@ make package
 
 `make test` passes **292,446 checks**, including the full Gregorian cycle. Most
 of that count is date arithmetic; it is not a count of distinct UI scenarios.
-`make ui-test` passes **1,155 checks** on each CI runner with one display, covering actual AppKit windows, menus,
+`make ui-test` passes **1,462 checks** on each CI runner with one display, covering actual AppKit windows, menus,
 dialogs, editing, rendering, calendar cells and palette wedges. `make profile` adds nine large-archive
 assertions to the UI suite. The test sources enumerate the individual assertions.
 

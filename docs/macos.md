@@ -10,7 +10,7 @@ on both Apple Silicon and Intel with macOS 15 in GitHub Actions. Installed-login
 sessions, physical display changes and clean-machine installation still need
 manual release validation.
 
-[Download the universal Mac app and installer](https://github.com/GarauGarau/Jotila/releases/tag/macos-v0.1.1).
+[Download the universal Mac app and installer](https://github.com/GarauGarau/Jotila/releases/tag/macos-v0.1.2).
 
 ## Build on a Mac
 
@@ -190,7 +190,7 @@ in the validation report; automated tests are not a substitute for those runs.
 
 The `macos` branch is published on the public repository and tracks
 `origin/macos`. The default `windows` branch contains the Windows version. The
-`macos-v0.1.1` prerelease provides the universal portable app, PKG installer and
+`macos-v0.1.2` prerelease provides the universal portable app, PKG installer and
 SHA-256 checksums built from the tagged commit.
 
 Clone it directly:
