@@ -2,6 +2,8 @@
 
 Small, native notes with autosave, an archive and a calendar. No extra dependencies.
 
+**[Visit the Jotila website](https://garaugarau.github.io/Jotila/)**
+
 ## Download
 
 | System | Installer | Portable · no installation |
@@ -50,6 +52,8 @@ Notes save as UTF-8 text in the archive folder. Empty notes stay unsaved. **Arch
 |---|---|---|
 | Windows | [`windows`](https://github.com/GarauGarau/Jotila/tree/windows) · default | [Windows guide](docs/windows.md) |
 | macOS | [`macos`](https://github.com/GarauGarau/Jotila/tree/macos) | [macOS guide](https://github.com/GarauGarau/Jotila/blob/macos/docs/macos.md) · [Feature coverage and validation](https://github.com/GarauGarau/Jotila/blob/macos/docs/macos-validation.md) |
+
+The website lives on its own [`gh-pages` branch](https://github.com/GarauGarau/Jotila/tree/gh-pages), with [source and publishing instructions](https://github.com/GarauGarau/Jotila/blob/gh-pages/README.md).
 
 [Performance measurements](docs/performance.md).
 
