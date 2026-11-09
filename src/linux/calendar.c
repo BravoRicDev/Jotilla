@@ -15,6 +15,8 @@ typedef struct {
     GtkWidget *year_scroller;
     GtkWidget *year_calendars[YEAR_MONTHS];
     GtkWidget *year_toggle;
+    GtkWidget *year_spin;
+    gulong year_spin_handler;
     guint year;
     guint32 selected;
     gboolean year_mode;
@@ -68,6 +70,22 @@ static void calendar_set_date(GtkCalendar *calendar, guint32 date) {
     gtk_calendar_select_day(calendar, day);
 }
 
+/* Aggiorna lo spin dell'anno senza innescare il relativo callback. */
+static void calendar_set_year_spin(CalendarPicker *picker, guint year) {
+    if (picker->year_spin == NULL)
+        return;
+    if (year < DATE_MIN_YEAR)
+        year = DATE_MIN_YEAR;
+    if (year > DATE_MAX_YEAR)
+        year = DATE_MAX_YEAR;
+    if (picker->year_spin_handler != 0)
+        g_signal_handler_block(picker->year_spin, picker->year_spin_handler);
+    gtk_spin_button_set_value(GTK_SPIN_BUTTON(picker->year_spin),
+                              (gdouble)year);
+    if (picker->year_spin_handler != 0)
+        g_signal_handler_unblock(picker->year_spin, picker->year_spin_handler);
+}
+
 /* Aggiorna tutti i mesi della vista annuale sull'anno e sulla data scelti. */
 static void calendar_apply_year(CalendarPicker *picker) {
     guint selected_month = 1;
@@ -96,6 +114,57 @@ static void calendar_apply_year(CalendarPicker *picker) {
     picker->updating = FALSE;
 }
 
+/* Cambio anno dallo spin: aggiorna vista mensile e vista annuale. */
+static void on_year_spin_changed(GtkSpinButton *spin, gpointer data) {
+    CalendarPicker *picker = data;
+    guint new_year;
+    guint month;
+    guint day;
+    guint calendar_year = 0;
+    guint calendar_month = 0;
+    guint calendar_day = 1;
+    int max_day;
+
+    if (picker->updating)
+        return;
+
+    new_year = (guint)gtk_spin_button_get_value_as_int(spin);
+    if (new_year < DATE_MIN_YEAR)
+        new_year = DATE_MIN_YEAR;
+    if (new_year > DATE_MAX_YEAR)
+        new_year = DATE_MAX_YEAR;
+
+    month = picker->selected / 100u % 100u;
+    day = picker->selected % 100u;
+    if (!date_valid(picker->selected) || month == 0 || day == 0) {
+        gtk_calendar_get_date(GTK_CALENDAR(picker->single_calendar),
+                              &calendar_year, &calendar_month, &calendar_day);
+        month = calendar_month + 1u;
+        day = calendar_day;
+    }
+    (void)calendar_year;
+    if (month < 1u || month > 12u)
+        month = 1u;
+
+    max_day = date_days((int)new_year, (int)month);
+    if (max_day < 1)
+        max_day = 1;
+    if (day < 1u)
+        day = 1u;
+    if (day > (guint)max_day)
+        day = (guint)max_day;
+
+    picker->year = new_year;
+    picker->selected = new_year * 10000u + month * 100u + day;
+
+    picker->updating = TRUE;
+    gtk_calendar_select_month(GTK_CALENDAR(picker->single_calendar),
+                              month - 1u, new_year);
+    gtk_calendar_select_day(GTK_CALENDAR(picker->single_calendar), day);
+    calendar_apply_year(picker);
+    picker->updating = FALSE;
+}
+
 /* Selezione di un giorno nella vista annuale: aggiorna la data bersaglio. */
 static void on_year_day_selected(GtkCalendar *calendar, gpointer data) {
     CalendarPicker *picker = data;
@@ -106,6 +175,7 @@ static void on_year_day_selected(GtkCalendar *calendar, gpointer data) {
 
     picker->selected = date;
     picker->year = date / 10000u;
+    calendar_set_year_spin(picker, picker->year);
 
     picker->updating = TRUE;
     calendar_set_date(GTK_CALENDAR(picker->single_calendar), date);
@@ -120,6 +190,8 @@ static void on_single_day_selected(GtkCalendar *calendar, gpointer data) {
     if (picker->updating || !date_valid(date))
         return;
     picker->selected = date;
+    picker->year = date / 10000u;
+    calendar_set_year_spin(picker, picker->year);
 }
 
 /* Mostra la vista mensile o quella annuale in base al toggle "Year". */
@@ -134,6 +206,7 @@ static void on_year_toggled(GtkToggleButton *button, gpointer data) {
     if (active) {
         if (date_valid(picker->selected))
             picker->year = picker->selected / 10000u;
+        calendar_set_year_spin(picker, picker->year);
         calendar_apply_year(picker);
         gtk_stack_set_visible_child(GTK_STACK(picker->stack),
                                     picker->year_scroller);
@@ -180,6 +253,10 @@ static gboolean calendar_picker_key_press(GtkWidget *widget, GdkEventKey *event,
         return TRUE;
     }
     if (event->keyval == GDK_KEY_Return || event->keyval == GDK_KEY_KP_Enter) {
+        GtkWidget *focus = gtk_window_get_focus(GTK_WINDOW(picker->dialog));
+
+        if (focus != NULL && focus == picker->year_spin)
+            gtk_spin_button_update(GTK_SPIN_BUTTON(picker->year_spin));
         gtk_dialog_response(GTK_DIALOG(picker->dialog), GTK_RESPONSE_OK);
         return TRUE;
     }
@@ -257,7 +334,23 @@ GtkWidget *calendar_picker_new(GtkWindow *parent, guint32 current,
     gtk_header_bar_set_show_close_button(GTK_HEADER_BAR(header), TRUE);
     picker->year_toggle = gtk_toggle_button_new_with_label("Year");
     gtk_widget_set_tooltip_text(picker->year_toggle, "Show the whole year");
+    if (picker->year < DATE_MIN_YEAR)
+        picker->year = DATE_MIN_YEAR;
+    picker->year_spin = gtk_spin_button_new_with_range(DATE_MIN_YEAR,
+                                                       DATE_MAX_YEAR, 1);
+    gtk_spin_button_set_digits(GTK_SPIN_BUTTON(picker->year_spin), 0);
+    gtk_spin_button_set_numeric(GTK_SPIN_BUTTON(picker->year_spin), TRUE);
+    gtk_entry_set_width_chars(GTK_ENTRY(picker->year_spin), 5);
+    gtk_widget_set_tooltip_text(picker->year_spin, "Select year");
+    gtk_spin_button_set_value(GTK_SPIN_BUTTON(picker->year_spin),
+                              (gdouble)picker->year);
+    picker->year_spin_handler =
+        g_signal_connect(picker->year_spin, "value-changed",
+                         G_CALLBACK(on_year_spin_changed), picker);
+    g_signal_connect(picker->year_spin, "key-press-event",
+                     G_CALLBACK(calendar_picker_key_press), picker);
     gtk_header_bar_pack_end(GTK_HEADER_BAR(header), picker->year_toggle);
+    gtk_header_bar_pack_end(GTK_HEADER_BAR(header), picker->year_spin);
     gtk_window_set_titlebar(GTK_WINDOW(dialog), header);
 
     content = gtk_dialog_get_content_area(GTK_DIALOG(dialog));
@@ -283,6 +376,8 @@ GtkWidget *calendar_picker_new(GtkWindow *parent, guint32 current,
     picker->updating = TRUE;
     calendar_set_date(GTK_CALENDAR(calendar), picker->selected);
     picker->updating = FALSE;
+
+    calendar_apply_year(picker);
 
     g_signal_connect(calendar, "day-selected",
                      G_CALLBACK(on_single_day_selected), picker);

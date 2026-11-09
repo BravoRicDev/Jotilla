@@ -9,6 +9,8 @@
 #include <string.h>
 
 #define RTF_COLOR_EPSILON 0.0001
+/* Dimensione predefinita in half-points RTF (20 = 10pt). */
+#define RTF_DEFAULT_SIZE_HALF 20
 
 typedef struct {
     gboolean bold;
@@ -17,6 +19,7 @@ typedef struct {
     gboolean strike;
     gboolean has_color;
     GdkRGBA color;
+    int size_half;
 } CharAttr;
 
 typedef struct {
@@ -25,6 +28,7 @@ typedef struct {
     gboolean underline;
     gboolean strike;
     int color;
+    int size_half;
 } RunAttr;
 
 typedef struct {
@@ -135,6 +139,18 @@ static void char_attr_at(GtkTextIter *iter, CharAttr *attr) {
             attr->color = *attrs->appearance.rgba[1];
             attr->has_color = TRUE;
         }
+        if (attrs->font != NULL) {
+            int pango_size = pango_font_description_get_size(attrs->font);
+
+            if (pango_size > 0) {
+                double points = (double)pango_size / PANGO_SCALE;
+                int half = (int)(points * 2.0 + 0.5);
+
+                if (half > 0) {
+                    attr->size_half = half;
+                }
+            }
+        }
         gtk_text_attributes_unref(attrs);
     }
 }
@@ -177,6 +193,7 @@ char *rtf_from_buffer(GtkTextBuffer *buffer) {
     gboolean prev_underline = FALSE;
     gboolean prev_strike = FALSE;
     int prev_color = 0;
+    int prev_size_half = RTF_DEFAULT_SIZE_HALF;
 
     if (buffer == NULL) {
         return g_strdup("{\\rtf1\\ansi\\deff0{\\fonttbl{\\f0 Sans;}}{\\colortbl;}}");
@@ -218,6 +235,7 @@ char *rtf_from_buffer(GtkTextBuffer *buffer) {
         }
     }
     g_string_append_c(out, '}');
+    g_string_append_printf(out, "\\fs%d ", RTF_DEFAULT_SIZE_HALF);
 
     gtk_text_buffer_get_start_iter(buffer, &iter);
     while (!gtk_text_iter_is_end(&iter)) {
@@ -256,6 +274,16 @@ char *rtf_from_buffer(GtkTextBuffer *buffer) {
                 g_string_append(out, "\\cf0 ");
             }
             prev_color = color_index;
+        }
+
+        {
+            int size_half = attr.size_half > 0 ? attr.size_half
+                                               : RTF_DEFAULT_SIZE_HALF;
+
+            if (size_half != prev_size_half) {
+                g_string_append_printf(out, "\\fs%d ", size_half);
+                prev_size_half = size_half;
+            }
         }
 
         ch = gtk_text_iter_get_char(&iter);
@@ -325,7 +353,7 @@ static gboolean is_skippable_destination(const gchar *word) {
 static gboolean run_attr_equal(const RunAttr *a, const RunAttr *b) {
     return a->bold == b->bold && a->italic == b->italic &&
            a->underline == b->underline && a->strike == b->strike &&
-           a->color == b->color;
+           a->color == b->color && a->size_half == b->size_half;
 }
 
 /* Emette byte e gestisce span attributi. */
@@ -381,6 +409,7 @@ static gboolean rtf_parse_subset(const char *rtf, GString **out_text,
     p.colors = g_array_new(FALSE, FALSE, sizeof(GdkRGBA));
     p.skip_depth = -1;
     p.colortbl_depth = -1;
+    p.cur.size_half = RTF_DEFAULT_SIZE_HALF;
     p.ok = TRUE;
     {
         GdkRGBA def = {0.0, 0.0, 0.0, 1.0};
@@ -574,6 +603,17 @@ static gboolean rtf_parse_subset(const char *rtf, GString **out_text,
                     p.cur.strike = !has_param || param != 0;
                 } else if (g_strcmp0(word, "cf") == 0) {
                     p.cur.color = (has_param && param > 0) ? (int)param : 0;
+                } else if (g_strcmp0(word, "fs") == 0) {
+                    if (has_param && param > 0) {
+                        long half = param;
+
+                        if (half < 1) {
+                            half = 1;
+                        } else if (half > 1638) {
+                            half = 1638;
+                        }
+                        p.cur.size_half = (int)half;
+                    }
                 } else if (g_strcmp0(word, "par") == 0 ||
                            g_strcmp0(word, "line") == 0) {
                     parse_emit_byte(&p, (unsigned char)'\n');
@@ -581,6 +621,7 @@ static gboolean rtf_parse_subset(const char *rtf, GString **out_text,
                     parse_emit_byte(&p, (unsigned char)'\t');
                 } else if (g_strcmp0(word, "plain") == 0) {
                     memset(&p.cur, 0, sizeof(p.cur));
+                    p.cur.size_half = RTF_DEFAULT_SIZE_HALF;
                 }
 
                 g_free(word);
@@ -664,6 +705,37 @@ static GtkTextTag *ensure_strike_tag(GtkTextBuffer *buffer) {
         tag = gtk_text_buffer_create_tag(buffer, "strike",
                                          "strikethrough", TRUE,
                                          NULL);
+    }
+    return tag;
+}
+
+/* Crea/ottiene tag dimensione font. */
+static GtkTextTag *ensure_size_tag(GtkTextBuffer *buffer, GHashTable *cache,
+                                   int size_half) {
+    gpointer cached = g_hash_table_lookup(cache, GINT_TO_POINTER(size_half));
+    GtkTextTag *tag;
+    char name[32];
+    double points;
+
+    if (cached != NULL) {
+        return GTK_TEXT_TAG(cached);
+    }
+
+    points = (double)size_half / 2.0;
+    if (size_half % 2 == 0) {
+        g_snprintf(name, sizeof(name), "fs-%d", size_half / 2);
+    } else {
+        g_snprintf(name, sizeof(name), "fs-%g", points);
+    }
+
+    tag = lookup_tag(buffer, name);
+    if (tag == NULL) {
+        tag = gtk_text_buffer_create_tag(buffer, name,
+                                         "size-points", points,
+                                         NULL);
+    }
+    if (tag != NULL) {
+        g_hash_table_insert(cache, GINT_TO_POINTER(size_half), tag);
     }
     return tag;
 }
@@ -829,6 +901,7 @@ void rtf_to_buffer(const char *rtf, GtkTextBuffer *buffer) {
         GtkTextTag *underline_tag = ensure_underline_tag(buffer);
         GtkTextTag *strike_tag = ensure_strike_tag(buffer);
         GHashTable *fg_cache = g_hash_table_new(g_direct_hash, g_direct_equal);
+        GHashTable *size_cache = g_hash_table_new(g_direct_hash, g_direct_equal);
         guint i;
 
         gtk_text_buffer_begin_user_action(buffer);
@@ -858,6 +931,14 @@ void rtf_to_buffer(const char *rtf, GtkTextBuffer *buffer) {
             if (span->attr.strike && strike_tag != NULL) {
                 gtk_text_buffer_apply_tag(buffer, strike_tag, &start, &end);
             }
+            if (span->attr.size_half > 0) {
+                GtkTextTag *size_tag = ensure_size_tag(buffer, size_cache,
+                                                       span->attr.size_half);
+
+                if (size_tag != NULL) {
+                    gtk_text_buffer_apply_tag(buffer, size_tag, &start, &end);
+                }
+            }
             if (span->attr.color > 0 &&
                 (guint)span->attr.color < colors->len) {
                 GdkRGBA *color = &g_array_index(colors, GdkRGBA,
@@ -874,6 +955,7 @@ void rtf_to_buffer(const char *rtf, GtkTextBuffer *buffer) {
 
         gtk_text_buffer_end_user_action(buffer);
         g_hash_table_destroy(fg_cache);
+        g_hash_table_destroy(size_cache);
     }
 
     g_string_free(text, TRUE);

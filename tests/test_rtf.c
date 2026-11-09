@@ -89,10 +89,74 @@ static void test_rtf_roundtrip(void) {
     g_object_unref(buffer);
 }
 
+static void test_rtf_font_size(void) {
+    GtkTextBuffer *buffer;
+    GtkTextBuffer *copy;
+    GtkTextTag *size_tag;
+    GtkTextTagTable *table;
+    GtkTextTag *roundtrip_tag;
+    GtkTextIter start;
+    GtkTextIter end;
+    GtkTextIter search;
+    gdouble size_points = 0.0;
+    char *rtf;
+    char *text;
+
+    if (!gtk_init_check(NULL, NULL)) {
+        g_test_skip("GTK could not be initialized (no display)");
+        return;
+    }
+
+    buffer = gtk_text_buffer_new(NULL);
+    g_assert_nonnull(buffer);
+
+    size_tag = gtk_text_buffer_create_tag(buffer, "fs-16",
+                                          "size-points", 16.0, NULL);
+    g_assert_nonnull(size_tag);
+
+    gtk_text_buffer_set_text(buffer, "small normal", -1);
+
+    gtk_text_buffer_get_iter_at_offset(buffer, &start, 0);
+    gtk_text_buffer_get_iter_at_offset(buffer, &end, 5);
+    gtk_text_buffer_apply_tag(buffer, size_tag, &start, &end);
+
+    /* La dimensione 16pt deve diventare \fs32 (half-points). */
+    rtf = rtf_from_buffer(buffer);
+    g_assert_nonnull(rtf);
+    g_assert_nonnull(strstr(rtf, "\\fs32"));
+
+    copy = gtk_text_buffer_new(NULL);
+    g_assert_nonnull(copy);
+    rtf_to_buffer(rtf, copy);
+
+    gtk_text_buffer_get_bounds(copy, &start, &end);
+    text = gtk_text_buffer_get_text(copy, &start, &end, FALSE);
+    g_assert_nonnull(text);
+    g_assert_cmpstr(text, ==, "small normal");
+    g_free(text);
+
+    /* Il range deve avere un tag di dimensione ~16pt. */
+    table = gtk_text_buffer_get_tag_table(copy);
+    roundtrip_tag = gtk_text_tag_table_lookup(table, "fs-16");
+    g_assert_nonnull(roundtrip_tag);
+
+    gtk_text_buffer_get_iter_at_offset(copy, &search, 0);
+    g_assert_true(gtk_text_iter_has_tag(&search, roundtrip_tag));
+
+    g_object_get(roundtrip_tag, "size-points", &size_points, NULL);
+    g_assert_cmpfloat(size_points, >, 15.5);
+    g_assert_cmpfloat(size_points, <, 16.5);
+
+    g_free(rtf);
+    g_object_unref(copy);
+    g_object_unref(buffer);
+}
+
 int main(int argc, char **argv) {
     g_test_init(&argc, &argv, NULL);
 
     g_test_add_func("/rtf/roundtrip", test_rtf_roundtrip);
+    g_test_add_func("/rtf/font_size", test_rtf_font_size);
 
     return g_test_run();
 }

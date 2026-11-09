@@ -1,6 +1,8 @@
 /* Finestra nota GTK: crea, modifica e salva le note. */
 /* Gestisce stile, menu, scorciatoie e stato della finestra. */
 #include <gtk/gtk.h>
+#include <atk/atk.h>
+#include <gio/gio.h>
 
 #include "jotilla.h"
 #include "note_window.h"
@@ -618,27 +620,128 @@ static const char *const NOTE_SIZE_NAMES[] = {
 };
 #define NOTE_SIZE_COUNT ((int)G_N_ELEMENTS(NOTE_SIZE_W))
 
-/* Cambia l'indice dimensione del testo (Ctrl +/- e rotella). */
-static void change_note_size(GtkWidget *window, int delta)
+/* Rimuove i tag di dimensione font "fs-*" dal range indicato. */
+static void remove_font_size_tags(GtkTextBuffer *buffer, GtkTextIter *start,
+                                  GtkTextIter *end)
+{
+    GSList *tags;
+    GSList *l;
+
+    tags = gtk_text_iter_get_tags(start);
+    for (l = tags; l != NULL; l = l->next) {
+        GtkTextTag *tag = GTK_TEXT_TAG(l->data);
+        char *name = NULL;
+
+        g_object_get(tag, "name", &name, NULL);
+        if (name != NULL && g_str_has_prefix(name, "fs-"))
+            gtk_text_buffer_remove_tag(buffer, tag, start, end);
+        g_free(name);
+    }
+    g_slist_free(tags);
+}
+
+/* Dimensione font effettiva all'inizio della selezione. */
+static int selection_font_size(GtkTextIter *start, Note *note)
+{
+    GtkTextAttributes *attrs;
+    int size;
+
+    size = note != NULL ? 10 + 2 * note->size : 10;
+    attrs = gtk_text_attributes_new();
+    gtk_text_iter_get_attributes(start, attrs);
+    if (attrs->font != NULL) {
+        int points = pango_font_description_get_size(attrs->font);
+
+        if (points > 0)
+            size = points / PANGO_SCALE;
+    }
+    gtk_text_attributes_unref(attrs);
+    return size;
+}
+
+/* Ridimensiona il testo selezionato oppure la finestra (Ctrl +/- e rotella). */
+static void change_note_size(GtkWidget *window, int direction)
 {
     Note *note = window_note(window);
-    int size;
+    GtkTextView *view = window_view(window);
+    GtkTextBuffer *buffer = NULL;
+    GtkTextIter start, end;
 
     if (note == NULL)
         return;
 
-    size = note->size + delta;
-    if (size < 0)
-        size = 0;
-    if (size >= NOTE_SIZE_COUNT)
-        size = NOTE_SIZE_COUNT - 1;
-    if (size == note->size)
-        return;
+    if (view != NULL)
+        buffer = gtk_text_view_get_buffer(view);
 
-    note->size = size;
-    restyle(window);
-    touch(window);
-    save_now(window);
+    if (buffer != NULL &&
+        gtk_text_buffer_get_selection_bounds(buffer, &start, &end) &&
+        !gtk_text_iter_equal(&start, &end)) {
+        char tag_name[32];
+        GtkTextTag *tag;
+        int size;
+
+        size = selection_font_size(&start, note) + direction;
+        if (size < 6)
+            size = 6;
+        if (size > 72)
+            size = 72;
+
+        g_snprintf(tag_name, sizeof(tag_name), "fs-%d", size);
+        tag = gtk_text_tag_table_lookup(gtk_text_buffer_get_tag_table(buffer),
+                                        tag_name);
+        if (tag == NULL)
+            tag = gtk_text_buffer_create_tag(buffer, tag_name,
+                                             "size-points", (gdouble)size, NULL);
+
+        gtk_text_buffer_begin_user_action(buffer);
+        remove_font_size_tags(buffer, &start, &end);
+        if (tag != NULL)
+            gtk_text_buffer_apply_tag(buffer, tag, &start, &end);
+        gtk_text_buffer_end_user_action(buffer);
+
+        touch(window);
+        save_now(window);
+        return;
+    }
+
+    {
+        int width = note->w;
+        int height = note->h;
+        int new_w;
+        int new_h;
+        double ratio;
+
+        if (width <= 0 || height <= 0) {
+            gtk_window_get_size(GTK_WINDOW(window), &width, &height);
+            if (width <= 0)
+                width = 280;
+            if (height <= 0)
+                height = 260;
+        }
+
+        ratio = (double)height / (double)width;
+        if (direction > 0)
+            new_w = (int)(width * 1.10 + 0.5);
+        else
+            new_w = (int)(width / 1.10 + 0.5);
+
+        if (new_w < 160)
+            new_w = 160;
+        if (new_w > 4096)
+            new_w = 4096;
+
+        new_h = (int)(new_w * ratio + 0.5);
+        if (new_h < 100)
+            new_h = 100;
+        if (new_h > 4096)
+            new_h = 4096;
+
+        gtk_window_resize(GTK_WINDOW(window), new_w, new_h);
+        note->w = new_w;
+        note->h = new_h;
+        touch(window);
+        save_now(window);
+    }
 }
 
 /* Applica una dimensione predefinita alla finestra. */
@@ -784,12 +887,6 @@ static void show_palette_picker_mode(GtkWidget *window, GdkEventButton *event,
     }
 
     gtk_popover_popup(GTK_POPOVER(popover));
-}
-
-/* Apre il picker in modalita' colore nota. */
-static void show_palette_picker(GtkWidget *window, GdkEventButton *event)
-{
-    show_palette_picker_mode(window, event, FALSE);
 }
 
 /* Carica il testo/RTF della nota nella view. */
@@ -955,23 +1052,6 @@ static void apply_foreground(GtkWidget *window, const char *hex)
 
     touch(window);
     save_now(window);
-}
-
-/* Inserisce un elemento di checklist nel cursore. */
-static void insert_checklist(GtkWidget *window)
-{
-    GtkTextView *view = window_view(window);
-    GtkTextBuffer *buffer;
-
-    if (view == NULL)
-        return;
-
-    buffer = gtk_text_view_get_buffer(view);
-    if (buffer == NULL)
-        return;
-
-    gtk_text_buffer_insert_at_cursor(buffer, "\xE2\x98\x90 ", -1);
-    gtk_text_view_scroll_mark_onscreen(view, gtk_text_buffer_get_insert(buffer));
 }
 
 /* Alterna il marcatore todo del paragrafo corrente. */
@@ -1398,49 +1478,6 @@ static void on_edit_title_activate(GtkMenuItem *item, gpointer data)
     gtk_widget_destroy(dialog);
 }
 
-/* Dialogo per scegliere il colore del testo. */
-static void on_color_activate(GtkMenuItem *item, gpointer data)
-{
-    GtkWidget *window = data;
-    GtkTextView *view = window_view(window);
-    GtkTextBuffer *buffer;
-    GtkTextIter start, end;
-    GtkWidget *dialog;
-    GdkRGBA rgba;
-    gint response;
-
-    (void)item;
-
-    if (view == NULL)
-        return;
-
-    buffer = gtk_text_view_get_buffer(view);
-    if (buffer == NULL)
-        return;
-
-    if (!gtk_text_buffer_get_selection_bounds(buffer, &start, &end))
-        return;
-
-    dialog = gtk_color_chooser_dialog_new("Text color", GTK_WINDOW(window));
-    rgba.red = 0.0;
-    rgba.green = 0.0;
-    rgba.blue = 0.0;
-    rgba.alpha = 1.0;
-    gtk_color_chooser_set_rgba(GTK_COLOR_CHOOSER(dialog), &rgba);
-
-    response = gtk_dialog_run(GTK_DIALOG(dialog));
-    if (response == GTK_RESPONSE_OK) {
-        char hex[8];
-        gtk_color_chooser_get_rgba(GTK_COLOR_CHOOSER(dialog), &rgba);
-        g_snprintf(hex, sizeof(hex), "#%02x%02x%02x",
-                   (unsigned)(rgba.red * 255.0 + 0.5),
-                   (unsigned)(rgba.green * 255.0 + 0.5),
-                   (unsigned)(rgba.blue * 255.0 + 0.5));
-        apply_foreground(window, hex);
-    }
-    gtk_widget_destroy(dialog);
-}
-
 /* Vero se la stringa e' vuota o composta solo da spazi. */
 static gboolean text_is_blank(const char *text)
 {
@@ -1509,84 +1546,6 @@ static gboolean delete_empty_note(GtkWidget *window)
     return TRUE;
 }
 
-/* Conferma ed elimina la nota. */
-static void on_delete_activate(GtkMenuItem *item, gpointer data)
-{
-    GtkWidget *window = data;
-    Store *store = window_store(window);
-    Note *note = window_note(window);
-    GtkWidget *dialog;
-    gint response;
-
-    (void)item;
-
-    if (store == NULL || note == NULL)
-        return;
-
-    dialog = gtk_message_dialog_new(GTK_WINDOW(window),
-                                    GTK_DIALOG_MODAL | GTK_DIALOG_DESTROY_WITH_PARENT,
-                                    GTK_MESSAGE_QUESTION, GTK_BUTTONS_NONE,
-                                    "Delete this note?");
-    gtk_message_dialog_format_secondary_text(GTK_MESSAGE_DIALOG(dialog),
-                                             "This action cannot be undone.");
-    gtk_dialog_add_buttons(GTK_DIALOG(dialog),
-                           "_Cancel", GTK_RESPONSE_CANCEL,
-                           "_Delete", GTK_RESPONSE_ACCEPT,
-                           NULL);
-    gtk_dialog_set_default_response(GTK_DIALOG(dialog), GTK_RESPONSE_CANCEL);
-
-    response = gtk_dialog_run(GTK_DIALOG(dialog));
-    gtk_widget_destroy(dialog);
-
-    if (response != GTK_RESPONSE_ACCEPT)
-        return;
-
-    remove_timeout(window);
-    {
-        GError *err = NULL;
-        if (!store_delete(store, note->id, &err)) {
-            if (err != NULL) {
-                g_warning("Could not delete note: %s", err->message);
-                g_error_free(err);
-            }
-            return;
-        }
-    }
-
-    g_object_set_data(G_OBJECT(window), "deleted", GINT_TO_POINTER(1));
-    g_object_set_data(G_OBJECT(window), "note", NULL);
-    gtk_widget_destroy(window);
-}
-
-/* Salva e chiude la finestra. */
-static void on_close_activate(GtkMenuItem *item, gpointer data)
-{
-    GtkWidget *window = data;
-
-    (void)item;
-
-    save_now(window);
-    gtk_widget_destroy(window);
-}
-
-/* Cambia la palette della nota. */
-static void on_palette_activate(GtkMenuItem *item, gpointer data)
-{
-    GtkWidget *window = data;
-    Note *note = window_note(window);
-    int palette = GPOINTER_TO_INT(g_object_get_data(G_OBJECT(item), "palette"));
-
-    if (note == NULL)
-        return;
-    if (palette < 0 || palette >= PALETTE_COUNT)
-        return;
-
-    note->palette = palette;
-    note->color = 0;
-    restyle(window);
-    touch(window);
-}
-
 /* Cambia la dimensione predefinita della nota. */
 static void on_note_size_activate(GtkMenuItem *item, gpointer data)
 {
@@ -1594,16 +1553,6 @@ static void on_note_size_activate(GtkMenuItem *item, gpointer data)
     int size = GPOINTER_TO_INT(g_object_get_data(G_OBJECT(item), "size"));
 
     set_note_size(window, size);
-}
-
-/* Apre il picker palette dal menu. */
-static void on_palette_picker_activate(GtkMenuItem *item, gpointer data)
-{
-    GtkWidget *window = data;
-
-    (void)item;
-
-    show_palette_picker(window, NULL);
 }
 
 /* Imposta la palette usata per le nuove note. */
@@ -1621,19 +1570,6 @@ static void on_new_palette_activate(GtkMenuItem *item, gpointer data)
     restyle(window);
     touch(window);
     save_now(window);
-}
-
-/* Attiva/disattiva il ritorno a capo automatico. */
-static void on_word_wrap_toggled(GtkCheckMenuItem *item, gpointer data)
-{
-    GtkWidget *window = data;
-    GtkTextView *view = window_view(window);
-
-    if (view == NULL)
-        return;
-
-    gtk_text_view_set_wrap_mode(view,
-        gtk_check_menu_item_get_active(item) ? GTK_WRAP_WORD : GTK_WRAP_NONE);
 }
 
 /* Cambia l'opacità della nota. */
@@ -1655,91 +1591,40 @@ static void on_opacity_activate(GtkMenuItem *item, gpointer data)
     }
 }
 
-/* Attiva/disattiva sempre in primo piano. */
-static void on_keep_above_toggled(GtkCheckMenuItem *item, gpointer data)
+/* Gestore menu: apri la cartella archivio nel file manager. */
+static void on_open_archive_folder(GtkMenuItem *item, gpointer data)
 {
     GtkWidget *window = data;
+    Store *store = window_store(window);
+    char *uri;
 
-    platform_set_keep_above(window, gtk_check_menu_item_get_active(item));
-}
-
-/* Attiva/disattiva sticky sulle scrivanie. */
-static void on_sticky_toggled(GtkCheckMenuItem *item, gpointer data)
-{
-    GtkWidget *window = data;
-
-    platform_set_sticky(window, gtk_check_menu_item_get_active(item));
-}
-
-/* Attiva/disattiva l'avvio automatico al login. */
-static void on_autostart_toggled(GtkCheckMenuItem *item, gpointer data)
-{
-    (void)data;
-
-    platform_autostart_set(gtk_check_menu_item_get_active(item));
-}
-
-/* Gestore menu: nuova nota. */
-static void on_menu_new(GtkMenuItem *item, gpointer data)
-{
     (void)item;
-    invoke_new(data);
+
+    if (store == NULL || store->archive_dir == NULL)
+        return;
+
+    uri = g_filename_to_uri(store->archive_dir, NULL, NULL);
+    if (uri == NULL)
+        return;
+
+    {
+        GError *err = NULL;
+        if (!g_app_info_launch_default_for_uri(uri, NULL, &err)) {
+            if (err != NULL) {
+                g_warning("Could not open archive folder: %s", err->message);
+                g_error_free(err);
+            }
+        }
+    }
+
+    g_free(uri);
 }
 
 /* Gestore menu: apri archivio. */
-static void on_menu_archive(GtkMenuItem *item, gpointer data)
+static void on_browse_notes(GtkMenuItem *item, gpointer data)
 {
     (void)item;
     invoke_archive(data);
-}
-
-/* Gestore menu: grassetto. */
-static void on_format_bold(GtkMenuItem *item, gpointer data)
-{
-    (void)item;
-    apply_named_tag(data, "bold");
-}
-
-/* Gestore menu: corsivo. */
-static void on_format_italic(GtkMenuItem *item, gpointer data)
-{
-    (void)item;
-    apply_named_tag(data, "italic");
-}
-
-/* Gestore menu: sottolineato. */
-static void on_format_underline(GtkMenuItem *item, gpointer data)
-{
-    (void)item;
-    apply_named_tag(data, "underline");
-}
-
-/* Gestore menu: barrato. */
-static void on_format_strike(GtkMenuItem *item, gpointer data)
-{
-    (void)item;
-    apply_named_tag(data, "strike");
-}
-
-/* Gestore menu: checklist. */
-static void on_format_checklist(GtkMenuItem *item, gpointer data)
-{
-    (void)item;
-    insert_checklist(data);
-}
-
-/* Gestore menu: annulla. */
-static void on_undo_activate(GtkMenuItem *item, gpointer data)
-{
-    (void)item;
-    do_undo(data);
-}
-
-/* Gestore menu: ripristina. */
-static void on_redo_activate(GtkMenuItem *item, gpointer data)
-{
-    (void)item;
-    do_redo(data);
 }
 
 /* Crea una voce di menu con tooltip. */
@@ -1759,93 +1644,15 @@ static GtkWidget *build_menu(GtkWidget *window)
     GtkWidget *submenu;
     Note *note = window_note(window);
 
-    item = tip_item("New note", "Create a new note (Ctrl+N)");
-    g_signal_connect(item, "activate", G_CALLBACK(on_menu_new), window);
+    item = tip_item("Open notes archive", "Open the archive folder in the file manager");
+    g_signal_connect(item, "activate", G_CALLBACK(on_open_archive_folder), window);
     gtk_menu_shell_append(GTK_MENU_SHELL(menu), item);
 
-    item = tip_item("Archive", "Open the notes archive (Ctrl+E)");
-    g_signal_connect(item, "activate", G_CALLBACK(on_menu_archive), window);
-    gtk_menu_shell_append(GTK_MENU_SHELL(menu), item);
-
-    item = tip_item("Tags...", "Edit the note tags (Ctrl+T)");
-    g_signal_connect(item, "activate", G_CALLBACK(on_tags_activate), window);
-    gtk_menu_shell_append(GTK_MENU_SHELL(menu), item);
-
-    item = tip_item("Calendar...", "Assign a date to the note");
-    g_signal_connect(item, "activate", G_CALLBACK(on_calendar_activate), window);
-    gtk_menu_shell_append(GTK_MENU_SHELL(menu), item);
-
-    item = tip_item("Edit title...", "Edit the note title");
-    g_signal_connect(item, "activate", G_CALLBACK(on_edit_title_activate), window);
+    item = tip_item("Browse notes", "Open the notes archive (Ctrl+E)");
+    g_signal_connect(item, "activate", G_CALLBACK(on_browse_notes), window);
     gtk_menu_shell_append(GTK_MENU_SHELL(menu), item);
 
     gtk_menu_shell_append(GTK_MENU_SHELL(menu), gtk_separator_menu_item_new());
-
-    item = tip_item("Format", "Text formatting options");
-    submenu = gtk_menu_new();
-
-    {
-        GtkWidget *undo = tip_item("Undo", "Undo the last change (Ctrl+Z)");
-        GtkWidget *redo = tip_item("Redo", "Redo the last undone change (Ctrl+Y)");
-        GtkWidget *bold = tip_item("Bold", "Bold text (Ctrl+B)");
-        GtkWidget *italic = tip_item("Italic", "Italic text (Ctrl+I)");
-        GtkWidget *underline = tip_item("Underline", "Underline text (Ctrl+U)");
-        GtkWidget *strike = tip_item("Strikethrough", "Strikethrough text (Ctrl+Shift+X)");
-        GtkWidget *checklist = tip_item("Insert checklist item", "Insert a checklist marker");
-        GtkWidget *color = tip_item("Text color...", "Choose the text colour");
-
-        g_signal_connect(undo, "activate", G_CALLBACK(on_undo_activate), window);
-        g_signal_connect(redo, "activate", G_CALLBACK(on_redo_activate), window);
-        g_signal_connect(bold, "activate", G_CALLBACK(on_format_bold), window);
-        g_signal_connect(italic, "activate", G_CALLBACK(on_format_italic), window);
-        g_signal_connect(underline, "activate", G_CALLBACK(on_format_underline), window);
-        g_signal_connect(strike, "activate", G_CALLBACK(on_format_strike), window);
-        g_signal_connect(checklist, "activate", G_CALLBACK(on_format_checklist), window);
-        g_signal_connect(color, "activate", G_CALLBACK(on_color_activate), window);
-
-        gtk_menu_shell_append(GTK_MENU_SHELL(submenu), undo);
-        gtk_menu_shell_append(GTK_MENU_SHELL(submenu), redo);
-        gtk_menu_shell_append(GTK_MENU_SHELL(submenu), gtk_separator_menu_item_new());
-        gtk_menu_shell_append(GTK_MENU_SHELL(submenu), bold);
-        gtk_menu_shell_append(GTK_MENU_SHELL(submenu), italic);
-        gtk_menu_shell_append(GTK_MENU_SHELL(submenu), underline);
-        gtk_menu_shell_append(GTK_MENU_SHELL(submenu), strike);
-        gtk_menu_shell_append(GTK_MENU_SHELL(submenu), gtk_separator_menu_item_new());
-        gtk_menu_shell_append(GTK_MENU_SHELL(submenu), checklist);
-        gtk_menu_shell_append(GTK_MENU_SHELL(submenu), color);
-    }
-
-    gtk_menu_item_set_submenu(GTK_MENU_ITEM(item), submenu);
-    gtk_menu_shell_append(GTK_MENU_SHELL(menu), item);
-
-    item = tip_item("Palette", "Choose the note palette");
-    submenu = gtk_menu_new();
-    {
-        GSList *group = NULL;
-        int i;
-        for (i = 0; i < PALETTE_COUNT; i++) {
-            GtkWidget *palette_item = gtk_radio_menu_item_new_with_label(group, palette_name(i));
-            group = gtk_radio_menu_item_get_group(GTK_RADIO_MENU_ITEM(palette_item));
-            if (note != NULL && note->palette == i)
-                gtk_check_menu_item_set_active(GTK_CHECK_MENU_ITEM(palette_item), TRUE);
-            gtk_widget_set_tooltip_text(palette_item, "Apply this palette");
-            g_object_set_data(G_OBJECT(palette_item), "palette", GINT_TO_POINTER(i));
-            g_signal_connect(palette_item, "activate", G_CALLBACK(on_palette_activate), window);
-            gtk_menu_shell_append(GTK_MENU_SHELL(submenu), palette_item);
-        }
-    }
-    gtk_menu_item_set_submenu(GTK_MENU_ITEM(item), submenu);
-    gtk_menu_shell_append(GTK_MENU_SHELL(menu), item);
-
-    item = tip_item("Palette...", "Open the colour picker");
-    g_signal_connect(item, "activate", G_CALLBACK(on_palette_picker_activate), window);
-    gtk_menu_shell_append(GTK_MENU_SHELL(menu), item);
-
-    item = gtk_check_menu_item_new_with_label("Word wrap");
-    gtk_widget_set_tooltip_text(item, "Toggle automatic word wrapping");
-    gtk_check_menu_item_set_active(GTK_CHECK_MENU_ITEM(item), TRUE);
-    g_signal_connect(item, "toggled", G_CALLBACK(on_word_wrap_toggled), window);
-    gtk_menu_shell_append(GTK_MENU_SHELL(menu), item);
 
     item = tip_item("Opacity", "Change the note opacity");
     submenu = gtk_menu_new();
@@ -1871,6 +1678,10 @@ static GtkWidget *build_menu(GtkWidget *window)
     gtk_menu_item_set_submenu(GTK_MENU_ITEM(item), submenu);
     gtk_menu_shell_append(GTK_MENU_SHELL(menu), item);
 
+    item = tip_item("Edit title", "Edit the note title");
+    g_signal_connect(item, "activate", G_CALLBACK(on_edit_title_activate), window);
+    gtk_menu_shell_append(GTK_MENU_SHELL(menu), item);
+
     item = tip_item("Note size", "Resize the note window and text");
     submenu = gtk_menu_new();
     {
@@ -1891,11 +1702,13 @@ static GtkWidget *build_menu(GtkWidget *window)
     gtk_menu_item_set_submenu(GTK_MENU_ITEM(item), submenu);
     gtk_menu_shell_append(GTK_MENU_SHELL(menu), item);
 
+    gtk_menu_shell_append(GTK_MENU_SHELL(menu), gtk_separator_menu_item_new());
+
     item = tip_item("New note palette", "Choose the palette for new notes");
     submenu = gtk_menu_new();
     {
         int i;
-        for (i = 0; i < DEFAULT_PALETTE_COUNT && i < PALETTE_COUNT; i++) {
+        for (i = 0; i < 3 && i < PALETTE_COUNT; i++) {
             GtkWidget *palette_item = tip_item(palette_name(i),
                                                "Use this palette, colour 0");
             g_object_set_data(G_OBJECT(palette_item), "palette", GINT_TO_POINTER(i));
@@ -1909,31 +1722,8 @@ static GtkWidget *build_menu(GtkWidget *window)
 
     gtk_menu_shell_append(GTK_MENU_SHELL(menu), gtk_separator_menu_item_new());
 
-    item = gtk_check_menu_item_new_with_label("Always on top");
-    gtk_widget_set_tooltip_text(item, "Keep the note above other windows");
-    g_signal_connect(item, "toggled", G_CALLBACK(on_keep_above_toggled), window);
-    gtk_menu_shell_append(GTK_MENU_SHELL(menu), item);
-
-    item = gtk_check_menu_item_new_with_label("Sticky");
-    gtk_widget_set_tooltip_text(item, "Show the note on all workspaces");
-    g_signal_connect(item, "toggled", G_CALLBACK(on_sticky_toggled), window);
-    gtk_menu_shell_append(GTK_MENU_SHELL(menu), item);
-
-    item = gtk_check_menu_item_new_with_label("Start at login");
-    gtk_widget_set_tooltip_text(item, "Launch Jotilla automatically when you log in");
-    gtk_check_menu_item_set_active(GTK_CHECK_MENU_ITEM(item),
-                                   platform_autostart_enabled());
-    g_signal_connect(item, "toggled", G_CALLBACK(on_autostart_toggled), window);
-    gtk_menu_shell_append(GTK_MENU_SHELL(menu), item);
-
-    gtk_menu_shell_append(GTK_MENU_SHELL(menu), gtk_separator_menu_item_new());
-
-    item = tip_item("Delete note...", "Delete this note");
-    g_signal_connect(item, "activate", G_CALLBACK(on_delete_activate), window);
-    gtk_menu_shell_append(GTK_MENU_SHELL(menu), item);
-
-    item = tip_item("Close", "Save and close the note (Esc)");
-    g_signal_connect(item, "activate", G_CALLBACK(on_close_activate), window);
+    item = tip_item("Tags", "Edit the note tags (Ctrl+T)");
+    g_signal_connect(item, "activate", G_CALLBACK(on_tags_activate), window);
     gtk_menu_shell_append(GTK_MENU_SHELL(menu), item);
 
     gtk_widget_show_all(menu);
@@ -2050,6 +1840,11 @@ static gboolean on_header_press(GtkWidget *widget, GdkEventButton *event, gpoint
     GtkWidget *window = data;
 
     (void)widget;
+
+    if (event->type == GDK_2BUTTON_PRESS && event->button == 1) {
+        on_edit_title_activate(NULL, window);
+        return TRUE;
+    }
 
     if (event->type == GDK_BUTTON_PRESS && event->button == 1) {
         GdkWindow *gdk_window = gtk_widget_get_window(window);
@@ -2172,6 +1967,74 @@ static gboolean promote_title(GtkWidget *window)
     return TRUE;
 }
 
+/* Promuove un paragrafo "*" in elemento checklist (Shift+Invio). */
+static gboolean promote_checklist(GtkWidget *window)
+{
+    GtkTextView *view = window_view(window);
+    GtkTextBuffer *buffer;
+    GtkTextIter cursor, para_start, para_end;
+    GtkTextIter sel_start, sel_end;
+    GtkTextIter start, end, ins;
+    GtkTextTag *tag;
+    gint offset, start_offset, end_offset;
+
+    if (view == NULL)
+        return FALSE;
+
+    buffer = gtk_text_view_get_buffer(view);
+    if (buffer == NULL)
+        return FALSE;
+
+    ensure_tags(buffer);
+
+    if (gtk_text_buffer_get_selection_bounds(buffer, &sel_start, &sel_end))
+        return FALSE;
+
+    gtk_text_buffer_get_iter_at_mark(buffer, &cursor, gtk_text_buffer_get_insert(buffer));
+
+    para_start = cursor;
+    gtk_text_iter_set_line_offset(&para_start, 0);
+    para_end = para_start;
+    gtk_text_iter_forward_to_line_end(&para_end);
+
+    start_offset = gtk_text_iter_get_offset(&para_start);
+    end_offset = gtk_text_iter_get_offset(&para_end);
+    offset = gtk_text_iter_get_offset(&cursor);
+
+    /* Il cursore deve essere a fine paragrafo e il paragrafo deve essere "*". */
+    if (offset != end_offset || end_offset - start_offset != 1)
+        return FALSE;
+    if (gtk_text_iter_get_char(&para_start) != '*')
+        return FALSE;
+
+    gtk_text_buffer_begin_user_action(buffer);
+
+    gtk_text_buffer_get_iter_at_offset(buffer, &start, start_offset);
+    end = start;
+    gtk_text_iter_forward_char(&end);
+    gtk_text_buffer_delete(buffer, &start, &end);
+
+    gtk_text_buffer_get_iter_at_offset(buffer, &ins, start_offset);
+    gtk_text_buffer_insert(buffer, &ins, "\xE2\x98\x90 ", -1);
+
+    {
+        GtkTextIter ps = ins;
+        GtkTextIter pe = ins;
+        gtk_text_iter_set_line_offset(&ps, 0);
+        gtk_text_iter_forward_to_line_end(&pe);
+        tag = gtk_text_tag_table_lookup(gtk_text_buffer_get_tag_table(buffer), "strike");
+        if (tag != NULL)
+            gtk_text_buffer_remove_tag(buffer, tag, &ps, &pe);
+    }
+
+    gtk_text_buffer_place_cursor(buffer, &ins);
+    gtk_text_buffer_end_user_action(buffer);
+
+    touch(window);
+    save_now(window);
+    return TRUE;
+}
+
 /* Ctrl+rotella cambia la dimensione del testo. */
 static gboolean on_view_scroll(GtkWidget *widget, GdkEventScroll *event,
                                gpointer data)
@@ -2203,6 +2066,15 @@ static gboolean on_key_press(GtkWidget *widget, GdkEventKey *event, gpointer dat
 
     (void)data;
 
+    if (key == GDK_KEY_Menu || (shift && key == GDK_KEY_F10)) {
+        GtkWidget *menu = g_object_get_data(G_OBJECT(window), "menu");
+
+        if (menu != NULL) {
+            gtk_menu_popup_at_pointer(GTK_MENU(menu), (GdkEvent *)event);
+            return TRUE;
+        }
+    }
+
     if (!ctrl && !shift && key == GDK_KEY_Escape) {
         save_now(window);
         gtk_widget_destroy(window);
@@ -2210,6 +2082,8 @@ static gboolean on_key_press(GtkWidget *widget, GdkEventKey *event, gpointer dat
     }
 
     if (!ctrl && shift && key == GDK_KEY_Return) {
+        if (promote_checklist(window))
+            return TRUE;
         if (promote_title(window))
             return TRUE;
     }
@@ -2379,6 +2253,15 @@ static gboolean on_context_menu(GtkWidget *widget, GdkEventButton *event, gpoint
     return TRUE;
 }
 
+/* Imposta il nome accessibile di un widget. */
+static void set_accessible_name(GtkWidget *widget, const char *name)
+{
+    AtkObject *accessible = gtk_widget_get_accessible(widget);
+
+    if (accessible != NULL)
+        atk_object_set_name(accessible, name);
+}
+
 /* Crea e inizializza una nuova finestra nota. */
 GtkWidget *note_window_new(Store *store, Note *note)
 {
@@ -2409,6 +2292,9 @@ GtkWidget *note_window_new(Store *store, Note *note)
 
     gtk_window_set_decorated(GTK_WINDOW(window), FALSE);
     gtk_window_set_resizable(GTK_WINDOW(window), TRUE);
+    gtk_window_set_keep_above(GTK_WINDOW(window), TRUE);
+    gtk_window_set_skip_taskbar_hint(GTK_WINDOW(window), TRUE);
+    gtk_window_set_skip_pager_hint(GTK_WINDOW(window), TRUE);
     gtk_window_set_default_size(GTK_WINDOW(window),
                                 note->w > 0 ? note->w : 280,
                                 (note->collapsed || note->h < 100) ? 260 :
@@ -2430,6 +2316,7 @@ GtkWidget *note_window_new(Store *store, Note *note)
             "x-office-calendar-symbolic", GTK_ICON_SIZE_MENU);
         gtk_button_set_relief(GTK_BUTTON(calendar_button), GTK_RELIEF_NONE);
         gtk_widget_set_tooltip_text(calendar_button, "Assign a date");
+        set_accessible_name(calendar_button, "Assign a date");
         g_signal_connect(calendar_button, "clicked",
                          G_CALLBACK(header_calendar_clicked), window);
         gtk_box_pack_start(GTK_BOX(header), calendar_button, FALSE, FALSE, 0);
@@ -2451,12 +2338,14 @@ GtkWidget *note_window_new(Store *store, Note *note)
 
         gtk_button_set_relief(GTK_BUTTON(minimize), GTK_RELIEF_NONE);
         gtk_widget_set_tooltip_text(minimize, "Collapse");
+        set_accessible_name(minimize, "Collapse");
         g_signal_connect(minimize, "clicked",
                          G_CALLBACK(header_collapse_clicked), window);
         gtk_box_pack_start(GTK_BOX(header), minimize, FALSE, FALSE, 0);
 
         gtk_button_set_relief(GTK_BUTTON(close), GTK_RELIEF_NONE);
         gtk_widget_set_tooltip_text(close, "Close (Esc)");
+        set_accessible_name(close, "Close");
         g_signal_connect(close, "clicked",
                          G_CALLBACK(header_close_clicked), window);
         gtk_box_pack_start(GTK_BOX(header), close, FALSE, FALSE, 0);
@@ -2482,6 +2371,7 @@ GtkWidget *note_window_new(Store *store, Note *note)
     gtk_text_view_set_left_margin(GTK_TEXT_VIEW(view), 8);
     gtk_text_view_set_right_margin(GTK_TEXT_VIEW(view), 8);
     gtk_container_add(GTK_CONTAINER(scrolled), view);
+    set_accessible_name(view, "Note text");
     g_object_set_data(G_OBJECT(window), "textview", view);
     g_object_set_data(G_OBJECT(window), "scrolled", scrolled);
     g_signal_connect(view, "destroy", G_CALLBACK(on_view_destroy), window);

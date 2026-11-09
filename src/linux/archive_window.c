@@ -26,7 +26,8 @@ enum {
 enum {
     TAG_COL_LABEL,
     TAG_COL_VALUE,
-    TAG_COL_COUNT
+    TAG_COL_COUNT,
+    TAG_COL_N_COLUMNS
 };
 
 typedef struct {
@@ -37,6 +38,7 @@ typedef struct {
     GtkWidget *tag_combo;
     GtkWidget *stack;
     GtkWidget *flow;
+    GtkWidget *flow_scroll;
     GtkWidget *calendar;
     GtkWidget *calendar_list;
     GtkWidget *calendar_label;
@@ -55,6 +57,9 @@ typedef struct {
     gint date_kind;
     gboolean sidebar_tags;
     gboolean updating_sidebar;
+    gdouble flow_scroll_x;
+    gdouble flow_scroll_y;
+    guint flow_scroll_restore_id;
 } ArchiveWindow;
 
 /* Ricarica la lista con filtri e ricerca. */
@@ -63,6 +68,13 @@ static void repopulate_list(ArchiveWindow *aw);
 static void update_calendar(ArchiveWindow *aw);
 /* Conferma ed elimina una nota dall'archivio. */
 static void confirm_delete(ArchiveWindow *aw, Note *note);
+/* Elimina le note selezionate nel flow box dopo conferma. */
+static void delete_selected_notes(ArchiveWindow *aw);
+/* Mostra il menu contestuale di una card. */
+static void show_card_menu(ArchiveWindow *aw, Note *note,
+                           GdkEventButton *event);
+/* Ripristina la posizione di scorrimento del flow box. */
+static gboolean restore_flow_scroll(gpointer data);
 /* Popola il combo dei tag. */
 static void populate_tag_combo(ArchiveWindow *aw);
 /* Ricostruisce gli alberi di date e tag. */
@@ -342,6 +354,69 @@ static gboolean on_list_button_press(GtkWidget *widget, GdkEventButton *event,
     return TRUE;
 }
 
+/* Apre la nota scelta dal menu contestuale. */
+static void on_menu_open(GtkMenuItem *item, gpointer data) {
+    ArchiveWindow *aw = data;
+    Note *note = g_object_get_data(G_OBJECT(item), "note");
+
+    if (note && aw->open_cb) aw->open_cb(note, aw->open_data);
+}
+
+/* Elimina la nota scelta dal menu contestuale. */
+static void on_menu_delete(GtkMenuItem *item, gpointer data) {
+    ArchiveWindow *aw = data;
+    Note *note = g_object_get_data(G_OBJECT(item), "note");
+
+    confirm_delete(aw, note);
+}
+
+/* Rilascia il menu contestuale quando viene chiuso. */
+static void on_menu_selection_done(GtkMenuShell *menu, gpointer data) {
+    (void)data;
+    gtk_widget_destroy(GTK_WIDGET(menu));
+    g_object_unref(menu);
+}
+
+/* Mostra il menu contestuale per la card indicata. */
+static void show_card_menu(ArchiveWindow *aw, Note *note,
+                           GdkEventButton *event) {
+    GtkWidget *menu;
+    GtkWidget *item;
+
+    if (!aw || !note || !event) return;
+
+    menu = gtk_menu_new();
+    g_object_ref_sink(menu);
+    gtk_menu_attach_to_widget(GTK_MENU(menu), aw->flow, NULL);
+    g_signal_connect(menu, "selection-done",
+                     G_CALLBACK(on_menu_selection_done), NULL);
+
+    item = gtk_menu_item_new_with_label("Open");
+    g_object_set_data(G_OBJECT(item), "note", note);
+    g_signal_connect(item, "activate", G_CALLBACK(on_menu_open), aw);
+    gtk_menu_shell_append(GTK_MENU_SHELL(menu), item);
+
+    item = gtk_menu_item_new_with_label("Delete from archive");
+    g_object_set_data(G_OBJECT(item), "note", note);
+    g_signal_connect(item, "activate", G_CALLBACK(on_menu_delete), aw);
+    gtk_menu_shell_append(GTK_MENU_SHELL(menu), item);
+
+    gtk_widget_show_all(menu);
+    gtk_menu_popup_at_pointer(GTK_MENU(menu), (GdkEvent *)event);
+}
+
+/* Gestisce il clic destro sulla singola card. */
+static gboolean on_card_button_press(GtkWidget *widget, GdkEventButton *event,
+                                     gpointer data) {
+    ArchiveWindow *aw = data;
+    Note *note = g_object_get_data(G_OBJECT(widget), "note");
+
+    if (event->type != GDK_BUTTON_PRESS || event->button != 3) return FALSE;
+    if (!note) return FALSE;
+    show_card_menu(aw, note, event);
+    return TRUE;
+}
+
 /* Gestisce clic destro e clic singolo sulle card. */
 static gboolean on_flow_button_press(GtkWidget *widget, GdkEventButton *event,
                                      gpointer data) {
@@ -356,7 +431,7 @@ static gboolean on_flow_button_press(GtkWidget *widget, GdkEventButton *event,
     note = g_object_get_data(G_OBJECT(child), "note");
 
     if (event->button == 3) {
-        if (note) confirm_delete(aw, note);
+        if (note) show_card_menu(aw, note, event);
         return TRUE;
     }
     if (event->button != 1) return FALSE;
@@ -540,6 +615,8 @@ static GtkWidget *build_note_card(ArchiveWindow *aw, Note *note,
     g_object_unref(provider);
     g_object_set_data(G_OBJECT(child), "note", note);
     g_object_set_data(G_OBJECT(child), "card", card);
+    g_signal_connect(child, "button-press-event",
+                     G_CALLBACK(on_card_button_press), aw);
     gtk_widget_show_all(child);
     return child;
 }
@@ -668,9 +745,8 @@ static void confirm_delete(ArchiveWindow *aw, Note *note) {
     archive_window_refresh(aw->window);
 }
 
-/* Elimina tutte le note selezionate. */
-static void on_delete_selected(GtkButton *button, gpointer data) {
-    ArchiveWindow *aw = data;
+/* Elimina tutte le note selezionate nel flow box. */
+static void delete_selected_notes(ArchiveWindow *aw) {
     GList *selected;
     GList *item;
     guint count;
@@ -682,7 +758,6 @@ static void on_delete_selected(GtkButton *button, gpointer data) {
     guint i;
     char *message;
 
-    (void)button;
     selected = gtk_flow_box_get_selected_children(GTK_FLOW_BOX(aw->flow));
     if (!selected) return;
 
@@ -743,6 +818,12 @@ static void on_delete_selected(GtkButton *button, gpointer data) {
         gtk_dialog_run(GTK_DIALOG(failure));
         gtk_widget_destroy(failure);
     }
+}
+
+/* Elimina le note selezionate dal pulsante dell'header. */
+static void on_delete_selected(GtkButton *button, gpointer data) {
+    (void)button;
+    delete_selected_notes(data);
 }
 
 /* Crea una nuova nota dall'archivio. */
@@ -1197,6 +1278,46 @@ static void populate_tag_combo(ArchiveWindow *aw) {
                                       aw);
 }
 
+/* Salva la posizione di scorrimento corrente del flow box. */
+static void capture_flow_scroll(ArchiveWindow *aw) {
+    GtkAdjustment *hadj;
+    GtkAdjustment *vadj;
+
+    if (!aw || !aw->flow_scroll) return;
+    hadj = gtk_scrolled_window_get_hadjustment(
+        GTK_SCROLLED_WINDOW(aw->flow_scroll));
+    vadj = gtk_scrolled_window_get_vadjustment(
+        GTK_SCROLLED_WINDOW(aw->flow_scroll));
+    if (hadj) aw->flow_scroll_x = gtk_adjustment_get_value(hadj);
+    if (vadj) aw->flow_scroll_y = gtk_adjustment_get_value(vadj);
+}
+
+/* Ripristina lo scroll del flow box quando il layout è aggiornato. */
+static gboolean restore_flow_scroll(gpointer data) {
+    ArchiveWindow *aw = data;
+    GtkAdjustment *hadj;
+    GtkAdjustment *vadj;
+
+    aw->flow_scroll_restore_id = 0;
+    if (!aw->flow_scroll) return G_SOURCE_REMOVE;
+    hadj = gtk_scrolled_window_get_hadjustment(
+        GTK_SCROLLED_WINDOW(aw->flow_scroll));
+    vadj = gtk_scrolled_window_get_vadjustment(
+        GTK_SCROLLED_WINDOW(aw->flow_scroll));
+    if (hadj) gtk_adjustment_set_value(hadj, aw->flow_scroll_x);
+    if (vadj) gtk_adjustment_set_value(vadj, aw->flow_scroll_y);
+    return G_SOURCE_REMOVE;
+}
+
+/* Programma il ripristino dello scroll al prossimo idle. */
+static void restore_flow_scroll_later(ArchiveWindow *aw) {
+    if (!aw) return;
+    if (aw->flow_scroll_restore_id)
+        g_source_remove(aw->flow_scroll_restore_id);
+    aw->flow_scroll_restore_id =
+        g_idle_add_full(G_PRIORITY_DEFAULT_IDLE, restore_flow_scroll, aw, NULL);
+}
+
 /* Ricarica la lista con filtri e ricerca. */
 static void repopulate_list(ArchiveWindow *aw) {
     const char *text;
@@ -1424,6 +1545,17 @@ static gboolean on_window_key_press(GtkWidget *widget, GdkEventKey *event,
         archive_window_refresh(aw->window);
         return TRUE;
     }
+    if (event->keyval == GDK_KEY_Delete &&
+        !gtk_widget_has_focus(aw->search)) {
+        GList *selected =
+            gtk_flow_box_get_selected_children(GTK_FLOW_BOX(aw->flow));
+
+        if (selected) {
+            g_list_free(selected);
+            delete_selected_notes(aw);
+            return TRUE;
+        }
+    }
     if ((event->keyval == GDK_KEY_Return ||
          event->keyval == GDK_KEY_KP_Enter) &&
         gtk_widget_has_focus(aw->search)) {
@@ -1501,6 +1633,8 @@ static void archive_state_free(gpointer data) {
     ArchiveWindow *aw = data;
 
     if (!aw) return;
+    if (aw->flow_scroll_restore_id)
+        g_source_remove(aw->flow_scroll_restore_id);
     g_free(aw->tag_filter);
     g_free(aw);
 }
@@ -1616,7 +1750,7 @@ GtkWidget *archive_window_new(Store *store) {
                                    GTK_POLICY_AUTOMATIC, GTK_POLICY_AUTOMATIC);
     gtk_container_add(GTK_CONTAINER(date_scroll), aw->date_tree);
 
-    aw->tag_model = gtk_tree_store_new(TAG_COL_COUNT + 1,
+    aw->tag_model = gtk_tree_store_new(TAG_COL_N_COLUMNS,
                                        G_TYPE_STRING, G_TYPE_STRING,
                                        G_TYPE_INT);
     aw->tag_tree = gtk_tree_view_new_with_model(
@@ -1691,6 +1825,7 @@ GtkWidget *archive_window_new(Store *store) {
     g_signal_connect(aw->flow, "button-press-event",
                      G_CALLBACK(on_flow_button_press), aw);
     gtk_container_add(GTK_CONTAINER(scroll), aw->flow);
+    aw->flow_scroll = scroll;
     gtk_stack_add_named(GTK_STACK(aw->stack), scroll, "list");
 
     calendar_page = gtk_box_new(GTK_ORIENTATION_VERTICAL, 6);
@@ -1759,10 +1894,12 @@ void archive_window_refresh(GtkWidget *window) {
     ArchiveWindow *aw = get_state(window);
 
     if (!aw) return;
+    capture_flow_scroll(aw);
     populate_tag_combo(aw);
     populate_sidebar(aw);
     repopulate_list(aw);
     update_calendar(aw);
+    restore_flow_scroll_later(aw);
 }
 
 /* Imposta il callback di apertura nota. */
