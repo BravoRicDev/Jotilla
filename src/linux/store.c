@@ -8,6 +8,13 @@
 
 #include <glib/gstdio.h>
 
+#define NOTE_READ_MAX (64u * 1024u * 1024u)
+#define NOTE_TEXT_MAX (16u * 1024u * 1024u)
+#define QUERY_TERMS_MAX 16u
+
+/* Contatore globale per il suffisso degli id delle note. */
+static guint note_id_counter = 0;
+
 /* Libera una nota e le sue stringhe. */
 static void note_free(gpointer data)
 {
@@ -71,6 +78,12 @@ static char *read_file(const char *path, gboolean strip_bom)
     char *contents = NULL;
     gsize length = 0;
     GError *error = NULL;
+    GStatBuf info;
+
+    if (g_stat(path, &info) != 0)
+        return NULL;
+    if (info.st_size < 0 || (guint64)info.st_size > NOTE_READ_MAX)
+        return NULL;
 
     if (!g_file_get_contents(path, &contents, &length, &error)) {
         g_clear_error(&error);
@@ -84,6 +97,34 @@ static char *read_file(const char *path, gboolean strip_bom)
         return stripped;
     }
     return contents;
+}
+
+/* Normalizza Unicode, esegue il case folding e rimuove i segni combinanti. */
+static char *fold_text(const char *text)
+{
+    const char *cursor;
+    char *normalized;
+    char *folded;
+    GString *output;
+
+    if (!text)
+        return g_strdup("");
+    normalized = g_utf8_normalize(text, -1, G_NORMALIZE_DEFAULT);
+    if (!normalized)
+        return NULL;
+    folded = g_utf8_casefold(normalized, -1);
+    g_free(normalized);
+    if (!folded)
+        return NULL;
+
+    output = g_string_sized_new(strlen(folded));
+    for (cursor = folded; *cursor; cursor = g_utf8_next_char(cursor)) {
+        gunichar ch = g_utf8_get_char(cursor);
+        if (g_unichar_type(ch) != G_UNICODE_NON_SPACING_MARK)
+            g_string_append_unichar(output, ch);
+    }
+    g_free(folded);
+    return g_string_free(output, FALSE);
 }
 
 /* Alloca una nota con valori predefiniti. */
@@ -110,6 +151,7 @@ static Note *note_alloc(const char *id)
     note->open = TRUE;
     note->collapsed = FALSE;
     note->has_title = FALSE;
+    note->custom_ink = FALSE;
     return note;
 }
 
@@ -191,6 +233,16 @@ static gboolean save_ini(Store *store, GError **err)
     gboolean ok;
     guint i;
 
+    /* Rilegge il file per conservare [app] e chiavi non gestite. */
+    if (g_file_test(store->notes_ini, G_FILE_TEST_IS_REGULAR) &&
+        !g_key_file_load_from_file(keyfile, store->notes_ini,
+                                   G_KEY_FILE_KEEP_COMMENTS | G_KEY_FILE_KEEP_TRANSLATIONS,
+                                   &local)) {
+        g_clear_error(&local);
+        g_key_file_free(keyfile);
+        keyfile = g_key_file_new();
+    }
+
     for (i = 0; i < store->notes->len; ++i) {
         Note *note = g_ptr_array_index(store->notes, i);
 
@@ -205,6 +257,7 @@ static gboolean save_ini(Store *store, GError **err)
         g_key_file_set_boolean(keyfile, note->id, "open", note->open);
         g_key_file_set_boolean(keyfile, note->id, "collapsed", note->collapsed);
         g_key_file_set_boolean(keyfile, note->id, "has_title", note->has_title);
+        g_key_file_set_boolean(keyfile, note->id, "custom_ink", note->custom_ink);
         g_key_file_set_string(keyfile, note->id, "tags", note->tags ? note->tags : "");
         g_key_file_set_integer(keyfile, note->id, "calendar_date", (gint)note->date);
     }
@@ -287,15 +340,56 @@ static gboolean remove_note_files(Store *store, const char *id, GError **err)
     return ok;
 }
 
+/* Individua la directory portatile tramite portable.flag. */
+static char *portable_base_dir(void)
+{
+    char *exe = g_file_read_link("/proc/self/exe", NULL);
+
+    if (exe) {
+        char *dir = g_path_get_dirname(exe);
+        char *flag = g_build_filename(dir, "portable.flag", NULL);
+        gboolean found = g_file_test(flag, G_FILE_TEST_EXISTS);
+        g_free(flag);
+        g_free(exe);
+        if (found)
+            return dir;
+        g_free(dir);
+    }
+
+    {
+        char *cwd = g_get_current_dir();
+        if (cwd) {
+            char *flag = g_build_filename(cwd, "portable.flag", NULL);
+            gboolean found = g_file_test(flag, G_FILE_TEST_EXISTS);
+            g_free(flag);
+            if (found)
+                return cwd;
+            g_free(cwd);
+        }
+    }
+    return NULL;
+}
+
 /* Percorso archivio predefinito. */
 char *store_default_archive_dir(void)
 {
+    char *base = portable_base_dir();
+
+    if (base) {
+        char *path = g_build_filename(base, "notes", NULL);
+        g_free(base);
+        return path;
+    }
     return g_build_filename(g_get_user_data_dir(), "jotilla", "notes", NULL);
 }
 
 /* Percorso config predefinito. */
 char *store_default_config_dir(void)
 {
+    char *base = portable_base_dir();
+
+    if (base)
+        return base;
     return g_build_filename(g_get_user_config_dir(), "jotilla", NULL);
 }
 
@@ -314,28 +408,48 @@ Store *store_open(const char *archive_dir, const char *config_dir, GError **err)
         return NULL;
     }
 
-    store->archive_dir = archive_dir ? g_strdup(archive_dir) : store_default_archive_dir();
     store->config_dir = config_dir ? g_strdup(config_dir) : store_default_config_dir();
     store->notes_ini = g_build_filename(store->config_dir, "notes.ini", NULL);
     store->notes = g_ptr_array_new_with_free_func(note_free);
 
+    keyfile = g_key_file_new();
+    if (g_file_test(store->notes_ini, G_FILE_TEST_IS_REGULAR) &&
+        !g_key_file_load_from_file(keyfile, store->notes_ini, G_KEY_FILE_NONE, &ini_error)) {
+        /* Un INI malformato non deve impedire l'apertura dell'archivio. */
+        g_clear_error(&ini_error);
+        g_key_file_free(keyfile);
+        keyfile = g_key_file_new();
+    }
+
+    /* Usa [app] archive.path solo quando non e' stata indicata una directory. */
+    if (archive_dir) {
+        store->archive_dir = g_strdup(archive_dir);
+    } else {
+        char *configured = key_string(keyfile, "app", "archive.path", NULL);
+        if (configured)
+            g_strstrip(configured);
+        if (configured && *configured) {
+            store->archive_dir = configured;
+        } else {
+            g_free(configured);
+            store->archive_dir = store_default_archive_dir();
+        }
+    }
+
     if (g_mkdir_with_parents(store->archive_dir, 0700) != 0) {
         int error_code = errno;
         set_file_error(err, error_code, "Failed to create directory", store->archive_dir);
+        g_key_file_free(keyfile);
         store_free(store);
         return NULL;
     }
     if (g_mkdir_with_parents(store->config_dir, 0700) != 0) {
         int error_code = errno;
         set_file_error(err, error_code, "Failed to create directory", store->config_dir);
+        g_key_file_free(keyfile);
         store_free(store);
         return NULL;
     }
-
-    keyfile = g_key_file_new();
-    if (g_file_test(store->notes_ini, G_FILE_TEST_IS_REGULAR) &&
-        !g_key_file_load_from_file(keyfile, store->notes_ini, G_KEY_FILE_NONE, &ini_error))
-        g_clear_error(&ini_error);
 
     directory = g_dir_open(store->archive_dir, 0, err);
     if (!directory) {
@@ -404,6 +518,7 @@ Store *store_open(const char *archive_dir, const char *config_dir, GError **err)
         note->open = key_bool(keyfile, id, "open", TRUE);
         note->collapsed = key_bool(keyfile, id, "collapsed", FALSE);
         note->has_title = key_bool(keyfile, id, "has_title", FALSE);
+        note->custom_ink = key_bool(keyfile, id, "custom_ink", FALSE);
         if (note->has_title && note->text && note->text[0] == '#') {
             char *body = note->text;
             size_t end = strcspn(body, "\r\n");
@@ -478,16 +593,18 @@ Note *store_new(Store *store, const char *text)
         return NULL;
     }
 
-    /* Tenta id univoco evitando collisioni. */
+    /* Tenta id univoco con contatore a 3 cifre, evitando collisioni. */
     for (attempt = 0; attempt < 1000; ++attempt) {
         char *candidate;
         char *text_path;
         char *rtf_path;
         gboolean taken;
+        guint suffix = note_id_counter;
 
-        candidate = g_strdup_printf("note-%s-%03d-%03d", stamp,
-                                    g_date_time_get_microsecond(now) / 1000,
-                                    g_random_int_range(0, 1000));
+        note_id_counter = (note_id_counter + 1) % 1000;
+        candidate = g_strdup_printf("note-%s-%03u-%03u", stamp,
+                                    (guint)(g_date_time_get_microsecond(now) / 1000),
+                                    suffix);
         text_path = note_file_path(store, candidate, "txt");
         rtf_path = note_file_path(store, candidate, "rtf");
         taken = store_get(store, candidate) != NULL ||
@@ -553,6 +670,12 @@ gboolean store_save(Store *store, Note *note, GError **err)
 
     if (!store || !note || !note->id) {
         g_set_error_literal(err, G_FILE_ERROR, G_FILE_ERROR_INVAL, "Invalid note");
+        return FALSE;
+    }
+
+    if (note->text && strlen(note->text) > NOTE_TEXT_MAX) {
+        g_set_error_literal(err, G_FILE_ERROR, G_FILE_ERROR_INVAL,
+                            "Note text exceeds 16 MB");
         return FALSE;
     }
 
@@ -643,6 +766,9 @@ static gboolean query_parse(const char *query, GPtrArray *terms, GError **err)
             ++cursor;
         if (!*cursor)
             break;
+        /* Oltre i 16 termini il resto della query viene ignorato. */
+        if (terms->len >= QUERY_TERMS_MAX)
+            break;
 
         term = g_try_new0(SearchTerm, 1);
         if (!term) {
@@ -698,11 +824,12 @@ static gboolean query_parse(const char *query, GPtrArray *terms, GError **err)
             }
             term->value = normalized;
         } else {
-            term->value = g_utf8_casefold(raw, -1);
+            term->value = fold_text(raw);
             g_free(raw);
-            if (!term->value) {
+            if (!term->value || !*term->value) {
+                g_free(term->value);
                 search_term_free(term);
-                g_set_error_literal(err, G_FILE_ERROR, G_FILE_ERROR_NOMEM, "Not enough memory");
+                g_set_error_literal(err, G_FILE_ERROR, G_FILE_ERROR_INVAL, "Empty search term");
                 return FALSE;
             }
         }
@@ -755,9 +882,9 @@ GPtrArray *store_search(Store *store, const char *query, const char *tag, GError
                     break;
                 }
             } else {
-                /* Casefold del testo solo al primo termine testuale. */
+                /* Normalizza il testo solo al primo termine testuale. */
                 if (!folded)
-                    folded = g_utf8_casefold(note->text ? note->text : "", -1);
+                    folded = fold_text(note->text ? note->text : "");
                 if (!folded || !strstr(folded, term->value)) {
                     matched = FALSE;
                     break;
@@ -824,6 +951,123 @@ char *store_tags_catalog(Store *store)
     g_hash_table_destroy(seen);
     g_ptr_array_free(tags, TRUE);
     return result;
+}
+
+/* Conteggio dei tag in formato "tag\tconteggio", ordinato per tag. */
+char *store_tag_counts(Store *store)
+{
+    GHashTable *counts;
+    GHashTableIter iter;
+    GPtrArray *tags;
+    gpointer key;
+    gpointer value;
+    GString *text;
+    char *result;
+    guint i;
+
+    if (!store)
+        return g_strdup("");
+
+    counts = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
+
+    for (i = 0; i < store->notes->len; ++i) {
+        Note *note = g_ptr_array_index(store->notes, i);
+        char **parts;
+        guint j;
+
+        if (!note->tags || !note->tags[0])
+            continue;
+        parts = g_strsplit(note->tags, ";", -1);
+        for (j = 0; parts[j]; ++j) {
+            gint current;
+            if (!parts[j][0])
+                continue;
+            current = GPOINTER_TO_INT(g_hash_table_lookup(counts, parts[j]));
+            g_hash_table_replace(counts, g_strdup(parts[j]),
+                                 GINT_TO_POINTER(current + 1));
+        }
+        g_strfreev(parts);
+    }
+
+    tags = g_ptr_array_new_with_free_func(g_free);
+    g_hash_table_iter_init(&iter, counts);
+    while (g_hash_table_iter_next(&iter, &key, &value)) {
+        (void)value;
+        g_ptr_array_add(tags, g_strdup((const char *)key));
+    }
+    g_ptr_array_sort(tags, tag_compare);
+
+    text = g_string_new(NULL);
+    for (i = 0; i < tags->len; ++i) {
+        const char *name = g_ptr_array_index(tags, i);
+        gint count = GPOINTER_TO_INT(g_hash_table_lookup(counts, name));
+        if (i)
+            g_string_append_c(text, '\n');
+        g_string_append_printf(text, "%s\t%d", name, count);
+    }
+    if (text->len)
+        result = g_string_free(text, FALSE);
+    else {
+        g_string_free(text, TRUE);
+        result = g_strdup("");
+    }
+
+    g_ptr_array_free(tags, TRUE);
+    g_hash_table_destroy(counts);
+    return result;
+}
+
+/* Legge un intero dalla sezione [app] di notes.ini. */
+int store_app_get_int(Store *store, const char *key, int fallback)
+{
+    GKeyFile *keyfile;
+    GError *error = NULL;
+    int value = fallback;
+
+    if (!store || !key)
+        return fallback;
+    if (!g_file_test(store->notes_ini, G_FILE_TEST_IS_REGULAR))
+        return fallback;
+
+    keyfile = g_key_file_new();
+    if (g_key_file_load_from_file(keyfile, store->notes_ini,
+                                  G_KEY_FILE_KEEP_COMMENTS | G_KEY_FILE_KEEP_TRANSLATIONS,
+                                  &error))
+        value = key_int(keyfile, "app", key, fallback);
+    g_clear_error(&error);
+    g_key_file_free(keyfile);
+    return value;
+}
+
+/* Scrive un intero nella sezione [app], conservando le altre chiavi. */
+void store_app_set_int(Store *store, const char *key, int value)
+{
+    GKeyFile *keyfile;
+    GError *error = NULL;
+    char *data;
+    gsize length = 0;
+
+    if (!store || !key)
+        return;
+
+    keyfile = g_key_file_new();
+    if (g_file_test(store->notes_ini, G_FILE_TEST_IS_REGULAR) &&
+        !g_key_file_load_from_file(keyfile, store->notes_ini,
+                                   G_KEY_FILE_KEEP_COMMENTS | G_KEY_FILE_KEEP_TRANSLATIONS,
+                                   &error)) {
+        g_clear_error(&error);
+        g_key_file_free(keyfile);
+        keyfile = g_key_file_new();
+    }
+
+    g_key_file_set_integer(keyfile, "app", key, value);
+    data = g_key_file_to_data(keyfile, &length, &error);
+    if (data) {
+        (void)write_atomic(store->notes_ini, data, length, NULL);
+        g_free(data);
+    }
+    g_clear_error(&error);
+    g_key_file_free(keyfile);
 }
 
 /* Imposta tag normalizzati e salva. */

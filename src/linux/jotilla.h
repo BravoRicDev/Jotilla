@@ -21,6 +21,7 @@ typedef struct {
     gboolean open;
     gboolean collapsed;
     gboolean has_title; /* TRUE se il titolo e' stato promosso */
+    gboolean custom_ink; /* TRUE se il colore testo e' stato scelto dall'utente */
 } Note;
 
 typedef struct {
@@ -54,6 +55,9 @@ GPtrArray *store_search(Store *store, const char *query, const char *tag, GError
 /* Catalogo dei tag. */
 /* Catalogo tag unici ordinati. */
 char *store_tags_catalog(Store *store);
+char *store_tag_counts(Store *store);
+int store_app_get_int(Store *store, const char *key, int fallback);
+void store_app_set_int(Store *store, const char *key, int value);
 /* Imposta i tag di una nota. */
 /* Imposta tag normalizzati e salva. */
 void store_set_tags(Store *store, Note *note, const char *raw);

@@ -11,5 +11,7 @@ char *tags_normalize(const char *input);
 gboolean tags_contains(const char *tags, const char *name);
 /* Suddivide i tag in array. */
 GPtrArray *tags_split(const char *tags);
+/* Suggerisce tag per prefisso dal catalogo "tag\tconteggio". */
+GPtrArray *tags_suggest_from(const char *counts, const char *prefix, const char *assigned, int max);
 
 #endif

@@ -25,7 +25,19 @@ static gint tag_compare(gconstpointer a, gconstpointer b) {
     return g_utf8_collate(left, right);
 }
 
-/* Normalizza input: trim, rimuove '#', casefold, deduplica, ordina. */
+/* Normalizza in NFC e poi applica il case folding Unicode. */
+static char *tag_fold(const char *text) {
+    char *normalized;
+    char *folded;
+    if (!text) return NULL;
+    normalized = g_utf8_normalize(text, -1, G_NORMALIZE_DEFAULT_COMPOSE);
+    if (!normalized) return NULL;
+    folded = g_utf8_casefold(normalized, -1);
+    g_free(normalized);
+    return folded;
+}
+
+/* Normalizza input: trim, rimuove '#', NFC, casefold, deduplica, ordina. */
 char *tags_normalize(const char *input) {
     GPtrArray *names;
     GString *output;
@@ -50,9 +62,9 @@ char *tags_normalize(const char *input) {
             continue;
         }
 
-        folded = g_utf8_casefold(trimmed, -1);
+        folded = tag_fold(trimmed);
         g_free(raw);
-        if (!folded || strlen(folded) > TAG_BYTES_MAX) {
+        if (!folded || !*folded || strlen(folded) > TAG_BYTES_MAX) {
             g_free(folded);
             continue;
         }
@@ -126,4 +138,84 @@ GPtrArray *tags_split(const char *tags) {
     }
     g_strfreev(parts);
     return items;
+}
+
+typedef struct {
+    char *name;
+    gint64 count;
+} TagSuggestion;
+
+static void suggestion_free(gpointer data) {
+    TagSuggestion *item = (TagSuggestion *)data;
+    if (!item) return;
+    g_free(item->name);
+    g_free(item);
+}
+
+/* Ordina per conteggio decrescente, poi per nome. */
+static gint suggestion_compare(gconstpointer a, gconstpointer b) {
+    const TagSuggestion *left = *(const TagSuggestion *const *)a;
+    const TagSuggestion *right = *(const TagSuggestion *const *)b;
+    if (left->count != right->count)
+        return left->count > right->count ? -1 : 1;
+    return g_utf8_collate(left->name, right->name);
+}
+
+/* Suggerisce tag per prefisso a partire dal catalogo "tag\tconteggio". */
+GPtrArray *tags_suggest_from(const char *counts, const char *prefix, const char *assigned, int max) {
+    GPtrArray *candidates;
+    GPtrArray *results;
+    char *folded_prefix;
+    char **lines;
+    guint i;
+
+    results = g_ptr_array_new_with_free_func(g_free);
+    if (max <= 0) return results;
+
+    candidates = g_ptr_array_new_with_free_func(suggestion_free);
+    folded_prefix = tag_fold(prefix ? prefix : "");
+    if (!folded_prefix) folded_prefix = g_strdup("");
+    lines = g_strsplit(counts ? counts : "", "\n", -1);
+
+    for (i = 0; lines[i]; ++i) {
+        char *line = lines[i];
+        char *tab = strchr(line, '\t');
+        char *name;
+        char *folded;
+        gint64 count;
+        TagSuggestion *item;
+
+        if (!tab || tab == line) continue;
+        name = g_strndup(line, (gsize)(tab - line));
+        g_strstrip(name);
+        if (!*name) {
+            g_free(name);
+            continue;
+        }
+        folded = tag_fold(name);
+        if (!folded || !g_str_has_prefix(folded, folded_prefix) ||
+            (assigned && tags_contains(assigned, name))) {
+            g_free(folded);
+            g_free(name);
+            continue;
+        }
+        g_free(folded);
+        count = g_ascii_strtoll(tab + 1, NULL, 10);
+        item = g_new0(TagSuggestion, 1);
+        item->name = name;
+        item->count = count;
+        g_ptr_array_add(candidates, item);
+    }
+
+    g_strfreev(lines);
+    g_free(folded_prefix);
+    g_ptr_array_sort(candidates, suggestion_compare);
+
+    for (i = 0; i < candidates->len && (int)i < max; ++i) {
+        TagSuggestion *item = g_ptr_array_index(candidates, i);
+        g_ptr_array_add(results, g_strdup(item->name));
+    }
+
+    g_ptr_array_free(candidates, TRUE);
+    return results;
 }

@@ -17,6 +17,7 @@ void note_window_refresh(GtkWidget *window);
 void note_window_set_changed_callback(GtkWidget *window, NoteChangedFunc cb, gpointer data);
 /* Restituisce la nota della finestra. */
 Note *note_window_get_note(GtkWidget *window);
+void note_window_save(GtkWidget *window);
 /* Imposta il callback di nuova nota. */
 void note_window_set_new_callback(GtkWidget *window, void (*cb)(gpointer), gpointer data);
 /* Imposta il callback di archivio. */

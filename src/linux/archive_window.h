@@ -13,5 +13,8 @@ GtkWidget *archive_window_new(Store *store);
 void archive_window_refresh(GtkWidget *window);
 /* Imposta il callback di apertura nota. */
 void archive_window_set_open_callback(GtkWidget *window, ArchiveOpenFunc cb, gpointer data);
+void archive_window_focus_search(GtkWidget *window);
+typedef void (*ArchiveChangeFunc)(const char *path, gpointer data);
+void archive_window_set_change_callback(GtkWidget *window, ArchiveChangeFunc cb, gpointer data);
 
 #endif

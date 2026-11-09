@@ -9,6 +9,7 @@ find_package(PkgConfig REQUIRED)
 pkg_check_modules(GLIB2 REQUIRED glib-2.0 gobject-2.0 gio-2.0)
 pkg_check_modules(GTK3 REQUIRED gtk+-3.0)
 pkg_check_modules(CAIRO REQUIRED cairo)
+pkg_check_modules(X11 REQUIRED x11)
 pkg_check_modules(X11 x11)
 
 include_directories(${GLIB2_INCLUDE_DIRS} ${GTK3_INCLUDE_DIRS} ${CAIRO_INCLUDE_DIRS})
@@ -28,13 +29,14 @@ set(JOTILLA_GUI
     src/linux/note_window.c
     src/linux/archive_window.c
     src/linux/calendar.c
+    src/linux/palette_picker.c
 )
 
 add_executable(jotilla ${JOTILLA_CORE} ${JOTILLA_GUI})
 target_include_directories(jotilla PRIVATE src/linux)
-target_compile_options(jotilla PRIVATE -Wall -Wextra -Wno-unused-parameter)
+target_compile_options(jotilla PRIVATE -Wall -Wextra -Wno-unused-parameter -Wno-deprecated-declarations)
 target_link_libraries(jotilla PRIVATE
-    ${GTK3_LIBRARIES} ${GLIB2_LIBRARIES} ${CAIRO_LIBRARIES} m)
+    ${GTK3_LIBRARIES} ${GLIB2_LIBRARIES} ${CAIRO_LIBRARIES} ${X11_LIBRARIES} m)
 
 install(TARGETS jotilla RUNTIME DESTINATION bin)
 install(FILES packaging/jotilla.desktop DESTINATION share/applications)
@@ -66,7 +68,7 @@ add_executable(test_extended
 target_include_directories(test_extended PRIVATE src/linux)
 target_compile_options(test_extended PRIVATE -Wall -Wextra -Wno-unused-parameter)
 target_link_libraries(test_extended PRIVATE
-    ${GTK3_LIBRARIES} ${GLIB2_LIBRARIES} ${CAIRO_LIBRARIES} m)
+    ${GTK3_LIBRARIES} ${GLIB2_LIBRARIES} ${CAIRO_LIBRARIES} ${X11_LIBRARIES} m)
 add_test(NAME extended COMMAND test_extended)
 
 if(X11_FOUND)

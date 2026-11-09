@@ -1,11 +1,27 @@
 /* Punto di ingresso Jotilla: gestisce finestre note, archivio e ciclo GTK. */
 #include <gtk/gtk.h>
 #include <glib.h>
+#include <glib-unix.h>
+#include <cairo.h>
+#include <signal.h>
 #include <string.h>
 #include "jotilla.h"
 #include "note_window.h"
 #include "archive_window.h"
 #include "platform.h"
+
+/*
+ * Le due funzioni seguenti sono dichiarate negli header ma implementate in
+ * moduli in fase di modifica. La dichiarazione weak mantiene il build pulito
+ * e si aggancia automaticamente alle definizioni forti quando disponibili.
+ */
+#if defined(__GNUC__)
+extern void note_window_save(GtkWidget *window) __attribute__((weak));
+extern void archive_window_set_change_callback(GtkWidget *window,
+                                               ArchiveChangeFunc cb,
+                                               gpointer data)
+    __attribute__((weak));
+#endif
 
 typedef struct {
     Store *store;
@@ -13,6 +29,13 @@ typedef struct {
     char *archive_dir;
     char *config_dir;
     int window_count;
+    GPtrArray *note_windows;
+    GtkStatusIcon *tray_icon;
+    GtkWidget *tray_menu;
+    GtkWidget *tray_startup_item;
+    guint tray_click_timer;
+    int tray_clicks;
+    GApplication *gapp;
 } AppCtx;
 
 typedef struct {
@@ -21,7 +44,37 @@ typedef struct {
 } NoteRef;
 
 static void open_note(AppCtx *ctx, Note *note);
+static void on_new_note(gpointer data);
+static void on_show_archive(gpointer data);
 static void on_archive_destroy(GtkWidget *widget, gpointer data);
+
+/* Salva tutte le finestre nota aperte (usato alla chiusura). */
+static void save_open_notes(AppCtx *ctx)
+{    guint i;
+
+    if (ctx == NULL || ctx->note_windows == NULL)
+        return;
+
+    for (i = 0; i < ctx->note_windows->len; ++i) {
+        GtkWidget *window = g_ptr_array_index(ctx->note_windows, i);
+        if (window != NULL && note_window_save != NULL)
+            note_window_save(window);
+    }
+}
+
+/* Callback GApplication: mostra l'archivio o crea la prima nota. */
+static void on_app_activate(GApplication *app, gpointer data)
+{    AppCtx *ctx = data;
+
+    (void)app;
+    if (ctx == NULL || ctx->store == NULL)
+        return;
+
+    if (ctx->store->notes->len == 0)
+        on_new_note(ctx);
+    else
+        on_show_archive(ctx);
+}
 
 /* Aggiorna l'archivio quando una nota cambia. */
 static void on_note_changed(Note *note, gpointer data)
@@ -44,12 +97,68 @@ static void on_archive_open(Note *note, gpointer data)
 {    open_note(data, note);
 }
 
+/* Riapre store e archivio quando cambia il percorso dell'archivio. */
+static void on_archive_change(const char *path, gpointer data)
+{    AppCtx *ctx = data;
+    GError *err = NULL;
+    Store *new_store;
+
+    if (ctx == NULL || path == NULL || *path == '\0')
+        return;
+
+    new_store = store_open(path, ctx->config_dir, &err);
+    if (new_store == NULL) {
+        g_warning("Could not open archive '%s': %s", path,
+                  err != NULL ? err->message : "unknown error");
+        g_clear_error(&err);
+        return;
+    }
+
+    /* Salva e chiude le note esistenti prima di liberare il vecchio store. */
+    if (ctx->note_windows != NULL) {
+        while (ctx->note_windows->len > 0) {
+            GtkWidget *window = g_ptr_array_index(ctx->note_windows,
+                                                  ctx->note_windows->len - 1);
+            if (note_window_save != NULL)
+                note_window_save(window);
+            gtk_widget_destroy(window);
+        }
+    }
+
+    if (ctx->archive != NULL)
+        gtk_widget_destroy(ctx->archive);
+
+    store_free(ctx->store);
+    ctx->store = new_store;
+
+    g_free(ctx->archive_dir);
+    ctx->archive_dir = g_strdup(path);
+
+    ctx->archive = archive_window_new(ctx->store);
+    archive_window_set_open_callback(ctx->archive, on_archive_open, ctx);
+    if (archive_window_set_change_callback != NULL)
+        archive_window_set_change_callback(ctx->archive, on_archive_change, ctx);
+    g_signal_connect(ctx->archive, "destroy",
+                     G_CALLBACK(on_archive_destroy), ctx);
+    ctx->window_count++;
+    gtk_widget_show_all(ctx->archive);
+    gtk_window_present(GTK_WINDOW(ctx->archive));
+
+    if (ctx->store->notes->len == 0)
+        on_new_note(ctx);
+    else
+        open_note(ctx, g_ptr_array_index(ctx->store->notes, 0));
+}
+
 /* Mostra o crea la finestra archivio. */
 static void on_show_archive(gpointer data)
 {    AppCtx *ctx = data;
     if (ctx->archive == NULL) {
         ctx->archive = archive_window_new(ctx->store);
         archive_window_set_open_callback(ctx->archive, on_archive_open, ctx);
+        if (archive_window_set_change_callback != NULL)
+            archive_window_set_change_callback(ctx->archive, on_archive_change,
+                                               ctx);
         g_signal_connect(ctx->archive, "destroy",
                          G_CALLBACK(on_archive_destroy), ctx);
         ctx->window_count++;
@@ -74,8 +183,10 @@ static gboolean maybe_quit_idle(gpointer data)
 /* Salva la nota e aggiorna il contatore finestre alla chiusura. */
 static void on_note_destroy(GtkWidget *widget, gpointer data)
 {    NoteRef *ref = data;
-    (void)widget;
+
     if (ref != NULL) {
+        if (ref->ctx->note_windows != NULL)
+            g_ptr_array_remove(ref->ctx->note_windows, widget);
         if (ref->note != NULL) {
             GError *err = NULL;
             ref->note->open = FALSE;
@@ -138,6 +249,10 @@ static void open_note(AppCtx *ctx, Note *note)
     ref->note = note;
     g_signal_connect(window, "destroy", G_CALLBACK(on_note_destroy), ref);
 
+    if (ctx->note_windows == NULL)
+        ctx->note_windows = g_ptr_array_new();
+    g_ptr_array_add(ctx->note_windows, window);
+
     ctx->window_count++;
     gtk_widget_show_all(window);
     gtk_window_present(GTK_WINDOW(window));
@@ -148,6 +263,248 @@ static gboolean quit_loop(gpointer data)
 {    (void)data;
     gtk_main_quit();
     return G_SOURCE_REMOVE;
+}
+
+/* ------------------------------- Tray -------------------------------- */
+
+/* Disegna l'icona del tray: quadrato giallo arrotondato con punto scuro. */
+static GdkPixbuf *make_tray_pixbuf(void)
+{    const int size = 22;
+    cairo_surface_t *surface;
+    cairo_t *cr;
+    GdkPixbuf *pixbuf;
+
+    surface = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, size, size);
+    if (cairo_surface_status(surface) != CAIRO_STATUS_SUCCESS) {
+        cairo_surface_destroy(surface);
+        return NULL;
+    }
+
+    cr = cairo_create(surface);
+    cairo_set_source_rgba(cr, 0.0, 0.0, 0.0, 0.0);
+    cairo_paint(cr);
+
+    cairo_new_sub_path(cr);
+    cairo_arc(cr, 16.0, 6.0, 4.0, -G_PI / 2.0, 0.0);
+    cairo_arc(cr, 16.0, 16.0, 4.0, 0.0, G_PI / 2.0);
+    cairo_arc(cr, 6.0, 16.0, 4.0, G_PI / 2.0, G_PI);
+    cairo_arc(cr, 6.0, 6.0, 4.0, G_PI, 3.0 * G_PI / 2.0);
+    cairo_close_path(cr);
+
+    cairo_set_source_rgb(cr, 0.98, 0.85, 0.24);
+    cairo_fill_preserve(cr);
+    cairo_set_source_rgb(cr, 0.16, 0.13, 0.07);
+    cairo_set_line_width(cr, 1.5);
+    cairo_stroke(cr);
+
+    cairo_arc(cr, 11.0, 11.0, 2.6, 0.0, 2.0 * G_PI);
+    cairo_set_source_rgb(cr, 0.16, 0.13, 0.07);
+    cairo_fill(cr);
+
+    cairo_destroy(cr);
+    cairo_surface_flush(surface);
+    pixbuf = gdk_pixbuf_get_from_surface(surface, 0, 0, size, size);
+    cairo_surface_destroy(surface);
+    return pixbuf;
+}
+
+/* Timer del click singolo: crea una nota solo se non arriva un doppio. */
+static gboolean tray_click_timeout(gpointer data)
+{    AppCtx *ctx = data;
+
+    ctx->tray_click_timer = 0;
+    if (ctx->tray_clicks == 1)
+        on_new_note(ctx);
+    ctx->tray_clicks = 0;
+    return G_SOURCE_REMOVE;
+}
+
+/* Click sinistro sul tray: singolo = nuova nota, doppio = archivio. */
+static void on_tray_activate(GtkStatusIcon *icon, gpointer data)
+{    AppCtx *ctx = data;
+
+    (void)icon;
+    ctx->tray_clicks++;
+
+    if (ctx->tray_clicks >= 2) {
+        if (ctx->tray_click_timer != 0) {
+            g_source_remove(ctx->tray_click_timer);
+            ctx->tray_click_timer = 0;
+        }
+        ctx->tray_clicks = 0;
+        on_show_archive(ctx);
+    } else if (ctx->tray_click_timer == 0) {
+        ctx->tray_click_timer = g_timeout_add(250, tray_click_timeout, ctx);
+    }
+}
+
+/* Voce menu "Browse notes". */
+static void on_tray_browse(GtkMenuItem *item, gpointer data)
+{    (void)item;
+    on_show_archive(data);
+}
+
+/* Voce menu "New note". */
+static void on_tray_new(GtkMenuItem *item, gpointer data)
+{    (void)item;
+    on_new_note(data);
+}
+
+/* Voce menu "Exit": salva le note e termina il ciclo. */
+static void on_tray_exit(GtkMenuItem *item, gpointer data)
+{    AppCtx *ctx = data;
+
+    (void)item;
+    save_open_notes(ctx);
+    gtk_main_quit();
+}
+
+/* Voce menu "Start at login". */
+static void on_tray_startup_toggled(GtkCheckMenuItem *item, gpointer data)
+{    AppCtx *ctx = data;
+    gboolean enabled = gtk_check_menu_item_get_active(item);
+
+    if (!platform_autostart_set(enabled)) {
+        g_warning("Could not %s the autostart entry.",
+                  enabled ? "create" : "remove");
+        g_signal_handlers_block_by_func(item,
+                                        G_CALLBACK(on_tray_startup_toggled),
+                                        ctx);
+        gtk_check_menu_item_set_active(item, !enabled);
+        g_signal_handlers_unblock_by_func(item,
+                                          G_CALLBACK(on_tray_startup_toggled),
+                                          ctx);
+    }
+}
+
+/* Sincronizza il check "Start at login" con lo stato su disco. */
+static void update_tray_startup_item(AppCtx *ctx)
+{    gboolean enabled;
+
+    if (ctx->tray_startup_item == NULL)
+        return;
+
+    enabled = platform_autostart_enabled();
+    g_signal_handlers_block_by_func(ctx->tray_startup_item,
+                                    G_CALLBACK(on_tray_startup_toggled), ctx);
+    gtk_check_menu_item_set_active(GTK_CHECK_MENU_ITEM(ctx->tray_startup_item),
+                                   enabled);
+    g_signal_handlers_unblock_by_func(ctx->tray_startup_item,
+                                      G_CALLBACK(on_tray_startup_toggled), ctx);
+}
+
+/* Apre il menu contestuale del tray. */
+static void on_tray_popup(GtkStatusIcon *icon, guint button,
+                          guint activate_time, gpointer data)
+{    AppCtx *ctx = data;
+
+    if (ctx->tray_menu == NULL)
+        return;
+
+    update_tray_startup_item(ctx);
+    gtk_widget_show_all(ctx->tray_menu);
+    gtk_menu_popup(GTK_MENU(ctx->tray_menu), NULL, NULL,
+                   gtk_status_icon_position_menu, icon, button, activate_time);
+}
+
+/* Crea icona e menu del tray (solo X11/XWayland). */
+static void setup_tray(AppCtx *ctx)
+{
+#if defined(GDK_WINDOWING_X11)
+    GdkPixbuf *pixbuf;
+    GtkWidget *item;
+
+    if (platform_is_wayland()) {
+        g_warning("System tray is only available on X11/XWayland; "
+                  "skipping the tray icon.");
+        return;
+    }
+
+    ctx->tray_menu = gtk_menu_new();
+
+    item = gtk_menu_item_new_with_label("Browse notes");
+    g_signal_connect(item, "activate", G_CALLBACK(on_tray_browse), ctx);
+    gtk_menu_shell_append(GTK_MENU_SHELL(ctx->tray_menu), item);
+
+    item = gtk_menu_item_new_with_label("New note");
+    g_signal_connect(item, "activate", G_CALLBACK(on_tray_new), ctx);
+    gtk_menu_shell_append(GTK_MENU_SHELL(ctx->tray_menu), item);
+
+    gtk_menu_shell_append(GTK_MENU_SHELL(ctx->tray_menu),
+                          gtk_separator_menu_item_new());
+
+    ctx->tray_startup_item = gtk_check_menu_item_new_with_label("Start at login");
+    gtk_check_menu_item_set_active(GTK_CHECK_MENU_ITEM(ctx->tray_startup_item),
+                                   platform_autostart_enabled());
+    g_signal_connect(ctx->tray_startup_item, "toggled",
+                     G_CALLBACK(on_tray_startup_toggled), ctx);
+    gtk_menu_shell_append(GTK_MENU_SHELL(ctx->tray_menu),
+                          ctx->tray_startup_item);
+
+    item = gtk_menu_item_new_with_label("Exit");
+    g_signal_connect(item, "activate", G_CALLBACK(on_tray_exit), ctx);
+    gtk_menu_shell_append(GTK_MENU_SHELL(ctx->tray_menu), item);
+
+    gtk_widget_show_all(ctx->tray_menu);
+
+    pixbuf = make_tray_pixbuf();
+    if (pixbuf == NULL) {
+        g_warning("Could not create the tray icon.");
+        return;
+    }
+
+    ctx->tray_icon = gtk_status_icon_new_from_pixbuf(pixbuf);
+    g_object_unref(pixbuf);
+    gtk_status_icon_set_tooltip_text(ctx->tray_icon, "Jotilla");
+    gtk_status_icon_set_visible(ctx->tray_icon, TRUE);
+    g_signal_connect(ctx->tray_icon, "activate",
+                     G_CALLBACK(on_tray_activate), ctx);
+    g_signal_connect(ctx->tray_icon, "popup-menu",
+                     G_CALLBACK(on_tray_popup), ctx);
+#else
+    (void)ctx;
+    g_warning("System tray is not available: GTK built without X11 support.");
+#endif
+}
+
+/* Salva le note e termina su SIGTERM/SIGINT. */
+static gboolean on_terminate_signal(gpointer data)
+{    save_open_notes(data);
+    gtk_main_quit();
+    return G_SOURCE_REMOVE;
+}
+
+/* Rilascia risorse GUI prima di liberare lo store. */
+static void teardown(AppCtx *ctx, GApplication *gapp)
+{
+    platform_hotkey_uninstall();
+
+    if (ctx->tray_icon != NULL) {
+        gtk_status_icon_set_visible(ctx->tray_icon, FALSE);
+        g_object_unref(ctx->tray_icon);
+        ctx->tray_icon = NULL;
+    }
+
+    if (ctx->tray_menu != NULL) {
+        gtk_widget_destroy(ctx->tray_menu);
+        ctx->tray_menu = NULL;
+    }
+
+    if (ctx->note_windows != NULL) {
+        while (ctx->note_windows->len > 0) {
+            GtkWidget *window = g_ptr_array_index(ctx->note_windows,
+                                                  ctx->note_windows->len - 1);
+            gtk_widget_destroy(window);
+        }
+        g_ptr_array_free(ctx->note_windows, TRUE);
+        ctx->note_windows = NULL;
+    }
+
+    if (ctx->archive != NULL)
+        gtk_widget_destroy(ctx->archive);
+
+    if (gapp != NULL)
+        g_object_unref(gapp);
 }
 
 /* Esegue test interni su store e ricerca, poi pulisce. */
@@ -238,6 +595,7 @@ int main(int argc, char **argv)
     };
     GOptionContext *opt = g_option_context_new(NULL);
     AppCtx ctx = {0};
+    GApplication *gapp = NULL;
 
     g_option_context_add_main_entries(opt, entries, NULL);
     g_option_context_add_group(opt, gtk_get_option_group(TRUE));
@@ -257,19 +615,44 @@ int main(int argc, char **argv)
         return rc;
     }
 
+    /* Istanza unica tramite GApplication (D-Bus). */
+    gapp = g_application_new("org.jotilla.Jotilla", G_APPLICATION_DEFAULT_FLAGS);
+    g_signal_connect(gapp, "activate", G_CALLBACK(on_app_activate), &ctx);
+
+    if (!g_application_register(gapp, NULL, &err)) {
+        g_clear_error(&err);
+        g_object_unref(gapp);
+        g_free(archive_dir);
+        g_free(config_dir);
+        return 0;
+    }
+
+    if (g_application_get_is_remote(gapp)) {
+        /* Un'altra istanza e' gia' attiva: chiedile di mostrarsi. */
+        g_application_activate(gapp);
+        g_object_unref(gapp);
+        g_free(archive_dir);
+        g_free(config_dir);
+        return 0;
+    }
+
+    ctx.gapp = gapp;
+
     ctx.store = store_open(archive_dir, config_dir, &err);
     if (ctx.store == NULL) {
         g_printerr("cannot open store: %s\n", err != NULL ? err->message : "unknown");
         g_clear_error(&err);
+        g_object_unref(gapp);
         g_free(archive_dir);
         g_free(config_dir);
         return 1;
     }
     ctx.archive_dir = g_strdup(archive_dir != NULL ? archive_dir : store_archive_dir(ctx.store));
     ctx.config_dir = g_strdup(config_dir);
+    ctx.note_windows = g_ptr_array_new();
 
     if (ctx.store->notes->len == 0) { /* nessuna nota: crea una vuota */
-        Note *note = store_new(ctx.store, "");
+        Note *note = store_new(ctx.store, smoke_test ? "smoke test" : "");
         if (note != NULL)
             open_note(&ctx, note);
     } else {        guint i;
@@ -292,13 +675,22 @@ int main(int argc, char **argv)
         }
     }
 
+    g_unix_signal_add(SIGTERM, on_terminate_signal, &ctx);
+    g_unix_signal_add(SIGINT, on_terminate_signal, &ctx);
+
+    setup_tray(&ctx);
+    platform_hotkey_install(on_new_note, &ctx);
+
     if (smoke_test) {
         on_show_archive(&ctx);
         g_timeout_add(1200, quit_loop, NULL);
     }
 
+    g_application_activate(gapp);
+
     gtk_main();
 
+    teardown(&ctx, gapp);
     store_free(ctx.store);
     g_free(ctx.archive_dir);
     g_free(ctx.config_dir);
