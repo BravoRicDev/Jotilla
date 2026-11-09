@@ -8,8 +8,8 @@ Small, native notes with autosave, an archive and a calendar. No extra dependenc
 
 | System | Installer | Portable · no installation |
 |---|---|---|
-| Windows 10/11 · x64 | [Setup (.exe)](https://github.com/GarauGarau/Jotila/releases/download/v1.8.1/Jotila-Setup-x64.exe) | [Portable ZIP](https://github.com/GarauGarau/Jotila/releases/download/v1.8.1/Jotila-portable-x64.zip) |
-| macOS 13+ · Apple Silicon / Intel · preview | [Setup (.pkg)](https://github.com/GarauGarau/Jotila/releases/download/macos-v0.1.1/Jotila-Setup-universal.pkg) | [Portable ZIP](https://github.com/GarauGarau/Jotila/releases/download/macos-v0.1.1/Jotila-portable-universal.zip) |
+| Windows 10/11 · x64 | [Setup (.exe)](https://github.com/GarauGarau/Jotila/releases/download/v1.8.2/Jotila-Setup-x64.exe) | [Portable ZIP](https://github.com/GarauGarau/Jotila/releases/download/v1.8.2/Jotila-portable-x64.zip) |
+| macOS 13+ · Apple Silicon / Intel · preview | [Setup (.pkg)](https://github.com/GarauGarau/Jotila/releases/download/macos-v0.1.2/Jotila-Setup-universal.pkg) | [Portable ZIP](https://github.com/GarauGarau/Jotila/releases/download/macos-v0.1.2/Jotila-portable-universal.zip) |
 
 Run the installer, or extract the portable ZIP and launch Jotila. For the Mac portable app, select the included `Notes.jotilaarchive` folder when prompted.
 
