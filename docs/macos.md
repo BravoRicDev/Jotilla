@@ -1,6 +1,6 @@
 # Native macOS preview
 
-This branch contains a local, unpublished macOS implementation. It is not a
+This branch contains an experimental macOS implementation. It is not a
 release: it was authored on Windows, where AppKit cannot be compiled or run.
 Native compilation, tests, desktop behavior, performance and package installation
 still require validation on a Mac. Do not use the only copy of an archive for
@@ -144,21 +144,22 @@ and upgrade. Current differences to address before release:
 - Global hotkeys, title-promotion undo and foreground-color undo need desktop
   testing; no claims of identical behavior are made yet.
 
-## Keep the work unpublished
+## Retrieve the preview on a Mac
 
-The `feature/macos-native` branch is local and has no upstream. GitHub visibility
-is per repository: pushing it to the public origin would expose the code. A
-remote backup would require a separate private repository. Do not change the
-visibility of the existing public project to hide one branch.
+The `feature/macos-native` branch is published on the public repository and
+tracks `origin/feature/macos-native`. It is separate from `main`; publishing the
+branch does not make it a tested release or provide compiled Mac downloads.
 
-For a private transfer without GitHub, use the local source ZIP or a Git bundle:
+Clone it directly:
 
 ```sh
-git bundle create Jotila-macos.bundle feature/macos-native
+git clone --branch feature/macos-native --single-branch https://github.com/GarauGarau/Jotila.git
+cd Jotila
 ```
 
-On the Mac:
+Then follow the build and validation steps above. To update an existing checkout
+of this branch:
 
 ```sh
-git clone -b feature/macos-native Jotila-macos.bundle Jotila
+git pull --ff-only
 ```

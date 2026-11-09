@@ -23,7 +23,7 @@ done
 mkdir -p "$stage/portable/Notes.jotilaarchive"
 cp LICENSE "$stage/portable/LICENSE"
 cat > "$stage/portable/README.txt" <<'EOF'
-Jotila for macOS — private preview
+Jotila for macOS — development preview
 
 Run Jotila.app and choose Notes.jotilaarchive (or an existing archive folder).
 The portable app asks for the folder each launch; it writes no archive location
