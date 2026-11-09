@@ -15,6 +15,90 @@ static HWND test_picker(Note *note,POINT anchor,int palette,int color) {
     return palette_picker_show(note->window,anchor,&options);
 }
 
+static BOOL CALLBACK palette_monitor_check(HMONITOR monitor,HDC dc,LPRECT rect,LPARAM data) {
+    MONITORINFO info={sizeof(info)};
+    Note *note=new_note();
+    POINT anchor={40,60};
+    HWND popup;
+    int palette;
+    (void)dc; (void)rect; (void)data;
+    require(note && GetMonitorInfoW(monitor,&info),"create a palette fixture on each connected monitor");
+    replace_text(note,L"Monitor palette check");
+    SetWindowPos(note->window,NULL,info.rcWork.left+32,info.rcWork.top+32,0,0,SWP_NOSIZE|SWP_NOZORDER|SWP_NOACTIVATE);
+    ClientToScreen(note->edit,&anchor);
+    printf("Checking palette on monitor (%ld,%ld), note DPI %u.\n",info.rcMonitor.left,info.rcMonitor.top,GetDpiForWindow(note->window));
+    fflush(stdout);
+    SendMessageW(note->edit,EM_SETSEL,0,0);
+    SendMessageW(note->edit,WM_RBUTTONDOWN,MK_RBUTTON,MAKELPARAM(40,60));
+    SendMessageW(note->edit,WM_RBUTTONUP,0,MAKELPARAM(40,60));
+    popup=thread_window(PALETTE_PICKER_CLASS,NULL);
+    require(popup && GetDpiForWindow(popup)==GetDpiForWindow(note->window) &&
+            MonitorFromWindow(popup,MONITOR_DEFAULTTONEAREST)==monitor,
+            "right-click opens a live palette at the note's monitor and DPI");
+    SendMessageW(popup,WM_KEYDOWN,VK_DOWN,0); SendMessageW(popup,WM_KEYDOWN,VK_RETURN,0);
+    require(!IsWindow(popup),"background selection closes the monitor fixture's popup");
+    palette=note->palette;
+    SendMessageW(note->edit,EM_SETSEL,0,7);
+    SendMessageW(note->edit,WM_CONTEXTMENU,(WPARAM)note->edit,MAKELPARAM(anchor.x,anchor.y));
+    popup=thread_window(PALETTE_PICKER_CLASS,NULL);
+    require(popup && GetDpiForWindow(popup)==GetDpiForWindow(note->window),
+            "selected-text mode also opens at the correct monitor DPI");
+    SendMessageW(popup,WM_KEYDOWN,VK_DOWN,0); SendMessageW(popup,WM_KEYDOWN,VK_RETURN,0);
+    require(!IsWindow(popup) && note->palette==palette && note->custom_ink,
+            "selected-text color leaves the background unchanged on every monitor");
+    destroy_note(note);
+    return TRUE;
+}
+
+static void palette_monitor_checks(void) {
+    require(EnumDisplayMonitors(NULL,NULL,palette_monitor_check,0),"check palettes on every connected monitor");
+    load_preferences();
+    puts("PASS: right-click background and text palettes across all connected monitor scales.");
+}
+
+static UINT picker_interrupt, picker_trigger;
+static BOOL picker_interrupted;
+static LRESULT CALLBACK interrupt_picker(int code,WPARAM wparam,LPARAM lparam) {
+    if(code>=0 && !picker_interrupted) {
+        const CWPSTRUCT *event=(const CWPSTRUCT *)lparam;
+        wchar_t name[64];
+        if(event->message==picker_trigger && GetClassNameW(event->hwnd,name,64) &&
+            !wcscmp(name,PALETTE_PICKER_CLASS) &&
+            ((picker_trigger==WM_SHOWWINDOW && event->wParam) ||
+             (picker_trigger==WM_WINDOWPOSCHANGING && ((WINDOWPOS *)event->lParam)->cx>0))) {
+            RECT rect;
+            picker_interrupted=TRUE; GetWindowRect(event->hwnd,&rect);
+            SendMessageW(event->hwnd,picker_interrupt,0,(LPARAM)&rect);
+        }
+    }
+    return CallNextHookEx(NULL,code,wparam,lparam);
+}
+
+static void palette_interruption_checks(void) {
+    static const UINT messages[]={WM_DPICHANGED,WM_DISPLAYCHANGE,WM_CLOSE,WM_ACTIVATE};
+    Note *note=new_note();
+    POINT anchor={400,360};
+    int i;
+    require(note!=NULL,"create isolated palette interruption owner");
+    for(i=0;i<4;++i) {
+        HHOOK hook;
+        HWND popup;
+        picker_interrupt=messages[i]; picker_interrupted=FALSE;
+        picker_trigger=i==3?WM_SHOWWINDOW:WM_WINDOWPOSCHANGING;
+        hook=SetWindowsHookExW(WH_CALLWNDPROC,interrupt_picker,NULL,GetCurrentThreadId());
+        require(hook!=NULL,"observe only this test thread's popup messages");
+        popup=test_picker(note,anchor,3,0);
+        require(UnhookWindowsHookEx(hook),"remove the private popup hook");
+        require(picker_interrupted && popup==NULL && !thread_window(PALETTE_PICKER_CLASS,NULL),
+                "synchronous placement or activation cancellation never returns a destroyed picker");
+        popup=test_picker(note,anchor,3,0);
+        require(popup!=NULL,"a new palette opens normally after interrupted creation");
+        SendMessageW(popup,WM_KEYDOWN,VK_ESCAPE,0);
+    }
+    destroy_note(note);
+    puts("PASS: synchronous DPI/display/close/activation cancellation during popup creation and safe reopening.");
+}
+
 static void browse_picker(HWND popup,int target) {
     wchar_t name[80];
     int i,order=-1,step;
@@ -378,7 +462,7 @@ static void palette_checks(void) {
     wchar_t id[80], label[80];
     int p,c,sequence,side,footer_y,neighbor=POPULAR_PALETTES[2];
     DWORD gdi,user;
-    palette_catalog_checks();
+    palette_catalog_checks(); palette_monitor_checks(); palette_interruption_checks();
     current_palette=0; shuffled_palette=FALSE;
     note=new_note(); require(note!=NULL,"create color-picker note");
     art=palette_art_create(note->dpi); require(art!=NULL,"create native coverage renderer");

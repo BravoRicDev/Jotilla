@@ -24,6 +24,10 @@ typedef struct Picker {
 } Picker;
 static HWND active_picker;
 
+static BOOL alive(HWND window,const Picker *p) {
+    return IsWindow(window) && (Picker *)GetWindowLongPtrW(window,GWLP_USERDATA)==p;
+}
+
 static void render(HWND window, Picker *p) {
     BLENDFUNCTION blend={AC_SRC_OVER,0,p->alpha,AC_SRC_ALPHA};
     POINT source={0,0};
@@ -71,8 +75,7 @@ static void favorite(HWND window, Picker *p) {
     int value=p->palette==p->options.favorite ? -1 : p->palette;
     if(!p->options.favorite_changed) return;
     /* A failed save may display a dialog, deactivating and destroying us. */
-    if(!p->options.favorite_changed(p->options.context,value) || !IsWindow(window) ||
-        (Picker *)GetWindowLongPtrW(window,GWLP_USERDATA)!=p) return;
+    if(!p->options.favorite_changed(p->options.context,value) || !alive(window,p)) return;
     p->options.favorite=value;
     if(value>=0 && !p->options.text_mode) {
         if(p->options.palette!=value || p->options.color<0) p->options.color=0;
@@ -107,7 +110,7 @@ static LRESULT CALLBACK picker_proc(HWND window, UINT message, WPARAM wparam, LP
     if(!p) return DefWindowProcW(window,message,wparam,lparam);
     switch(message) {
     case WM_CREATE: {
-        int dpi=(int)GetDpiForWindow(p->owner);
+        int dpi=(int)GetDpiForWindow(window);
         p->art=palette_art_create(dpi?dpi:96);
         if(!p->art) return -1;
         palette_art_prepare(p->art,p->palette,p->options.favorite,p->options.text_mode);
@@ -230,14 +233,31 @@ HWND palette_picker_show(HWND owner, POINT anchor, const PalettePickerOptions *o
     if(initial.order<0) initial.order=0;
     initial.palette=POPULAR_PALETTES[initial.order];
     initial.hover=initial.pressed=PICK_NONE;
+    /* Starting at (0,0) can create the popup at another monitor's DPI. Moving
+       it then sends WM_DPICHANGED synchronously and destroys the picker. */
+    x=max(monitor.rcWork.left,min(anchor.x,monitor.rcWork.right-1));
+    y=max(monitor.rcWork.top,min(anchor.y,monitor.rcWork.bottom-1));
     window=CreateWindowExW(WS_EX_TOOLWINDOW|WS_EX_TOPMOST|WS_EX_LAYERED,PALETTE_PICKER_CLASS,
-        PALETTE_NAMES[initial.palette],WS_POPUP,0,0,0,0,owner,NULL,cls.hInstance,&initial);
+        PALETTE_NAMES[initial.palette],WS_POPUP,x,y,0,0,owner,NULL,cls.hInstance,&initial);
     if(!window) return NULL;
-    p=(Picker *)GetWindowLongPtrW(window,GWLP_USERDATA); layout=palette_art_layout(p->art);
+    p=(Picker *)GetWindowLongPtrW(window,GWLP_USERDATA);
+    if(!p) return NULL;
+    layout=palette_art_layout(p->art);
     x=max(monitor.rcWork.left,min(anchor.x-layout->size.cx/2,monitor.rcWork.right-layout->size.cx));
     y=max(monitor.rcWork.top,min(anchor.y-(layout->wheel.top+layout->wheel.bottom)/2,monitor.rcWork.bottom-layout->size.cy));
-    SetWindowPos(window,NULL,x,y,layout->size.cx,layout->size.cy,SWP_NOACTIVATE|SWP_NOZORDER);
+    if(!SetWindowPos(window,NULL,x,y,layout->size.cx,layout->size.cy,SWP_NOACTIVATE|SWP_NOZORDER)) {
+        if(alive(window,p)) DestroyWindow(window);
+        return NULL;
+    }
+    /* Placement, drawing and activation dispatch window messages. A monitor
+       change or cancellation can destroy this popup before any call returns. */
+    if(!alive(window,p)) return NULL;
     active_picker=window; transition(window,p);
-    ShowWindow(window,SW_SHOWNORMAL); SetForegroundWindow(window); SetFocus(window);
-    return window;
+    if(!alive(window,p)) return NULL;
+    ShowWindow(window,SW_SHOWNORMAL);
+    if(!alive(window,p)) return NULL;
+    SetForegroundWindow(window);
+    if(!alive(window,p)) return NULL;
+    SetFocus(window);
+    return alive(window,p)?window:NULL;
 }

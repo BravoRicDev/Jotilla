@@ -9,6 +9,7 @@
 #include <string.h>
 #include <wchar.h>
 #include "../src/resource.h"
+#include "../src/palette_picker.h"
 #define CAP 1024
 static wchar_t root[CAP], executable[CAP];
 static HANDLE running;
@@ -90,6 +91,28 @@ static void second_launch(BOOL startup) {
     Sleep(50); /* NEW_NOTE_MESSAGE is posted; allow the receiving event loop to dispatch it. */
 }
 
+static BOOL CALLBACK palette_on_monitor(HMONITOR monitor,HDC dc,LPRECT rect,LPARAM data) {
+    MONITORINFO info={sizeof(info)};
+    HWND note=(HWND)data, edit=GetDlgItem(note,10), popup;
+    DWORD pid;
+    DWORD_PTR result;
+    (void)dc; (void)rect;
+    require(edit && GetMonitorInfoW(monitor,&info),"locate real-process editor and monitor");
+    require(SetWindowPos(note,NULL,info.rcWork.left+32,info.rcWork.top+32,0,0,
+                        SWP_NOSIZE|SWP_NOZORDER|SWP_NOACTIVATE),"move private note to each monitor");
+    require(SendMessageTimeoutW(edit,WM_RBUTTONDOWN,MK_RBUTTON,MAKELPARAM(40,60),
+                               SMTO_ABORTIFHUNG|SMTO_BLOCK,3000,&result) &&
+            SendMessageTimeoutW(edit,WM_RBUTTONUP,0,MAKELPARAM(40,60),
+                               SMTO_ABORTIFHUNG|SMTO_BLOCK,3000,&result),"release executable handles right-click");
+    popup=FindWindowW(PALETTE_PICKER_CLASS,NULL);
+    pid=0; if(popup) GetWindowThreadProcessId(popup,&pid);
+    require(popup && pid==running_pid && GetDpiForWindow(popup)==GetDpiForWindow(note) &&
+            MonitorFromWindow(popup,MONITOR_DEFAULTTONEAREST)==monitor,"release palette uses target monitor DPI");
+    require(SendMessageTimeoutW(popup,WM_KEYDOWN,VK_RETURN,0,SMTO_ABORTIFHUNG|SMTO_BLOCK,3000,&result) &&
+            !IsWindow(popup) && WaitForSingleObject(running,0)==WAIT_TIMEOUT,"release survives palette selection");
+    return TRUE;
+}
+
 int main(void) {
     wchar_t temporary[CAP], value[CAP], pattern[CAP];
     HWND windows[8];
@@ -111,6 +134,7 @@ int main(void) {
     require(note_windows(windows)==0,"duplicate automatic startup creates no note");
     second_launch(FALSE);
     require(note_windows(windows)==1,"an intentional second launch still creates a note");
+    require(EnumDisplayMonitors(NULL,NULL,palette_on_monitor,(LPARAM)windows[0]),"check release palette across monitors");
     stop();
     path(value,L"notes\\notes.ini"); require(DeleteFileW(value),"replace private empty-session preferences");
     fixture(L"notes\\note-session.txt","Restored after startup");
@@ -140,6 +164,6 @@ int main(void) {
     path(value,L"notes"); require(RemoveDirectoryW(value),"remove private startup archive");
     path(value,L"portable.flag"); require(DeleteFileW(value),"remove private portable marker");
     require(DeleteFileW(executable) && RemoveDirectoryW(root),"remove private launch fixtures");
-    puts("PASS: real-process startup, no blank or duplicate notes, manual second launch, focus preservation and session restart.");
+    puts("PASS: real-process startup, right-click on each monitor, no blank or duplicate notes, focus preservation and session restart.");
     return 0;
 }
