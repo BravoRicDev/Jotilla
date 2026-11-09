@@ -72,6 +72,10 @@ cl %JOTILA_CFLAGS% tests\archive_cache.c /Fo"build\archive_cache.obj" /Fe"build\
 if not "%errorlevel%"=="0" exit /b 1
 build\archive_cache.exe
 if not "%errorlevel%"=="0" exit /b 1
+cl %JOTILA_CFLAGS% tests\archive_layout.c /Fo"build\archive_layout.obj" /Fe"build\archive_layout.exe" /link %JOTILA_MANIFEST% %JOTILA_LIBS:build\archive.obj =%
+if not "%errorlevel%"=="0" exit /b 1
+build\archive_layout.exe
+if not "%errorlevel%"=="0" exit /b 1
 if not exist dist\Jotila.exe exit /b 0
 cl %JOTILA_CFLAGS% tests\startup_checks.c /Fo"build\startup_checks.obj" /Fe"build\startup_checks.exe" /link user32.lib %JOTILA_MANIFEST%
 if not "%errorlevel%"=="0" exit /b 1

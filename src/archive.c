@@ -761,9 +761,11 @@ static void archive_fonts(Archive *archive) {
        is drawn directly; there is no bitmap or child editor per post-it. */
     if (!archive->tiles) {
         archive->tiles = ImageList_Create(archive_scaled(archive, 220), archive_scaled(archive, 170), ILC_COLOR32, 1, 1);
-        ListView_SetImageList(archive->list, archive->tiles, LVSIL_NORMAL);
     } else ImageList_SetIconSize(archive->tiles, archive_scaled(archive, 220), archive_scaled(archive, 170));
     ImageList_SetImageCount(archive->tiles, 1);
+    /* ListView caches image dimensions. Resizing an attached shared image list
+       alone leaves old hit/draw bounds after a DPI change, overlapping rows. */
+    ListView_SetImageList(archive->list, archive->tiles, LVSIL_NORMAL);
     ListView_SetIconSpacing(archive->list, archive_scaled(archive, 236), archive_scaled(archive, 196));
     if (old_font) DeleteObject(old_font);
     if (old_bold) DeleteObject(old_bold);
