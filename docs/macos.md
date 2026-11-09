@@ -187,15 +187,15 @@ in the validation report; automated tests are not a substitute for those runs.
 
 ## Retrieve the preview on a Mac
 
-The `feature/macos-native` branch is published on the public repository and
-tracks `origin/feature/macos-native`. It is separate from `main`. The
+The `macos` branch is published on the public repository and tracks
+`origin/macos`. The default `windows` branch contains the Windows version. The
 `macos-v0.1.0` prerelease provides the universal portable app, PKG installer and
 SHA-256 checksums built from the tagged commit.
 
 Clone it directly:
 
 ```sh
-git clone --branch feature/macos-native --single-branch https://github.com/GarauGarau/Jotila.git
+git clone --branch macos --single-branch https://github.com/GarauGarau/Jotila.git
 cd Jotila
 ```
 
@@ -203,5 +203,18 @@ Then follow the build and validation steps above. To update an existing checkout
 of this branch:
 
 ```sh
+git pull --ff-only
+```
+
+If the existing checkout still calls the branch `feature/macos-native`, rename it
+and update its tracking branch first:
+
+```sh
+git branch -m feature/macos-native macos
+git remote set-branches origin '*'
+git fetch origin --prune
+git branch -u origin/macos macos
+git remote set-head origin -a
+git switch macos
 git pull --ff-only
 ```
