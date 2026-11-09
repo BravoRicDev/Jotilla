@@ -1,8 +1,8 @@
-#ifndef JOTILA_PALETTE_PICKER_H
-#define JOTILA_PALETTE_PICKER_H
+#ifndef JOTILLA_PALETTE_PICKER_H
+#define JOTILLA_PALETTE_PICKER_H
 #include <windows.h>
 
-#define PALETTE_PICKER_CLASS L"Jotila.PalettePicker"
+#define PALETTE_PICKER_CLASS L"Jotilla.PalettePicker"
 typedef void (*PaletteSelection)(void *context, int palette, int color);
 /* A favorite applies its first background color, retaining the current color
    when already in that palette. Removing it (-1) leaves the note unchanged. */

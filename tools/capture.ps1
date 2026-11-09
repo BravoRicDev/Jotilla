@@ -11,9 +11,9 @@ $ErrorActionPreference = 'Stop'
 if ($BrowserOnly -and $NotesOnly) { throw 'Choose one walkthrough, or omit both switches to capture both.' }
 if (($OverviewOnly -or $StillsOnly) -and ($GifsOnly -or $BrowserOnly -or $NotesOnly)) { throw 'Still captures cannot be combined with walkthrough switches.' }
 $root = Split-Path -Parent $PSScriptRoot
-$demoRoot = Join-Path ([IO.Path]::GetTempPath()) ('Jotila-demo-' + [guid]::NewGuid().ToString('N'))
-$previousDemoRoot = $env:JOTILA_DEMO_ROOT
-$env:JOTILA_DEMO_ROOT = $demoRoot
+$demoRoot = Join-Path ([IO.Path]::GetTempPath()) ('Jotilla-demo-' + [guid]::NewGuid().ToString('N'))
+$previousDemoRoot = $env:JOTILLA_DEMO_ROOT
+$env:JOTILLA_DEMO_ROOT = $demoRoot
 $recordings = if ($OverviewOnly -or $StillsOnly) { @() } elseif ($BrowserOnly) { @('browser') } elseif ($NotesOnly) { @('notes') } else { @('notes', 'browser') }
 $finished = $false
 $backgrounds = [ordered]@{
@@ -87,7 +87,7 @@ try {
     }
     $finished = $true
 } finally {
-    $env:JOTILA_DEMO_ROOT = $previousDemoRoot
+    $env:JOTILLA_DEMO_ROOT = $previousDemoRoot
     if (Test-Path -LiteralPath $demoRoot) {
         $files = @(Get-ChildItem -LiteralPath $demoRoot -Force)
         if (@($files | Where-Object { $_.PSIsContainer -or $_.Name -notmatch '^(notes\.ini|note-.+\.(txt|rtf)(\.tmp)?)$' }).Count) {

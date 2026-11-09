@@ -1,7 +1,7 @@
 #include <windows.h>
 #include "resource.h"
-IDI_APP ICON "assets/jotila.ico"
-IDR_APPLICATION RCDATA "dist/Jotila.exe"
+IDI_APP ICON "assets/jotilla.ico"
+IDR_APPLICATION RCDATA "dist/Jotilla.exe"
 IDR_LICENSE RCDATA "LICENSE"
 1 VERSIONINFO
  FILEVERSION APP_VERSION_NUM
@@ -13,9 +13,9 @@ BEGIN
  BEGIN
   BLOCK "040904B0"
   BEGIN
-   VALUE "FileDescription", "Jotila Setup\0"
+   VALUE "FileDescription", "Jotilla Setup\0"
    VALUE "FileVersion", APP_VERSION "\0"
-   VALUE "ProductName", "Jotila\0"
+   VALUE "ProductName", "Jotilla\0"
    VALUE "ProductVersion", APP_VERSION "\0"
    VALUE "LegalCopyright", "MIT - Alessio Garau\0"
   END

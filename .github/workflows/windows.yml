@@ -28,10 +28,10 @@ jobs:
       - name: Save downloads
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: Jotila-windows-x64
+          name: Jotilla-windows-x64
           path: |
-            dist/Jotila.exe
-            dist/Jotila-Setup-x64.exe
-            dist/Jotila-portable-x64.zip
+            dist/Jotilla.exe
+            dist/Jotilla-Setup-x64.exe
+            dist/Jotilla-portable-x64.zip
             dist/SHA256SUMS.txt
           if-no-files-found: error

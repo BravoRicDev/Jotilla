@@ -1,5 +1,5 @@
-#ifndef JOTILA_DATE_H
-#define JOTILA_DATE_H
+#ifndef JOTILLA_DATE_H
+#define JOTILLA_DATE_H
 #include <stddef.h>
 
 /* Civil Gregorian dates, YYYYMMDD; zero means unassigned. No time zones. */

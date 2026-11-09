@@ -1,5 +1,5 @@
-#ifndef JOTILA_ARCHIVE_H
-#define JOTILA_ARCHIVE_H
+#ifndef JOTILLA_ARCHIVE_H
+#define JOTILLA_ARCHIVE_H
 
 #include <windows.h>
 

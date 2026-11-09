@@ -8,10 +8,11 @@
 #include <wchar.h>
 #include <stdlib.h>
 static HRESULT inspect_options(const TASKDIALOGCONFIG *dialog,int *button,int *radio,BOOL *checked);
-static wchar_t test_key[160], test_legacy_key[160], test_previous_key[160], test_startup_key[160];
+static wchar_t test_key[160], test_legacy_key[160], test_previous_key[160], test_older_key[160], test_startup_key[160];
 #define UNINSTALL_KEY test_key
 #define LEGACY_UNINSTALL_KEY test_legacy_key
 #define PREVIOUS_UNINSTALL_KEY test_previous_key
+#define OLDER_UNINSTALL_KEY test_older_key
 #define STARTUP_KEY test_startup_key
 #define TaskDialogIndirect inspect_options
 #include "../src/setup.c"
@@ -70,10 +71,17 @@ static void startup_checks(void) {
     require(get_startup(&enabled) && !enabled && set_startup(FALSE),"fresh install leaves startup off without creating a Run key");
     require(RegOpenKeyExW(HKEY_CURRENT_USER,test_startup_key,0,KEY_READ,&key)==ERROR_FILE_NOT_FOUND,
             "disabling a missing startup entry creates no registry key");
+    require(RegCreateKeyExW(HKEY_CURRENT_USER,test_startup_key,0,NULL,0,KEY_WRITE,NULL,&key,NULL)==ERROR_SUCCESS &&
+            registry_text(key,L"Jotila",L"old executable --startup"),"create previous-brand startup preference");
+    require(get_startup(&enabled) && enabled,"upgrade reads the previous brand's startup choice");
+    RegCloseKey(key);
     require(set_startup(TRUE) && get_startup(&enabled) && enabled,"enable startup for the current account");
     bytes=sizeof(value);
+    require(RegGetValueW(HKEY_CURRENT_USER,test_startup_key,L"Jotila",RRF_RT_REG_SZ,NULL,value,&bytes)==ERROR_FILE_NOT_FOUND,
+            "upgrade removes the previous startup entry to prevent duplicate launches");
+    bytes=sizeof(value);
     swprintf_s(expected,PATH_CAP,L"\"%s\" --startup",app_path);
-    require(RegGetValueW(HKEY_CURRENT_USER,test_startup_key,L"Jotila",RRF_RT_REG_SZ,NULL,value,&bytes)==ERROR_SUCCESS &&
+    require(RegGetValueW(HKEY_CURRENT_USER,test_startup_key,L"Jotilla",RRF_RT_REG_SZ,NULL,value,&bytes)==ERROR_SUCCESS &&
             !wcscmp(value,expected),"startup quotes the executable and requests background session restore");
     require(set_startup(enabled) && get_startup(&enabled) && enabled,"an unspecified upgrade retains enabled startup");
     require(RegOpenKeyExW(HKEY_CURRENT_USER,test_startup_key,0,KEY_SET_VALUE,&key)==ERROR_SUCCESS &&
@@ -83,7 +91,7 @@ static void startup_checks(void) {
     require(!set_startup(TRUE),"oversized Run commands are rejected before changing registration");
     wcscpy_s(app_path,PATH_CAP,original);
     bytes=sizeof(value);
-    require(RegGetValueW(HKEY_CURRENT_USER,test_startup_key,L"Jotila",RRF_RT_REG_SZ,NULL,value,&bytes)==ERROR_SUCCESS &&
+    require(RegGetValueW(HKEY_CURRENT_USER,test_startup_key,L"Jotilla",RRF_RT_REG_SZ,NULL,value,&bytes)==ERROR_SUCCESS &&
             !wcscmp(value,expected),"rejected startup change retains the previous command");
     require(set_startup(FALSE) && get_startup(&enabled) && !enabled && set_startup(FALSE),
             "opt-out and uninstall remove startup idempotently");
@@ -91,10 +99,16 @@ static void startup_checks(void) {
     bytes=sizeof(value);
     require(RegGetValueW(HKEY_CURRENT_USER,test_startup_key,L"Other application",RRF_RT_REG_SZ,NULL,value,&bytes)==ERROR_SUCCESS &&
             !wcscmp(value,L"untouched"),"uninstall preserves other applications' startup values");
-    require(RegSetValueExW(key,L"Jotila",0,REG_DWORD,(BYTE *)&invalid,sizeof(invalid))==ERROR_SUCCESS && !get_startup(&enabled),
+    require(RegSetValueExW(key,L"Jotilla",0,REG_DWORD,(BYTE *)&invalid,sizeof(invalid))==ERROR_SUCCESS && !get_startup(&enabled),
             "an unreadable startup choice is reported instead of silently reset");
     RegCloseKey(key);
     require(set_startup(FALSE),"clean malformed private startup fixture");
+    require(RegOpenKeyExW(HKEY_CURRENT_USER,test_startup_key,0,KEY_SET_VALUE,&key)==ERROR_SUCCESS &&
+            registry_text(key,L"Jotila",L"old executable --startup") && registry_text(key,L"Jotilla",L""),
+            "create explicit new-brand opt-out alongside old startup entry");
+    RegCloseKey(key);
+    require(get_startup(&enabled) && !enabled && set_startup(FALSE),"new preference takes priority and opt-out clears both brands");
+    require(get_startup(&enabled) && !enabled,"old startup setting cannot reappear after opt-out");
     expected_startup=FALSE; enabled=FALSE; options_choice=IDOK;
     require(install_options(&enabled)==IDOK && enabled,"checking the native installer checkbox opts into startup");
     expected_startup=TRUE; options_choice=IDOK;
@@ -111,23 +125,24 @@ int main(void) {
     HANDLE lock;
     DWORD bytes=sizeof(value);
     GetTempPathW(PATH_CAP,temporary);
-    swprintf_s(base,PATH_CAP,L"%sJotila-setup-test-%lu-%llu",temporary,GetCurrentProcessId(),GetTickCount64());
-    swprintf_s(registry_root,128,L"Software\\Jotila-setup-test-%lu-%llu",GetCurrentProcessId(),GetTickCount64());
-    swprintf_s(test_key,160,L"%s\\Jotila",registry_root);
+    swprintf_s(base,PATH_CAP,L"%sJotilla-setup-test-%lu-%llu",temporary,GetCurrentProcessId(),GetTickCount64());
+    swprintf_s(registry_root,128,L"Software\\Jotilla-setup-test-%lu-%llu",GetCurrentProcessId(),GetTickCount64());
+    swprintf_s(test_key,160,L"%s\\Jotilla",registry_root);
     swprintf_s(test_legacy_key,160,L"%s\\Legacy",registry_root);
     swprintf_s(test_previous_key,160,L"%s\\Previous",registry_root);
+    swprintf_s(test_older_key,160,L"%s\\Older",registry_root);
     swprintf_s(test_startup_key,160,L"%s\\Run",registry_root);
     require(CreateDirectoryW(base,NULL),"create private setup directory");
-    child(install_dir,base,L"Jotila"); child(app_path,install_dir,L"Jotila.exe");
+    child(install_dir,base,L"Jotilla"); child(app_path,install_dir,L"Jotilla.exe");
     child(uninstall_path,install_dir,L"Uninstall.exe");
     startup_checks();
-    require(register_uninstaller(),"register Jotila under a private test key");
+    require(register_uninstaller(),"register Jotilla under a private test key");
     require(RegGetValueW(HKEY_CURRENT_USER,test_key,L"DisplayName",RRF_RT_REG_SZ,NULL,value,&bytes)==ERROR_SUCCESS &&
-            !wcscmp(value,L"Jotila"),"new uninstall registration uses the Jotila name");
+            !wcscmp(value,L"Jotilla"),"new uninstall registration uses the Jotilla name");
     bytes=sizeof(value);
     require(RegGetValueW(HKEY_CURRENT_USER,test_key,L"DisplayVersion",RRF_RT_REG_SZ,NULL,value,&bytes)==ERROR_SUCCESS &&
             !wcscmp(value,APP_VERSION_W),"new uninstall registration uses the release version");
-    child(start_link,base,L"Jotila.lnk"); child(desktop_link,base,L"Desktop\\Jotila.lnk");
+    child(start_link,base,L"Jotilla.lnk"); child(desktop_link,base,L"Desktop\\Jotilla.lnk");
     child(value,base,L"Desktop"); require(CreateDirectoryW(value,NULL),"create private desktop");
     child(legacy_dir,base,L"PicoSlip"); require(CreateDirectoryW(legacy_dir,NULL),"create private legacy install");
     child(executable,legacy_dir,L"PicoSlip.exe"); child(uninstaller,legacy_dir,L"Uninstall.exe");
@@ -157,10 +172,16 @@ int main(void) {
     require(retire_legacy_install() && !present(legacy_dir),"empty legacy installation directory is removed");
     child(legacy_dir,base,L"IOTA"); require(CreateDirectoryW(legacy_dir,NULL),"create private IOTA installation");
     child(executable,legacy_dir,L"IOTA.exe"); fixture(executable);
+    wcscpy_s(test_legacy_key,160,test_older_key); register_legacy(legacy_dir);
+    require(retire_legacy_install() && !present(legacy_dir),"retire the earlier IOTA release");
+    child(legacy_dir,base,L"Jotila"); require(CreateDirectoryW(legacy_dir,NULL),"create previous-brand installation");
+    child(executable,legacy_dir,L"Jotila.exe"); fixture(executable);
+    child(note,legacy_dir,L"note-keep.txt"); fixture(note);
     wcscpy_s(test_legacy_key,160,test_previous_key); register_legacy(legacy_dir);
-    require(retire_legacy_install() && !present(legacy_dir),"retire the immediately preceding IOTA release");
+    require(retire_legacy_install() && !present(executable) && present(note),"retire previous program while retaining user files");
+    require(DeleteFileW(note) && RemoveDirectoryW(legacy_dir),"remove private previous-brand fixtures");
     child(value,base,L"Desktop");
     require(RegDeleteTreeW(HKEY_CURRENT_USER,registry_root)==ERROR_SUCCESS && RemoveDirectoryW(value) && RemoveDirectoryW(base),"remove private setup fixtures");
-    puts("PASS: Jotila registration, upgrade path validation, locked-file recovery and exact-file retirement preserve archives.");
+    puts("PASS: Jotilla registration, upgrade path validation, locked-file recovery and exact-file retirement preserve archives.");
     return 0;
 }

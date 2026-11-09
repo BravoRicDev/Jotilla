@@ -173,7 +173,7 @@ static void shortcut_checks(void) {
         "Ctrl+minus shrinks only the selection and consumes its control character");
     shortcut(note,'E',FALSE); paragraph.cbSize=sizeof(paragraph);
     SendMessageW(note->edit,EM_GETPARAFORMAT,0,(LPARAM)&paragraph);
-    require(paragraph.wAlignment==PFA_LEFT && thread_window(L"Jotila.Archive",NULL),"Ctrl+E opens the explorer without centering paragraphs");
+    require(paragraph.wAlignment==PFA_LEFT && thread_window(L"Jotilla.Archive",NULL),"Ctrl+E opens the explorer without centering paragraphs");
     archive_close(); require(delete_archived_note(note->id),"remove shortcut fixture");
     puts("PASS: Ctrl+E, Ctrl+Z/Y and keyboard note/selection sizing with no duplicate input.");
 }

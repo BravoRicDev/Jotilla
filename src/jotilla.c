@@ -131,7 +131,7 @@ static void mark_dirty(Note *note, unsigned changes) {
 }
 
 static void report_error(HWND owner, const wchar_t *message) {
-    if (!testing) MessageBoxW(owner, message, L"Jotila", MB_OK | MB_ICONERROR);
+    if (!testing) MessageBoxW(owner, message, L"Jotilla", MB_OK | MB_ICONERROR);
 }
 
 static BOOL make_paths(const wchar_t *root) {
@@ -1662,7 +1662,7 @@ static Note *open_note_at(const wchar_t *id, int color, BOOL restore, const POIN
         note->layout_saved = TRUE;
     }
     note->next = notes; notes = note;
-    window = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_TOPMOST, NOTE_CLASS, L"Jotila",
+    window = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_TOPMOST, NOTE_CLASS, L"Jotilla",
                              WS_POPUP | WS_THICKFRAME | WS_CLIPCHILDREN,
                              x, y, width, note->collapsed ? bar_height(note) : height,
                              NULL, NULL, instance, note);
@@ -1756,7 +1756,7 @@ static void tray(BOOL add) {
     data.cbSize = sizeof(data); data.hWnd = controller; data.uID = 1;
     data.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP;
     data.uCallbackMessage = TRAY_MESSAGE; data.hIcon = app_icon ? app_icon : LoadIconW(NULL, IDI_APPLICATION);
-    wcscpy_s(data.szTip, 128, L"Jotila - Ctrl+Alt++");
+    wcscpy_s(data.szTip, 128, L"Jotilla - Ctrl+Alt++");
     Shell_NotifyIconW(add ? NIM_ADD : NIM_DELETE, &data);
 }
 
@@ -1983,7 +1983,7 @@ static LRESULT CALLBACK controller_proc(HWND window, UINT message, WPARAM wparam
         return 0;
     case WM_CLOSE:
         if (!save_all()) {
-            report_error(NULL, L"Some notes could not be saved. Jotila will stay open."); return 0;
+            report_error(NULL, L"Some notes could not be saved. Jotilla will stay open."); return 0;
         }
         archive_close();
         while (notes) destroy_note(notes);
@@ -2061,7 +2061,7 @@ int WINAPI wWinMain(_In_ HINSTANCE app, _In_opt_ HINSTANCE previous, _In_ PWSTR 
     load_preferences();
     app_icon = (HICON)LoadImageW(instance, MAKEINTRESOURCEW(IDI_APP), IMAGE_ICON, 32, 32, LR_DEFAULTCOLOR);
     if (!register_classes()) { CloseHandle(mutex); return 1; }
-    controller = CreateWindowExW(WS_EX_TOOLWINDOW, APP_CLASS, L"Jotila", WS_OVERLAPPED,
+    controller = CreateWindowExW(WS_EX_TOOLWINDOW, APP_CLASS, L"Jotilla", WS_OVERLAPPED,
                                  0, 0, 0, 0, NULL, NULL, instance, NULL);
     if (!controller) { CloseHandle(mutex); return 1; }
     plus = VkKeyScanW(L'+');

@@ -533,7 +533,7 @@ static void open_day_item(HWND window, DayList *list, int index) {
     wchar_t id[80]; BOOL (*open)(const wchar_t *)=list->open; HWND owner=GetWindow(window,GW_OWNER);
     if(index<0 || index>=list->count) return;
     wcscpy_s(id,80,list->items[index].id); DestroyWindow(window);
-    if(!open(id)) MessageBoxW(owner,L"This note could not be opened.",L"Jotila",MB_OK|MB_ICONERROR);
+    if(!open(id)) MessageBoxW(owner,L"This note could not be opened.",L"Jotilla",MB_OK|MB_ICONERROR);
 }
 
 static LRESULT CALLBACK list_input(HWND window, UINT message, WPARAM wparam, LPARAM lparam, UINT_PTR id, DWORD_PTR data) {

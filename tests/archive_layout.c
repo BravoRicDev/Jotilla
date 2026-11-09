@@ -107,7 +107,7 @@ int wmain(void) {
     SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
     InitCommonControlsEx(&controls);
     GetTempPathW(1024,temporary);
-    swprintf_s(root,1024,L"%sJotila-grid-%lu-%llu",temporary,GetCurrentProcessId(),GetTickCount64());
+    swprintf_s(root,1024,L"%sJotilla-grid-%lu-%llu",temporary,GetCurrentProcessId(),GetTickCount64());
     require(CreateDirectoryW(root,NULL),"private grid archive");
     swprintf_s(settings,1024,L"%s\\notes.ini",root);
     for(i=0;i<300;++i) {

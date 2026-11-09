@@ -20,7 +20,7 @@
 #include "calendar.h"
 #include "metadata.h"
 
-#define ARCHIVE_CLASS L"Jotila.Archive"
+#define ARCHIVE_CLASS L"Jotilla.Archive"
 #define ARCHIVE_PATH_CAP 1024
 #define DELETE_NOTES 1
 #define ARCHIVE_REFRESH (WM_APP + 1)
@@ -209,7 +209,7 @@ static void calendar_open_day(Archive *archive, unsigned date) {
     if (!count) return;
     if (count==1) {
         if (!archive->actions.open(archive->entries[archive->day_entries[first]].id))
-            MessageBoxW(archive->window,L"This note could not be opened.",L"Jotila",MB_OK|MB_ICONERROR);
+            MessageBoxW(archive->window,L"This note could not be opened.",L"Jotilla",MB_OK|MB_ICONERROR);
         return;
     }
     items=(CalendarItem *)calloc((size_t)count,sizeof(*items));
@@ -229,7 +229,7 @@ static void calendar_open_day(Archive *archive, unsigned date) {
     calendar_day_rect(archive->calendar,date,&rect); anchor.x=rect.left; anchor.y=rect.bottom;
     ClientToScreen(archive->calendar,&anchor);
     if (!calendar_list(archive->window,anchor,date,items,count,archive->actions.open))
-        MessageBoxW(archive->window,L"The day's notes could not be displayed.",L"Jotila",MB_OK|MB_ICONERROR);
+        MessageBoxW(archive->window,L"The day's notes could not be displayed.",L"Jotilla",MB_OK|MB_ICONERROR);
 }
 
 static BOOL scan_archive(Archive *archive, ArchiveEntry **result, int *total) {
@@ -371,7 +371,7 @@ static BOOL refresh_archive(Archive *archive, BOOL reload) {
     if (archive->worker) search_cancel(archive->worker);
     discard_results(archive);
     /* Keep cached previews and selected notes across additions/deletions.
-       Explicit refresh also rereads files edited outside Jotila. */
+       Explicit refresh also rereads files edited outside Jotilla. */
     for (i = 0; i < count; ++i) {
         while (old < archive->count && compare_entries(&archive->entries[old], &entries[i]) < 0) ++old;
         if (old < archive->count && !compare_entries(&archive->entries[old], &entries[i])) {
@@ -712,7 +712,7 @@ static void calendar_mode(Archive *archive, BOOL enabled) {
     if (enabled && !archive->calendar) {
         archive->calendar=calendar_create(archive->window,CALENDAR_VIEW);
         if (!archive->calendar) {
-            MessageBoxW(archive->window,L"The calendar could not be opened.",L"Jotila",MB_OK|MB_ICONERROR); return;
+            MessageBoxW(archive->window,L"The calendar could not be opened.",L"Jotilla",MB_OK|MB_ICONERROR); return;
         }
     }
     calendar_list_close(archive->window);
@@ -773,7 +773,7 @@ static void archive_fonts(Archive *archive) {
 
 static void open_archive_item(Archive *archive, int index) {
     if (index >= 0 && index < archive->visible && !archive->actions.open(archive->entries[entry_index(archive, index)].id))
-        MessageBoxW(archive->window, L"This note could not be opened.", L"Jotila", MB_OK | MB_ICONERROR);
+        MessageBoxW(archive->window, L"This note could not be opened.", L"Jotilla", MB_OK | MB_ICONERROR);
 }
 
 static void delete_archive_selection(Archive *archive) {
@@ -781,12 +781,12 @@ static void delete_archive_selection(Archive *archive) {
     wchar_t message[128];
     if (!count) return;
     swprintf_s(message, 128, L"Delete %d selected note%s from the archive?", count, count == 1 ? L"" : L"s");
-    if (MessageBoxW(archive->window, message, L"Jotila", MB_YESNO | MB_DEFBUTTON2 | MB_ICONQUESTION) != IDYES) return;
+    if (MessageBoxW(archive->window, message, L"Jotilla", MB_YESNO | MB_DEFBUTTON2 | MB_ICONQUESTION) != IDYES) return;
     while ((index = ListView_GetNextItem(archive->list, index, LVNI_SELECTED)) >= 0)
         if (!archive->actions.remove(archive->entries[entry_index(archive, index)].id)) ++failures;
     if (!refresh_archive(archive, FALSE) || failures)
         MessageBoxW(archive->window, L"Some notes could not be deleted. Check that their files are writable.",
-                    L"Jotila", MB_OK | MB_ICONERROR);
+                    L"Jotilla", MB_OK | MB_ICONERROR);
 }
 
 static void archive_context_menu(Archive *archive, POINT point) {
@@ -1274,7 +1274,7 @@ static LRESULT CALLBACK archive_proc(HWND window, UINT message, WPARAM wparam, L
             if (key == VK_RETURN) open_archive_item(archive, ListView_GetNextItem(archive->list, -1, LVNI_FOCUSED));
             if (key == VK_DELETE) delete_archive_selection(archive);
             if (key == VK_F5 && !refresh_archive(archive, TRUE))
-                MessageBoxW(window, L"The archive could not be refreshed.", L"Jotila", MB_OK | MB_ICONERROR);
+                MessageBoxW(window, L"The archive could not be refreshed.", L"Jotilla", MB_OK | MB_ICONERROR);
             if (key == 'A' && GetKeyState(VK_CONTROL) < 0)
                 ListView_SetItemState(archive->list, -1, LVIS_SELECTED, LVIS_SELECTED);
             return 0;

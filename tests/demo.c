@@ -302,7 +302,7 @@ static void click_pointer(void) {
 
 static void position_demo_archive(void) {
     RECT bounds;
-    HWND window=thread_window(L"Jotila.Archive",NULL);
+    HWND window=thread_window(L"Jotilla.Archive",NULL);
     require(window!=NULL,"locate this process's archive window");
     GetWindowRect(backdrop,&bounds);
     SetWindowPos(window,HWND_TOPMOST,bounds.left+50,bounds.top+70,900,750,0);
@@ -724,9 +724,9 @@ static void CALLBACK animate_delete(HWND window,UINT message,UINT_PTR timer,DWOR
         }
     } else if (delete_phase==1) {
         ++delete_phase; click_pointer();
-    } else if ((dialog=thread_window(L"#32770",L"Jotila"))!=NULL) {
+    } else if ((dialog=thread_window(L"#32770",L"Jotilla"))!=NULL) {
         RECT bounds,rect;
-        require(GetWindow(dialog,GW_OWNER)==thread_window(L"Jotila.Archive",NULL),"only delete private demo notes");
+        require(GetWindow(dialog,GW_OWNER)==thread_window(L"Jotilla.Archive",NULL),"only delete private demo notes");
         GetWindowRect(backdrop,&bounds); GetWindowRect(dialog,&rect);
         SetWindowPos(dialog,HWND_TOPMOST,bounds.left+(1000-(rect.right-rect.left))/2,
                      bounds.top+(900-(rect.bottom-rect.top))/2,0,0,SWP_NOSIZE|SWP_NOACTIVATE);
@@ -745,7 +745,7 @@ static void CALLBACK record_archive_choices(HWND window, UINT message, UINT_PTR 
     (void)window; (void)message; (void)tick;
     if (!dialog) return;
     KillTimer(NULL, timer);
-    require(GetWindow(dialog, GW_OWNER) == thread_window(L"Jotila.Archive", NULL),
+    require(GetWindow(dialog, GW_OWNER) == thread_window(L"Jotilla.Archive", NULL),
             "record only the private archive chooser");
     GetWindowRect(backdrop, &bounds); GetWindowRect(dialog, &rect);
     SetWindowPos(dialog, HWND_TOPMOST, bounds.left + (1000 - (rect.right - rect.left)) / 2,
@@ -845,7 +845,7 @@ static void record_archive_browser(void) {
     frame_delay=75;
     shortcut(note,'E',FALSE); position_demo_archive(); capture_frame();
     SendMessageW(note->window,WM_CLOSE,0,0);
-    window=thread_window(L"Jotila.Archive",NULL); tree=GetDlgItem(window,1); list=GetDlgItem(window,2);
+    window=thread_window(L"Jotilla.Archive",NULL); tree=GetDlgItem(window,1); list=GetDlgItem(window,2);
     require(tree && list,"record the actual date tree and virtual mosaic");
     set_caption(L"All notes in a mosaic, grouped by date");
     frame_delay=150; capture_frame();
@@ -853,7 +853,7 @@ static void record_archive_browser(void) {
     SendMessageW(window, WM_SYSCOMMAND, SC_MINIMIZE, 0); pump(150);
     require(!IsWindowVisible(window), "the real archive hides when minimized");
     frame_delay=120; capture_frame();
-    set_caption(L"Double-click Jotila's tray icon to return");
+    set_caption(L"Double-click Jotilla's tray icon to return");
     SendMessageW(controller, TRAY_MESSAGE, 1, WM_LBUTTONDBLCLK);
     SendMessageW(controller, TRAY_MESSAGE, 1, WM_LBUTTONUP); pump(150);
     require(IsWindowVisible(window), "tray activation restores the existing archive");
@@ -946,13 +946,13 @@ int main(int argc,char **argv) {
     instance=GetModuleHandleW(NULL); testing=TRUE;
     SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
     require(GetTempPathW(PATH_CAP,temporary)!=0,"locate private demonstration folder");
-    root_length=GetEnvironmentVariableW(L"JOTILA_DEMO_ROOT",root,PATH_CAP);
-    if (!root_length) swprintf_s(root,PATH_CAP,L"%sJotila-demo-%lu-%llu",temporary,GetCurrentProcessId(),GetTickCount64());
+    root_length=GetEnvironmentVariableW(L"JOTILLA_DEMO_ROOT",root,PATH_CAP);
+    if (!root_length) swprintf_s(root,PATH_CAP,L"%sJotilla-demo-%lu-%llu",temporary,GetCurrentProcessId(),GetTickCount64());
     require(root_length<PATH_CAP,"demonstration path length is valid");
     root_length=GetFullPathNameW(root,PATH_CAP,resolved,NULL);
     require(root_length>0 && root_length<PATH_CAP &&
             !_wcsnicmp(resolved,temporary,wcslen(temporary)) &&
-            !wcsncmp(resolved+wcslen(temporary),L"Jotila-demo-",wcslen(L"Jotila-demo-")),"demo data stays in a private temporary directory");
+            !wcsncmp(resolved+wcslen(temporary),L"Jotilla-demo-",wcslen(L"Jotilla-demo-")),"demo data stays in a private temporary directory");
     wcscpy_s(root,PATH_CAP,resolved);
     require(make_paths(root),"create private demonstration archive");
     app_icon=(HICON)LoadImageW(instance,MAKEINTRESOURCEW(IDI_APP),IMAGE_ICON,32,32,0);
@@ -961,13 +961,13 @@ int main(int argc,char **argv) {
         OUT_DEFAULT_PRECIS,CLIP_DEFAULT_PRECIS,CLEARTYPE_QUALITY,FIXED_PITCH|FF_MODERN,L"Consolas");
     require(caption_font!=NULL,"create the recording caption font");
     require(register_classes(),"register demonstration application");
-    controller=CreateWindowExW(WS_EX_TOOLWINDOW,APP_CLASS,L"Jotila documentation",WS_OVERLAPPED,
+    controller=CreateWindowExW(WS_EX_TOOLWINDOW,APP_CLASS,L"Jotilla documentation",WS_OVERLAPPED,
                                 0,0,0,0,NULL,NULL,instance,NULL);
     require(controller!=NULL,"create the isolated archive owner");
-    cls.hInstance=instance; cls.lpfnWndProc=backdrop_proc; cls.lpszClassName=L"Jotila.DemoBackdrop";
+    cls.hInstance=instance; cls.lpfnWndProc=backdrop_proc; cls.lpszClassName=L"Jotilla.DemoBackdrop";
     cls.style=CS_HREDRAW|CS_VREDRAW;
     require(RegisterClassW(&cls)!=0,"register private screenshot backdrop");
-    backdrop=CreateWindowExW(WS_EX_TOPMOST|WS_EX_TOOLWINDOW|WS_EX_NOACTIVATE,cls.lpszClassName,L"Jotila demo",WS_POPUP|WS_VISIBLE,40,40,1040,640,NULL,NULL,instance,NULL);
+    backdrop=CreateWindowExW(WS_EX_TOPMOST|WS_EX_TOOLWINDOW|WS_EX_NOACTIVATE,cls.lpszClassName,L"Jotilla demo",WS_POPUP|WS_VISIBLE,40,40,1040,640,NULL,NULL,instance,NULL);
     require(backdrop!=NULL,"show private screenshot backdrop");
     GetCursorPos(&previous_cursor);
     if (gifs_only) goto animations;

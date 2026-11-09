@@ -69,11 +69,11 @@ static BOOL save_location(const wchar_t *config, const wchar_t *path) {
 }
 
 BOOL location_user_paths(const wchar_t *local, wchar_t config[LOCATION_CAP], wchar_t fallback[LOCATION_CAP]) {
-    const wchar_t *previous[] = {L"IOTA", L"PicoSlip"};
+    const wchar_t *previous[] = {L"Jotila", L"IOTA", L"PicoSlip"};
     wchar_t root[LOCATION_CAP], legacy_config[LOCATION_CAP], legacy_notes[LOCATION_CAP], selected[LOCATION_CAP];
     DWORD attributes;
     int i;
-    if (swprintf_s(root,LOCATION_CAP,L"%s\\Jotila",local) < 0 ||
+    if (swprintf_s(root,LOCATION_CAP,L"%s\\Jotilla",local) < 0 ||
         swprintf_s(config,LOCATION_CAP,L"%s\\archive.path",root) < 0 ||
         swprintf_s(fallback,LOCATION_CAP,L"%s\\notes",root) < 0) return FALSE;
     if (!CreateDirectoryW(root,NULL) && GetLastError() != ERROR_ALREADY_EXISTS) return FALSE;
@@ -83,7 +83,7 @@ BOOL location_user_paths(const wchar_t *local, wchar_t config[LOCATION_CAP], wch
     attributes = GetFileAttributesW(fallback);
     if (attributes != INVALID_FILE_ATTRIBUTES) return (attributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
     if (GetLastError() != ERROR_FILE_NOT_FOUND) return FALSE;
-    for (i=0;i<2;++i) {
+    for (i=0;i<(int)(sizeof(previous)/sizeof(previous[0]));++i) {
         if (swprintf_s(legacy_config,LOCATION_CAP,L"%s\\%s\\archive.path",local,previous[i]) < 0 ||
             swprintf_s(legacy_notes,LOCATION_CAP,L"%s\\%s\\notes",local,previous[i]) < 0) return FALSE;
         attributes = GetFileAttributesW(legacy_config);

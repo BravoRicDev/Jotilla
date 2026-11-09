@@ -169,7 +169,7 @@ static void palette_preview(HWND list,COLORREF paper,BOOL highlighted) {
 
 static void palette_archive_checks(Note *note) {
     HWND window,list;
-    browse_notes(); window=thread_window(L"Jotila.Archive",NULL);
+    browse_notes(); window=thread_window(L"Jotilla.Archive",NULL);
     require(window!=NULL,"open archive for custom colors"); list=GetDlgItem(window,2);
     SetWindowTextW(GetDlgItem(window,3),L"Keep"); wait_search_ui(window);
     require(ListView_GetItemCount(list)==1,"find the unique palette fixture");
@@ -575,32 +575,32 @@ static void write_palette_fixture(const wchar_t *path, const char *text) {
 }
 
 static void branding_location_checks(void) {
-    const wchar_t *brands[]={L"PicoSlip",L"IOTA"};
+    const wchar_t *brands[]={L"Jotila",L"PicoSlip",L"IOTA"};
     int brand;
     wchar_t temporary[PATH_CAP],base[PATH_CAP],legacy[PATH_CAP],modern[PATH_CAP],old_notes[PATH_CAP];
     wchar_t config[PATH_CAP],fallback[PATH_CAP],loaded[PATH_CAP],old_config[PATH_CAP];
     GetTempPathW(PATH_CAP,temporary);
-    for (brand=0;brand<2;++brand) {
-    swprintf_s(base,PATH_CAP,L"%sJotila-upgrade-%lu-%llu",temporary,GetCurrentProcessId(),GetTickCount64());
+    for (brand=0;brand<(int)(sizeof(brands)/sizeof(brands[0]));++brand) {
+    swprintf_s(base,PATH_CAP,L"%sJotilla-upgrade-%lu-%llu",temporary,GetCurrentProcessId(),GetTickCount64());
     require(CreateDirectoryW(base,NULL),"create private profile fixture");
     require(location_user_paths(base,config,fallback) && location_load(config,fallback,loaded) &&
-            !wcscmp(fallback,loaded),"fresh profiles use the Jotila notes folder");
-    swprintf_s(legacy,PATH_CAP,L"%s\\%s",base,brands[brand]); swprintf_s(modern,PATH_CAP,L"%s\\Jotila",base);
+            !wcscmp(fallback,loaded),"fresh profiles use the Jotilla notes folder");
+    swprintf_s(legacy,PATH_CAP,L"%s\\%s",base,brands[brand]); swprintf_s(modern,PATH_CAP,L"%s\\Jotilla",base);
     swprintf_s(old_notes,PATH_CAP,L"%s\\notes",legacy); swprintf_s(old_config,PATH_CAP,L"%s\\archive.path",legacy);
     require(CreateDirectoryW(legacy,NULL) && CreateDirectoryW(old_notes,NULL),"create legacy archive fixture");
     require(location_user_paths(base,config,fallback) && location_load(config,fallback,loaded) &&
             !wcscmp(loaded,old_notes) && GetFileAttributesW(old_notes)!=INVALID_FILE_ATTRIBUTES,
             "upgrade records the original archive without moving or deleting it");
     require(DeleteFileW(config),"clear only private upgrade preference");
-    write_palette_fixture(old_config,"Z:\\Jotila-unavailable-drive-test");
+    write_palette_fixture(old_config,"Z:\\Jotilla-unavailable-drive-test");
     require(!location_user_paths(base,config,fallback) && GetFileAttributesW(config)==INVALID_FILE_ATTRIBUTES,
             "an unavailable legacy configured archive is never silently replaced");
     require(DeleteFileW(old_config),"remove unavailable private configuration");
     write_palette_fixture(old_config,"relative-path");
     require(CreateDirectoryW(fallback,NULL) && location_user_paths(base,config,fallback),
-            "an established Jotila archive takes priority over legacy configuration");
+            "an established Jotilla archive takes priority over legacy configuration");
     remove_location_fixture(fallback); remove_location_fixture(old_notes);
     remove_location_fixture(legacy); remove_location_fixture(modern); remove_location_fixture(base);
     }
-    puts("PASS: fresh Jotila paths, automatic legacy archive adoption, explicit new-profile priority and unavailable-drive preservation.");
+    puts("PASS: fresh Jotilla paths, automatic legacy archive adoption, explicit new-profile priority and unavailable-drive preservation.");
 }

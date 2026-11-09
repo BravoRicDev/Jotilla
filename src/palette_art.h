@@ -1,5 +1,5 @@
-#ifndef JOTILA_PALETTE_ART_H
-#define JOTILA_PALETTE_ART_H
+#ifndef JOTILLA_PALETTE_ART_H
+#define JOTILLA_PALETTE_ART_H
 #include <windows.h>
 #include "colors.h"
 

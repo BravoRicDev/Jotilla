@@ -68,7 +68,7 @@ int wmain(void) {
     POINT anchor={30,30};
     INITCOMMONCONTROLSEX controls={sizeof(controls),ICC_STANDARD_CLASSES};
     InitCommonControlsEx(&controls);
-    owner=CreateWindowExW(WS_EX_TOOLWINDOW,L"STATIC",L"Jotila calendar measurement",WS_POPUP|WS_CLIPCHILDREN,
+    owner=CreateWindowExW(WS_EX_TOOLWINDOW,L"STATIC",L"Jotilla calendar measurement",WS_POPUP|WS_CLIPCHILDREN,
         20,20,850,650,NULL,NULL,GetModuleHandleW(NULL),NULL);
     if(!owner) return 1;
     annual=calendar_create(owner,11);
