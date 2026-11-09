@@ -2,6 +2,8 @@
 
 Small, native Windows notes with autosave, an archive and a calendar. **C17**, no extra dependencies. Windows 10/11, x64.
 
+This local development branch also contains an unpublished [native macOS preview](docs/macos.md), with Objective-C/AppKit, shared C modules and portable/PKG build targets. Mac compilation and desktop validation are still pending.
+
 **[Installer](https://github.com/GarauGarau/Jotila/releases/latest/download/Jotila-Setup-x64.exe)** · [Portable ZIP](https://github.com/GarauGarau/Jotila/releases/latest/download/Jotila-portable-x64.zip) · [Releases](https://github.com/GarauGarau/Jotila/releases)
 
 ![Formatting, checklists and a collapsed note](docs/screenshots/notes.png)

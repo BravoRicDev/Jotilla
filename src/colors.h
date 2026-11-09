@@ -1,7 +1,18 @@
 #ifndef JOTILA_COLORS_H
 #define JOTILA_COLORS_H
 
+#ifdef _WIN32
 #include <windows.h>
+#else
+#include <stdint.h>
+#include <stddef.h>
+/* Preserve the archive's Windows COLORREF byte order on every platform. */
+typedef uint32_t COLORREF;
+#define RGB(r,g,b) ((COLORREF)((uint32_t)(r) | (uint32_t)(g)<<8 | (uint32_t)(b)<<16))
+#define GetRValue(c) ((c) & 255u)
+#define GetGValue(c) (((c) >> 8) & 255u)
+#define GetBValue(c) (((c) >> 16) & 255u)
+#endif
 
 #define COLOR_COUNT 6
 #define DEFAULT_PALETTE_COUNT 3
