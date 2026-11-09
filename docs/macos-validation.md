@@ -5,11 +5,19 @@ Tools with the macOS 15.5 SDK, deployment target macOS 13. This report distingui
 implemented behavior and automated evidence from environment-dependent release
 checks. It does not certify identical behavior on untested Macs.
 
+Release 0.1.1 was also validated on 2026-11-09 by
+[GitHub Actions on native Apple Silicon and Intel runners](https://github.com/GarauGarau/Jotila/actions/runs/42619787162),
+both using macOS 15. Both passed storage, AppKit UI, launch and static-analysis
+checks. New right-click regressions cover background/text modes, selection
+preservation, screen placement and repeated application/cancellation. Universal
+ZIP/PKG packaging verifies both CPU slices and the ad hoc app signatures.
+
 ## Feature coverage
 
 The reference is `src/jotila.c`, `src/archive.c`, `src/calendar.c`,
 `src/palette_picker.c`, the bundled palette catalog and the Windows documentation.
-The Windows implementation is unchanged by this work.
+The branch also includes the Windows mixed-DPI palette crash fix; AppKit uses its
+own native popup lifecycle.
 
 | Area | Native implementation | Verification |
 | --- | --- | --- |
@@ -26,7 +34,7 @@ The Windows implementation is unchanged by this work.
 | Archive | Open/create, move to an empty separate destination, verified copies, atomic remembered path, independent portable identity | Migration, locking, nested-path rejection and byte comparison tests |
 | Persistence | Windows-compatible title headers, CRLF TXT, UTF-16LE INI, RTF matching, unknown keys, stale-write rejection | Storage/conflict tests and malformed UTF-8 regression |
 | Native integration | Template vector menu-bar icon, native calendar symbol, menu bar single/double/right click, Command shortcuts, Carbon global new-note shortcuts, ServiceManagement login item, Spaces and display recovery | Actual icon rendering and calendar toggle, menu dispatch and synthetic off-screen geometry tests; physical/session checks below |
-| Packaging | ARM64 and x86_64 builds, universal ZIP and PKG, ad hoc signatures and checksums | Local cross-compilation, signature verification and package creation |
+| Packaging | ARM64 and x86_64 builds, universal ZIP and PKG, ad hoc signatures and checksums | Native tests on both architectures; universal package creation, signature and checksum verification |
 
 Native controls and system font rasterization follow macOS. The note/card/wheel
 visual model and palette values are shared with the Windows design; screenshots
@@ -46,11 +54,12 @@ make package
 
 `make test` passes **292,446 checks**, including the full Gregorian cycle. Most
 of that count is date arithmetic; it is not a count of distinct UI scenarios.
-`make ui-test` passes **1,086 checks** covering actual AppKit windows, menus,
+`make ui-test` passes **1,155 checks** on each CI runner with one display, covering actual AppKit windows, menus,
 dialogs, editing, rendering, calendar cells and palette wedges. `make profile` adds nine large-archive
 assertions to the UI suite. The test sources enumerate the individual assertions.
 
-AddressSanitizer and UndefinedBehaviorSanitizer were also run against both suites:
+AddressSanitizer and UndefinedBehaviorSanitizer were also run against both suites
+in the original local validation, before the 0.1.1 right-click additions:
 
 ```sh
 make OUT=build/macos/checked \
@@ -122,8 +131,8 @@ this run:
 - A real sign-out/login with the app installed under `/Applications`, including
   the macOS background-item approval flow. The portable preview intentionally
   cannot register itself for login.
-- Execution on an Intel Mac and older supported macOS releases. The Intel binary
-  is cross-compiled here, not executed on Intel hardware.
+- Older supported macOS releases. Native Apple Silicon and Intel execution is
+  covered by CI on macOS 15; physical mixed-display setups still need validation.
 - Clean-machine PKG installation, upgrade/uninstall, disk-full/unplugged-volume
   faults, Developer ID signing and Apple notarization. Local package construction
   and ad hoc signature verification do not establish those properties.

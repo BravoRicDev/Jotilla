@@ -5,11 +5,12 @@ Objective-C/AppKit and the shared C date and palette modules. The note editor,
 archive cards, color wheel, tags, calendar and archive transfer are implemented
 natively. See [feature coverage and local validation](macos-validation.md).
 
-This remains a development build. Apple Silicon execution is tested on macOS
-15.3.1 using the macOS 15.5 SDK. Intel builds are cross-compiled; a separate Intel
-Mac and installed-login session still need release validation.
+This remains a development build. Native build, storage, UI and launch tests run
+on both Apple Silicon and Intel with macOS 15 in GitHub Actions. Installed-login
+sessions, physical display changes and clean-machine installation still need
+manual release validation.
 
-[Download the universal Mac app and installer](https://github.com/GarauGarau/Jotila/releases/tag/macos-v0.1.0).
+[Download the universal Mac app and installer](https://github.com/GarauGarau/Jotila/releases/tag/macos-v0.1.1).
 
 ## Build on a Mac
 
@@ -189,7 +190,7 @@ in the validation report; automated tests are not a substitute for those runs.
 
 The `macos` branch is published on the public repository and tracks
 `origin/macos`. The default `windows` branch contains the Windows version. The
-`macos-v0.1.0` prerelease provides the universal portable app, PKG installer and
+`macos-v0.1.1` prerelease provides the universal portable app, PKG installer and
 SHA-256 checksums built from the tagged commit.
 
 Clone it directly:
