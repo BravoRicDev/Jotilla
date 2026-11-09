@@ -21,6 +21,10 @@ Small, native Windows notes with autosave, an archive and a calendar. **C17**, n
 
 Drag the bar to move; double-click its title to rename. **− / □** folds or expands; **×** closes and keeps the note in the archive. Resizing preserves visible content.
 
+**Ctrl + Alt + +** places the new note's top-left corner exactly at the mouse pointer. Creating a note from the tray keeps the usual staggered position.
+
+Setup offers **Start Jotila when I sign in to Windows**. Updates retain this choice; rerun Setup to change it. Open notes return to their saved positions, sizes and folded state, with their title bars kept reachable if a monitor is disconnected. At sign-in, Jotila restores the session without taking focus or creating an empty note; notes closed with **×** stay in the archive. Silent Setup accepts `/S /AUTOSTART` or `/S /NOAUTOSTART`; `/S` alone retains the existing choice. Uninstall removes Jotila's startup entry and preserves notes.
+
 Click the note's **calendar icon** to assign, change or remove its day. The square calendar button beside **Archive** switches to the year view: circled days open a note, or a compact title list when several share the day. Type a year directly in either calendar. In day lists, **↑ / ↓**, **Page Up / Down**, **Home / End** navigate, **Enter** opens and **Esc** returns. Search also filters calendar notes.
 
 Right-click the text for [80 color palettes](docs/palettes.md); select text first to color just that selection. **← / →** browse, click applies, **★** applies a favorite to this note and new notes, including after restart. Right-click the bar for more options.

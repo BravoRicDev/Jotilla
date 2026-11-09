@@ -8,6 +8,7 @@
 #include <shlobj.h>
 #include <shobjidl.h>
 #include <shellapi.h>
+#include <commctrl.h>
 #include <stdio.h>
 #include <wchar.h>
 #include "resource.h"
@@ -18,9 +19,13 @@
 #define LEGACY_UNINSTALL_KEY L"Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\PicoSlip"
 #define PREVIOUS_UNINSTALL_KEY L"Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\IOTA"
 #endif
+#ifndef STARTUP_KEY
+#define STARTUP_KEY L"Software\\Microsoft\\Windows\\CurrentVersion\\Run"
+#endif
 static wchar_t install_dir[PATH_CAP], app_path[PATH_CAP], uninstall_path[PATH_CAP];
 static wchar_t start_link[PATH_CAP], desktop_link[PATH_CAP], self[PATH_CAP];
 static BOOL silent;
+static int startup_option = -1; /* Unspecified updates retain the existing choice. */
 
 static BOOL paths(void) {
     wchar_t root[PATH_CAP];
@@ -75,6 +80,56 @@ static BOOL shortcut(const wchar_t *path) {
 
 static BOOL registry_text(HKEY key,const wchar_t *name,const wchar_t *value) {
     return RegSetValueExW(key,name,0,REG_SZ,(const BYTE *)value,(DWORD)((wcslen(value)+1)*sizeof(wchar_t)))==ERROR_SUCCESS;
+}
+
+static BOOL get_startup(BOOL *enabled) {
+    wchar_t command[261]={0};
+    DWORD bytes=sizeof(command);
+    LSTATUS status=RegGetValueW(HKEY_CURRENT_USER,STARTUP_KEY,L"Jotila",RRF_RT_REG_SZ,NULL,command,&bytes);
+    *enabled=FALSE;
+    if (status==ERROR_FILE_NOT_FOUND) return TRUE;
+    if (status!=ERROR_SUCCESS) return FALSE;
+    *enabled=command[0]!=0;
+    return TRUE;
+}
+
+static BOOL set_startup(BOOL enabled) {
+    HKEY key;
+    LSTATUS status;
+    BOOL ok;
+    /* Run commands have a 260-character limit, including arguments. Quote the
+       executable and keep logon distinct from an intentional second launch. */
+    wchar_t command[261];
+    if (!enabled) {
+        status=RegOpenKeyExW(HKEY_CURRENT_USER,STARTUP_KEY,0,KEY_SET_VALUE,&key);
+        if (status==ERROR_FILE_NOT_FOUND) return TRUE;
+        if (status!=ERROR_SUCCESS) return FALSE;
+        status=RegDeleteValueW(key,L"Jotila");
+        RegCloseKey(key);
+        return status==ERROR_SUCCESS || status==ERROR_FILE_NOT_FOUND;
+    }
+    if (wcslen(app_path)+12>260 || swprintf_s(command,261,L"\"%s\" --startup",app_path)<0) return FALSE;
+    if (RegCreateKeyExW(HKEY_CURRENT_USER,STARTUP_KEY,0,NULL,0,KEY_SET_VALUE,NULL,&key,NULL)!=ERROR_SUCCESS) return FALSE;
+    ok=registry_text(key,L"Jotila",command);
+    RegCloseKey(key);
+    return ok;
+}
+
+static int install_options(BOOL *startup) {
+    const TASKDIALOG_BUTTON button={IDOK,L"Install"};
+    TASKDIALOGCONFIG dialog={0};
+    int choice=IDCANCEL;
+    dialog.cbSize=sizeof(dialog);
+    dialog.dwFlags=TDF_ALLOW_DIALOG_CANCELLATION | TDF_SIZE_TO_CONTENT;
+    if (*startup) dialog.dwFlags|=TDF_VERIFICATION_FLAG_CHECKED;
+    dialog.dwCommonButtons=TDCBF_CANCEL_BUTTON;
+    dialog.pszWindowTitle=L"Jotila Setup";
+    dialog.pszMainInstruction=L"Install Jotila for this Windows account";
+    dialog.pszContent=L"Adds Start menu and desktop shortcuts. No administrator rights needed.\n\n"
+                      L"Your notes and chosen archive location are preserved. Open notes return to their saved positions.";
+    dialog.pszVerificationText=L"Start Jotila when I sign in to Windows";
+    dialog.cButtons=1; dialog.pButtons=&button; dialog.nDefaultButton=IDOK;
+    return SUCCEEDED(TaskDialogIndirect(&dialog,&choice,NULL,startup)) ? choice : -1;
 }
 
 static BOOL register_uninstaller(void) {
@@ -158,15 +213,18 @@ static BOOL retire_legacy_install(void) {
 }
 
 static int install(void) {
-    int directory_result;
-    BOOL links;
+    int directory_result, choice;
+    BOOL links, startup=FALSE;
     HRESULT com;
     wchar_t license[PATH_CAP];
-    if (!silent && MessageBoxW(NULL,
-        L"Install Jotila for this Windows account?\n\n"
-        L"Adds Start menu and desktop shortcuts. No administrator rights needed.\n"
-        L"Your notes and chosen archive location are kept separate from the program.",
-        L"Jotila Setup",MB_YESNO|MB_ICONQUESTION)!=IDYES) return 0;
+    if (startup_option<0) {
+        if (!get_startup(&startup)) return failure(L"The current Windows startup setting could not be read.");
+    } else startup=startup_option!=0;
+    if (!silent) {
+        choice=install_options(&startup);
+        if (choice<0) return failure(L"The installation options could not be displayed.");
+        if (choice!=IDOK) return 0;
+    }
     if (!close_app()) return failure(L"Jotila could not save and close. Close it and run Setup again.");
     directory_result=SHCreateDirectoryExW(NULL,install_dir,NULL);
     if (directory_result!=ERROR_SUCCESS && directory_result!=ERROR_ALREADY_EXISTS && directory_result!=ERROR_FILE_EXISTS)
@@ -179,6 +237,7 @@ static int install(void) {
     if (SUCCEEDED(com)) CoUninitialize();
     if (!links || !register_uninstaller()) return failure(L"Jotila was copied, but a shortcut or uninstall entry could not be created. Run Setup again.");
     if (!retire_legacy_install()) return failure(L"Jotila is installed, but the previous program files could not be retired. Close the previous Setup and run Jotila Setup again. Your notes have been kept.");
+    if (!set_startup(startup)) return failure(L"Jotila is installed, but its Windows startup setting could not be saved. Run Setup again.");
     SHChangeNotify(SHCNE_ASSOCCHANGED,SHCNF_IDLIST,NULL,NULL);
     if (!silent && MessageBoxW(NULL,L"Jotila is installed. Open it now?",L"Jotila Setup",MB_YESNO|MB_ICONINFORMATION)==IDYES)
         ShellExecuteW(NULL,L"open",app_path,NULL,install_dir,SW_SHOWNORMAL);
@@ -194,6 +253,7 @@ static int cleanup(DWORD parent_pid) {
     }
     /* Only these exact per-user program files are removed. Never recurse and
        never touch notes, archive.path or a portable note archive. */
+    if (!set_startup(FALSE)) return failure(L"The Windows startup entry could not be removed. Run Uninstall again.");
     swprintf_s(license,PATH_CAP,L"%s\\LICENSE.txt",install_dir);
     if (!remove_file(app_path) || !remove_file(uninstall_path) || !remove_file(license)) return failure(L"Jotila could not be removed. Close the application and try again.");
     remove_file(start_link); remove_file(desktop_link);
@@ -228,7 +288,11 @@ int WINAPI wWinMain(_In_ HINSTANCE app,_In_opt_ HINSTANCE previous,_In_ PWSTR co
     (void)app; (void)previous; (void)command; (void)show;
     if (!argv) return failure(L"The command line could not be read.");
     if (!paths()) { LocalFree(argv); return failure(L"Windows user folders could not be located."); }
-    for (i=1;i<argc;++i) if (!_wcsicmp(argv[i],L"/S")) silent=TRUE;
+    for (i=1;i<argc;++i) {
+        if (!_wcsicmp(argv[i],L"/S")) silent=TRUE;
+        else if (!_wcsicmp(argv[i],L"/AUTOSTART")) startup_option=1;
+        else if (!_wcsicmp(argv[i],L"/NOAUTOSTART")) startup_option=0;
+    }
     name=wcsrchr(self,L'\\'); name=name ? name+1 : self;
     if (argc>=3 && !wcscmp(argv[1],L"--cleanup")) result=cleanup(wcstoul(argv[2],NULL,10));
     else if (!_wcsicmp(name,L"Uninstall.exe")) result=uninstall();

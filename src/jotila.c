@@ -101,6 +101,7 @@ static BYTE color_bag[COLOR_COUNT];
 static int colors_left;
 static DWORD color_random;
 static BOOL testing;
+static BOOL startup_restore;
 static HMODULE rich_edit;
 static const IID TEXT_DOCUMENT_IID = {0x8cc497c0, 0xa1df, 0x11ce, {0x80,0x98,0x00,0xaa,0x00,0x47,0xbe,0x5d}};
 static BOOL remove_note_files(const wchar_t *id);
@@ -109,6 +110,7 @@ static void note_command(Note *note, UINT command);
 static HWND browse_notes(void);
 static void choose_archive(HWND owner);
 static void wheel_resize(Note *note, int delta);
+static void end_session(BOOL ending);
 
 static int scaled(const Note *note, int value) { return MulDiv(value, note->dpi, 96); }
 static int bar_height(const Note *note) { return scaled(note, 32); }
@@ -1588,7 +1590,7 @@ static LRESULT CALLBACK note_proc(HWND window, UINT message, WPARAM wparam, LPAR
         return 0;
     case WM_QUERYENDSESSION: return save_note(note);
     case WM_ENDSESSION:
-        if (wparam) save_note(note);
+        end_session(wparam != 0);
         return 0;
     case WM_NCDESTROY: {
         Note **link = &notes;
@@ -1609,7 +1611,7 @@ static LRESULT CALLBACK note_proc(HWND window, UINT message, WPARAM wparam, LPAR
     return DefWindowProcW(window, message, wparam, lparam);
 }
 
-static Note *open_note(const wchar_t *id, int color, BOOL restore) {
+static Note *open_note_at(const wchar_t *id, int color, BOOL restore, const POINT *origin) {
     Note *note = (Note *)calloc(1, sizeof(Note));
     RECT rect;
     MONITORINFO monitor = {sizeof(monitor)};
@@ -1640,19 +1642,20 @@ static Note *open_note(const wchar_t *id, int color, BOOL restore) {
     note->opacity = restore ? layout_setting(note, LAYOUT_OPACITY, 100) : 100;
     if (note->opacity < 60 || note->opacity > 100) note->opacity = 100;
     width = note->width;
-    height = note->height;
-    x = restore ? layout_setting(note, LAYOUT_X, 100) : 100 + next_color % 7 * 28;
-    y = restore ? layout_setting(note, LAYOUT_Y, 100) : 100 + next_color % 7 * 28;
-    /* Clamp stored coordinates before arithmetic and keep the whole title bar
-       reachable when a monitor is unplugged or the screen layout changes. */
-    x = max(-100000, min(x, 100000)); y = max(-100000, min(y, 100000));
-    SetRect(&rect, x, y, x + width, y + height);
-    GetMonitorInfoW(MonitorFromRect(&rect, MONITOR_DEFAULTTONEAREST), &monitor);
-    width = min(width, monitor.rcWork.right - monitor.rcWork.left);
-    height = min(height, monitor.rcWork.bottom - monitor.rcWork.top);
-    x = max(monitor.rcWork.left, min(x, monitor.rcWork.right - width));
-    y = max(monitor.rcWork.top, min(y, monitor.rcWork.bottom - height));
     note->collapsed = restore && layout_setting(note, LAYOUT_COLLAPSED, FALSE);
+    height = note_height(note);
+    x = origin ? origin->x : restore ? layout_setting(note, LAYOUT_X, 100) : 100 + next_color % 7 * 28;
+    y = origin ? origin->y : restore ? layout_setting(note, LAYOUT_Y, 100) : 100 + next_color % 7 * 28;
+    /* Restore against the title bar: a folded note, or an expanded note with
+       its body past the screen edge, must retain its reachable position. */
+    x = max(-100000, min(x, 100000)); y = max(-100000, min(y, 100000));
+    if (!origin) {
+        SetRect(&rect, x, y, x + width, y + (restore ? bar_height(note) : height));
+        if (!GetMonitorInfoW(MonitorFromRect(&rect, MONITOR_DEFAULTTONEAREST), &monitor)) { free(note); return NULL; }
+        /* Keep creation on the chosen monitor; WM_CREATE obtains its DPI. */
+        x = max(monitor.rcWork.left, min(x, monitor.rcWork.right - 1));
+        y = max(monitor.rcWork.top, min(y, monitor.rcWork.bottom - 1));
+    }
     if (restore) {
         layout_setting(note, LAYOUT_TITLE, FALSE);
         layout_setting(note, LAYOUT_OPEN, TRUE);
@@ -1674,8 +1677,13 @@ static Note *open_note(const wchar_t *id, int color, BOOL restore) {
         load_rich(note);
         if (!set_editor_ink(note,ink_color(note))) { destroy_note(note); return NULL; }
     }
-    SetWindowPos(window, NULL, 0, 0, note->width, note_height(note),
-                 SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
+    if (!origin) {
+        x = max(monitor.rcWork.left, min(x, monitor.rcWork.right - note->width));
+        y = max(monitor.rcWork.top, min(y, monitor.rcWork.bottom - (restore ? bar_height(note) : note_height(note))));
+    }
+    /* Hotkeys provide an exact screen origin before the window is shown.
+       No cursor polling, subsequent jump, or change to tray placement. */
+    SetWindowPos(window, NULL, x, y, note->width, note_height(note), SWP_NOZORDER | SWP_NOACTIVATE);
     layout(note);
     if (!text_fits(note) || !remember_text(note)) { destroy_note(note); return NULL; }
     note->ready = TRUE;
@@ -1683,14 +1691,20 @@ static Note *open_note(const wchar_t *id, int color, BOOL restore) {
     if (note_has_content(note) && !save_layout(note, TRUE)) { destroy_note(note); return NULL; }
     if (note->persisted && !note_has_content(note) && !save_note(note)) { destroy_note(note); return NULL; }
     if (!testing) {
-        ShowWindow(window, SW_SHOWNORMAL);
-        SetForegroundWindow(window);
-        if (!note->collapsed) SetFocus(note->edit);
+        ShowWindow(window, startup_restore ? SW_SHOWNOACTIVATE : SW_SHOWNORMAL);
+        if (!startup_restore) {
+            SetForegroundWindow(window);
+            if (!note->collapsed) SetFocus(note->edit);
+        }
     }
     return note;
 }
 
-static Note *new_note(void) {
+static Note *open_note(const wchar_t *id, int color, BOOL restore) {
+    return open_note_at(id, color, restore, NULL);
+}
+
+static Note *new_note_at(const POINT *origin) {
     SYSTEMTIME now;
     wchar_t id[80], path[PATH_CAP];
     Note *note;
@@ -1706,13 +1720,15 @@ static Note *new_note(void) {
         }
     }
     if (suffix == 10000) return NULL;
-    note = open_note(id, color, FALSE);
+    note = open_note_at(id, color, FALSE, origin);
     if (note) {
         if (shuffled_palette) --colors_left;
         next_color = (next_color + 1) % COLOR_COUNT;
     }
     return note;
 }
+
+static Note *new_note(void) { return new_note_at(NULL); }
 
 static BOOL restore_notes(void) {
     WIN32_FIND_DATAW found;
@@ -1753,6 +1769,16 @@ static BOOL save_all(void) {
         else ok = FALSE;
     }
     return ok;
+}
+
+/* Windows can terminate the process after any top-level window acknowledges
+   WM_ENDSESSION. Save the whole session from the first recipient, once, and
+   flush the profile cache. A cancelled shutdown keeps every window alive. */
+static void end_session(BOOL ending) {
+    static BOOL saved;
+    if (!ending) { saved = FALSE; return; }
+    if (!saved && (saved = save_all()) != FALSE)
+        WritePrivateProfileStringW(NULL, NULL, NULL, state_path);
 }
 
 static Note *find_note(const wchar_t *id) {
@@ -1900,7 +1926,12 @@ static LRESULT CALLBACK controller_proc(HWND window, UINT message, WPARAM wparam
     static enum { TRAY_IDLE, TRAY_PENDING, TRAY_DOUBLE } tray_click;
     if (taskbar_created && message == taskbar_created) { tray(TRUE); return 0; }
     switch (message) {
-    case WM_HOTKEY:
+    case WM_HOTKEY: {
+        POINT point;
+        if (!GetCursorPos(&point) || !new_note_at(&point))
+            report_error(NULL, L"A new note could not be created at the pointer. Check the notes folder.");
+        return 0;
+    }
     case NEW_NOTE_MESSAGE:
         if (!new_note()) report_error(NULL, L"A new note could not be created. Check the notes folder.");
         return 0;
@@ -1960,7 +1991,7 @@ static LRESULT CALLBACK controller_proc(HWND window, UINT message, WPARAM wparam
         return 0;
     case WM_QUERYENDSESSION: return save_all();
     case WM_ENDSESSION:
-        if (wparam) save_all();
+        end_session(wparam != 0);
         return 0;
     case WM_DESTROY:
         KillTimer(window, TRAY_CLICK_TIMER);
@@ -1991,17 +2022,17 @@ int WINAPI wWinMain(_In_ HINSTANCE app, _In_opt_ HINSTANCE previous, _In_ PWSTR 
     DWORD length;
     MSG message;
     int result;
-    BOOL hotkey;
+    BOOL hotkey, startup = !_wcsicmp(command, L"--startup");
     SHORT plus;
     UINT key, modifiers;
-    (void)previous; (void)command; (void)show;
+    (void)previous; (void)show;
     instance = app;
     /* Share the established lock so an older release cannot edit concurrently. */
     mutex = CreateMutexW(NULL, FALSE, L"Local\\PicoSlip.SingleInstance");
     if (!mutex) return 1;
     if (GetLastError() == ERROR_ALREADY_EXISTS) {
         HWND existing = FindWindowW(APP_CLASS, NULL);
-        if (existing) PostMessageW(existing, NEW_NOTE_MESSAGE, 0, 0);
+        if (existing && !startup) PostMessageW(existing, NEW_NOTE_MESSAGE, 0, 0);
         CloseHandle(mutex); return 0;
     }
     SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
@@ -2045,9 +2076,11 @@ int WINAPI wWinMain(_In_ HINSTANCE app, _In_opt_ HINSTANCE previous, _In_ PWSTR 
     }
     taskbar_created = RegisterWindowMessageW(L"TaskbarCreated");
     tray(TRUE);
+    startup_restore = startup;
     if (!restore_notes())
         report_error(NULL, L"Some notes could not be opened. Their original TXT files are still in the archive.");
-    if (!notes && !new_note()) report_error(NULL, L"The first note could not be created.");
+    startup_restore = FALSE;
+    if (!startup && !notes && !new_note()) report_error(NULL, L"The first note could not be created.");
     while ((result = GetMessageW(&message, NULL, 0, 0)) > 0) {
         TranslateMessage(&message); DispatchMessageW(&message);
     }

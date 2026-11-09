@@ -11,6 +11,12 @@
 static unsigned metadata_writes, metric_queries, graphic_creations, heap_requests;
 /* Physical input checks are opt-in so ordinary runs do not type on the user's desktop. */
 static BOOL interactive_tests;
+static BOOL fake_cursor;
+static POINT test_cursor;
+static BOOL trace_cursor(LPPOINT point) {
+    if (!fake_cursor) return GetCursorPos(point);
+    *point=test_cursor; return TRUE;
+}
 static BOOL trace_profile(LPCWSTR section, LPCWSTR key, LPCWSTR value, LPCWSTR path) {
     ++metadata_writes;
     return WritePrivateProfileStringW(section, key, value, path);
@@ -39,6 +45,7 @@ static void *trace_realloc(void *memory, size_t size) { ++heap_requests; return 
 #define malloc trace_malloc
 #define calloc trace_calloc
 #define realloc trace_realloc
+#define GetCursorPos trace_cursor
 #include "../src/jotila.c"
 #undef WritePrivateProfileStringW
 #undef WritePrivateProfileSectionW
@@ -48,6 +55,7 @@ static void *trace_realloc(void *memory, size_t size) { ++heap_requests; return 
 #undef malloc
 #undef calloc
 #undef realloc
+#undef GetCursorPos
 
 static void require(BOOL condition, const char *message) {
     if (!condition) {
@@ -1810,6 +1818,7 @@ static void location_checks(void) {
 #include "palette_checks.c"
 #include "text_size_checks.c"
 #include "calendar_checks.c"
+#include "session_checks.c"
 
 int main(int argc, char **argv) {
     wchar_t temporary[PATH_CAP], root[PATH_CAP], id[80], path[PATH_CAP], text[256], pattern[PATH_CAP];
@@ -1868,6 +1877,8 @@ int main(int argc, char **argv) {
     if (argc==2 && !strcmp(argv[1],"--text-size-only")) {
         text_size_checks(); resizing_checks(); goto cleanup;
     }
+    if (argc==2 && !strcmp(argv[1],"--session-only")) { session_checks(); goto cleanup; }
+    session_checks();
     tray_checks();
     first = new_note();
     require(first != NULL, "create first note");

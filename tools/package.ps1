@@ -8,8 +8,13 @@ Copy-Item -LiteralPath (Join-Path $root 'LICENSE') -Destination $stage
 $readme = @'
 Jotila - Sticky notes, on silicon
 
-Run Jotila.exe. Ctrl+Alt++ creates a note.
+Run Jotila.exe. Ctrl+Alt++ creates a note exactly at the mouse pointer.
 Single-click the tray icon for a new note; double-click to browse notes.
+Tray creation keeps the usual staggered position.
+Open notes return to their saved positions, sizes and folded state after restart.
+Closed notes remain archived. Unplugged monitors cannot strand a note's title bar.
+The Setup EXE offers an optional "Start Jotila when I sign in to Windows" checkbox.
+Updates retain that choice. Portable mode does not register automatic startup.
 Minimizing the browser hides it beside the clock; double-click restores it.
 Drag the bar to move it; use - to collapse and X to close.
 Ctrl++ / Ctrl+- / Ctrl+mouse wheel or a touchpad pinch resizes the note.

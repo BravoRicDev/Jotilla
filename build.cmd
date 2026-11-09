@@ -48,7 +48,7 @@ cl %JOTILA_CFLAGS% src\jotila.c /Fo"build\jotila.obj" /Fe"dist\Jotila.exe" /link
 if errorlevel 1 exit /b 1
 rc /nologo /fo build\setup.res src\setup.rc
 if errorlevel 1 exit /b 1
-cl %JOTILA_CFLAGS% src\setup.c /Fo"build\setup.obj" /Fe"dist\Jotila-Setup-x64.exe" /link build\setup.res /SUBSYSTEM:WINDOWS %JOTILA_MANIFEST% user32.lib shell32.lib ole32.lib uuid.lib advapi32.lib
+cl %JOTILA_CFLAGS% src\setup.c /Fo"build\setup.obj" /Fe"dist\Jotila-Setup-x64.exe" /link build\setup.res /SUBSYSTEM:WINDOWS %JOTILA_MANIFEST% user32.lib shell32.lib ole32.lib uuid.lib advapi32.lib comctl32.lib
 if errorlevel 1 exit /b 1
 if /i "%~1"=="test" goto tests
 if /i "%~1"=="screenshots" goto screenshots
@@ -60,7 +60,7 @@ cl %JOTILA_CFLAGS% tests\tests.c /Fo"build\tests.obj" /Fe"build\tests.exe" /link
 if errorlevel 1 exit /b 1
 build\tests.exe %~2
 if errorlevel 1 exit /b 1
-cl %JOTILA_CFLAGS% tests\setup_checks.c /Fo"build\setup_checks.obj" /Fe"build\setup_checks.exe" /link /SUBSYSTEM:CONSOLE %JOTILA_MANIFEST% user32.lib shell32.lib ole32.lib uuid.lib advapi32.lib
+cl %JOTILA_CFLAGS% tests\setup_checks.c /Fo"build\setup_checks.obj" /Fe"build\setup_checks.exe" /link /SUBSYSTEM:CONSOLE %JOTILA_MANIFEST% user32.lib shell32.lib ole32.lib uuid.lib advapi32.lib comctl32.lib
 if errorlevel 1 exit /b 1
 build\setup_checks.exe
 if errorlevel 1 exit /b 1
@@ -71,6 +71,11 @@ if errorlevel 1 exit /b 1
 cl %JOTILA_CFLAGS% tests\archive_cache.c /Fo"build\archive_cache.obj" /Fe"build\archive_cache.exe" /link %JOTILA_MANIFEST% %JOTILA_LIBS:build\archive.obj =%
 if errorlevel 1 exit /b 1
 build\archive_cache.exe
+if errorlevel 1 exit /b 1
+if not exist dist\Jotila.exe exit /b 0
+cl %JOTILA_CFLAGS% tests\startup_checks.c /Fo"build\startup_checks.obj" /Fe"build\startup_checks.exe" /link user32.lib %JOTILA_MANIFEST%
+if errorlevel 1 exit /b 1
+build\startup_checks.exe
 exit /b %errorlevel%
 
 :screenshots
