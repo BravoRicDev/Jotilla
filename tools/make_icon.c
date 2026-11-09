@@ -1,4 +1,4 @@
-/* Jotila: a lowercase Greek iota on the app's framed yellow note. Deterministic
+/* Jotilla: a lowercase Greek iota on the app's framed yellow note. Deterministic
    supersampled C geometry; Windows WIC encodes compact PNG icon frames. */
 #define COBJMACROS
 #define WIN32_LEAN_AND_MEAN
@@ -101,7 +101,7 @@ int main(void) {
                            s*s*s*.655+3*s*s*t*.795+3*s*t*t*.802+t*t*t*.717};
     }
     for (i=0;i<9;++i) if (!encode(factory,sizes[i],&frames[i])) goto done;
-    if (fopen_s(&file,"assets/jotila.ico","wb")) goto done;
+    if (fopen_s(&file,"assets/jotilla.ico","wb")) goto done;
     u16(file,0); u16(file,1); u16(file,9);
     for (i=0;i<9;++i) {
         fputc(sizes[i]&255,file); fputc(sizes[i]&255,file); u16(file,0); u16(file,1); u16(file,32);
@@ -110,7 +110,7 @@ int main(void) {
     for (i=0;i<9;++i) fwrite(frames[i].bytes,1,frames[i].size,file);
     if (ferror(file)) goto done;
     if (fclose(file)) { file=NULL; goto done; } file=NULL;
-    if (fopen_s(&file,"assets/jotila.png","wb")) goto done;
+    if (fopen_s(&file,"assets/jotilla.png","wb")) goto done;
     if (fwrite(frames[8].bytes,1,frames[8].size,file)!=frames[8].size) goto done;
     result=0;
 done:

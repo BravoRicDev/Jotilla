@@ -340,6 +340,6 @@ int main(void) { @autoreleasepool {
     [browser.window orderOut:nil];
     [NSFileManager.defaultManager removeItemAtURL:root error:NULL];
     denseBrowserChecks();
-    if(getenv("JOTILA_PROFILE")) profile();
+    if(getenv("JOTILLA_PROFILE")) profile();
     printf("PASS: %u native UI checks.\n",checks);
 } return 0; }

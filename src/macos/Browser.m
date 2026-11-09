@@ -119,7 +119,7 @@
 - (instancetype)initWithApp:(JNApp *)app {
     NSWindow *window=[[NSWindow alloc] initWithContentRect:NSMakeRect(180,160,850,640) styleMask:NSWindowStyleMaskTitled|NSWindowStyleMaskClosable|NSWindowStyleMaskResizable|NSWindowStyleMaskMiniaturizable backing:NSBackingStoreBuffered defer:NO];
     if(!(self=[super initWithWindow:window])) return nil;
-    _app=app; window.appearance=[NSAppearance appearanceNamed:NSAppearanceNameAqua]; window.title=@"Jotila — Notes archive"; window.minSize=NSMakeSize(660,480); window.delegate=self; window.releasedWhenClosed=NO;
+    _app=app; window.appearance=[NSAppearance appearanceNamed:NSAppearanceNameAqua]; window.title=@"Jotilla — Notes archive"; window.minSize=NSMakeSize(660,480); window.delegate=self; window.releasedWhenClosed=NO;
     window.level=NSFloatingWindowLevel; window.collectionBehavior=NSWindowCollectionBehaviorMoveToActiveSpace|NSWindowCollectionBehaviorFullScreenAuxiliary;
     JNBrowserContent *content=[[JNBrowserContent alloc] initWithFrame:window.contentView.bounds]; content.browser=self; window.contentView=content;
     _queue=[NSOperationQueue new]; _queue.maxConcurrentOperationCount=1; _queue.qualityOfService=NSQualityOfServiceUserInitiated;

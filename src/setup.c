@@ -15,9 +15,10 @@
 
 #define PATH_CAP 1024
 #ifndef UNINSTALL_KEY
-#define UNINSTALL_KEY L"Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\Jotila"
+#define UNINSTALL_KEY L"Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\Jotilla"
 #define LEGACY_UNINSTALL_KEY L"Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\PicoSlip"
-#define PREVIOUS_UNINSTALL_KEY L"Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\IOTA"
+#define PREVIOUS_UNINSTALL_KEY L"Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\Jotila"
+#define OLDER_UNINSTALL_KEY L"Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\IOTA"
 #endif
 #ifndef STARTUP_KEY
 #define STARTUP_KEY L"Software\\Microsoft\\Windows\\CurrentVersion\\Run"
@@ -31,19 +32,19 @@ static BOOL paths(void) {
     wchar_t root[PATH_CAP];
     DWORD length;
     if (FAILED(SHGetFolderPathW(NULL,CSIDL_LOCAL_APPDATA,NULL,SHGFP_TYPE_CURRENT,root)) ||
-        swprintf_s(install_dir,PATH_CAP,L"%s\\Programs\\Jotila",root)<0 ||
-        swprintf_s(app_path,PATH_CAP,L"%s\\Jotila.exe",install_dir)<0 ||
+        swprintf_s(install_dir,PATH_CAP,L"%s\\Programs\\Jotilla",root)<0 ||
+        swprintf_s(app_path,PATH_CAP,L"%s\\Jotilla.exe",install_dir)<0 ||
         swprintf_s(uninstall_path,PATH_CAP,L"%s\\Uninstall.exe",install_dir)<0) return FALSE;
     if (FAILED(SHGetFolderPathW(NULL,CSIDL_PROGRAMS,NULL,SHGFP_TYPE_CURRENT,root)) ||
-        swprintf_s(start_link,PATH_CAP,L"%s\\Jotila.lnk",root)<0) return FALSE;
+        swprintf_s(start_link,PATH_CAP,L"%s\\Jotilla.lnk",root)<0) return FALSE;
     if (FAILED(SHGetFolderPathW(NULL,CSIDL_DESKTOPDIRECTORY,NULL,SHGFP_TYPE_CURRENT,root)) ||
-        swprintf_s(desktop_link,PATH_CAP,L"%s\\Jotila.lnk",root)<0) return FALSE;
+        swprintf_s(desktop_link,PATH_CAP,L"%s\\Jotilla.lnk",root)<0) return FALSE;
     length=GetModuleFileNameW(NULL,self,PATH_CAP);
     return length>0 && length<PATH_CAP;
 }
 
 static int failure(const wchar_t *message) {
-    if (!silent) MessageBoxW(NULL,message,L"Jotila Setup",MB_OK|MB_ICONERROR);
+    if (!silent) MessageBoxW(NULL,message,L"Jotilla Setup",MB_OK|MB_ICONERROR);
     return 1;
 }
 
@@ -69,7 +70,7 @@ static BOOL shortcut(const wchar_t *path) {
     HRESULT result=CoCreateInstance(&CLSID_ShellLink,NULL,CLSCTX_INPROC_SERVER,&IID_IShellLinkW,(void **)&link);
     if (SUCCEEDED(result)) result=IShellLinkW_SetPath(link,app_path);
     if (SUCCEEDED(result)) result=IShellLinkW_SetWorkingDirectory(link,install_dir);
-    if (SUCCEEDED(result)) result=IShellLinkW_SetDescription(link,L"Jotila - Tiny Sticky Notes for Windows");
+    if (SUCCEEDED(result)) result=IShellLinkW_SetDescription(link,L"Jotilla - Tiny Sticky Notes for Windows");
     if (SUCCEEDED(result)) result=IShellLinkW_SetIconLocation(link,app_path,0);
     if (SUCCEEDED(result)) result=IShellLinkW_QueryInterface(link,&IID_IPersistFile,(void **)&file);
     if (SUCCEEDED(result)) result=IPersistFile_Save(file,path,TRUE);
@@ -85,7 +86,11 @@ static BOOL registry_text(HKEY key,const wchar_t *name,const wchar_t *value) {
 static BOOL get_startup(BOOL *enabled) {
     wchar_t command[261]={0};
     DWORD bytes=sizeof(command);
-    LSTATUS status=RegGetValueW(HKEY_CURRENT_USER,STARTUP_KEY,L"Jotila",RRF_RT_REG_SZ,NULL,command,&bytes);
+    LSTATUS status=RegGetValueW(HKEY_CURRENT_USER,STARTUP_KEY,L"Jotilla",RRF_RT_REG_SZ,NULL,command,&bytes);
+    if (status==ERROR_FILE_NOT_FOUND) {
+        bytes=sizeof(command);
+        status=RegGetValueW(HKEY_CURRENT_USER,STARTUP_KEY,L"Jotila",RRF_RT_REG_SZ,NULL,command,&bytes);
+    }
     *enabled=FALSE;
     if (status==ERROR_FILE_NOT_FOUND) return TRUE;
     if (status!=ERROR_SUCCESS) return FALSE;
@@ -104,13 +109,18 @@ static BOOL set_startup(BOOL enabled) {
         status=RegOpenKeyExW(HKEY_CURRENT_USER,STARTUP_KEY,0,KEY_SET_VALUE,&key);
         if (status==ERROR_FILE_NOT_FOUND) return TRUE;
         if (status!=ERROR_SUCCESS) return FALSE;
-        status=RegDeleteValueW(key,L"Jotila");
+        status=RegDeleteValueW(key,L"Jotilla");
+        if (status==ERROR_SUCCESS || status==ERROR_FILE_NOT_FOUND) status=RegDeleteValueW(key,L"Jotila");
         RegCloseKey(key);
         return status==ERROR_SUCCESS || status==ERROR_FILE_NOT_FOUND;
     }
     if (wcslen(app_path)+12>260 || swprintf_s(command,261,L"\"%s\" --startup",app_path)<0) return FALSE;
     if (RegCreateKeyExW(HKEY_CURRENT_USER,STARTUP_KEY,0,NULL,0,KEY_SET_VALUE,NULL,&key,NULL)!=ERROR_SUCCESS) return FALSE;
-    ok=registry_text(key,L"Jotila",command);
+    ok=registry_text(key,L"Jotilla",command);
+    if (ok) {
+        status=RegDeleteValueW(key,L"Jotila");
+        ok=status==ERROR_SUCCESS || status==ERROR_FILE_NOT_FOUND;
+    }
     RegCloseKey(key);
     return ok;
 }
@@ -123,11 +133,11 @@ static int install_options(BOOL *startup) {
     dialog.dwFlags=TDF_ALLOW_DIALOG_CANCELLATION | TDF_SIZE_TO_CONTENT;
     if (*startup) dialog.dwFlags|=TDF_VERIFICATION_FLAG_CHECKED;
     dialog.dwCommonButtons=TDCBF_CANCEL_BUTTON;
-    dialog.pszWindowTitle=L"Jotila Setup";
-    dialog.pszMainInstruction=L"Install Jotila for this Windows account";
+    dialog.pszWindowTitle=L"Jotilla Setup";
+    dialog.pszMainInstruction=L"Install Jotilla for this Windows account";
     dialog.pszContent=L"Adds Start menu and desktop shortcuts. No administrator rights needed.\n\n"
                       L"Your notes and chosen archive location are preserved. Open notes return to their saved positions.";
-    dialog.pszVerificationText=L"Start Jotila when I sign in to Windows";
+    dialog.pszVerificationText=L"Start Jotilla when I sign in to Windows";
     dialog.cButtons=1; dialog.pButtons=&button; dialog.nDefaultButton=IDOK;
     return SUCCEEDED(TaskDialogIndirect(&dialog,&choice,NULL,startup)) ? choice : -1;
 }
@@ -139,10 +149,10 @@ static BOOL register_uninstaller(void) {
     BOOL ok;
     if (RegCreateKeyExW(HKEY_CURRENT_USER,UNINSTALL_KEY,0,NULL,0,KEY_WRITE,NULL,&key,NULL)!=ERROR_SUCCESS) return FALSE;
     swprintf_s(command,PATH_CAP+64,L"\"%s\"",uninstall_path);
-    ok=registry_text(key,L"DisplayName",L"Jotila") && registry_text(key,L"DisplayVersion",APP_VERSION_W) &&
+    ok=registry_text(key,L"DisplayName",L"Jotilla") && registry_text(key,L"DisplayVersion",APP_VERSION_W) &&
        registry_text(key,L"Publisher",L"Alessio Garau") && registry_text(key,L"DisplayIcon",app_path) &&
        registry_text(key,L"InstallLocation",install_dir) && registry_text(key,L"UninstallString",command) &&
-       registry_text(key,L"URLInfoAbout",L"https://github.com/GarauGarau/Jotila");
+       registry_text(key,L"URLInfoAbout",L"https://github.com/GarauGarau/Jotilla");
     swprintf_s(command,PATH_CAP+64,L"\"%s\" /S",uninstall_path);
     ok=ok && registry_text(key,L"QuietUninstallString",command) &&
        RegSetValueExW(key,L"NoModify",0,REG_DWORD,(BYTE *)&one,sizeof(one))==ERROR_SUCCESS &&
@@ -209,7 +219,8 @@ static BOOL retire_install(const wchar_t *brand,const wchar_t *key) {
 }
 
 static BOOL retire_legacy_install(void) {
-    return retire_install(L"IOTA",PREVIOUS_UNINSTALL_KEY) && retire_install(L"PicoSlip",LEGACY_UNINSTALL_KEY);
+    return retire_install(L"Jotila",PREVIOUS_UNINSTALL_KEY) &&
+           retire_install(L"IOTA",OLDER_UNINSTALL_KEY) && retire_install(L"PicoSlip",LEGACY_UNINSTALL_KEY);
 }
 
 static int install(void) {
@@ -225,7 +236,7 @@ static int install(void) {
         if (choice<0) return failure(L"The installation options could not be displayed.");
         if (choice!=IDOK) return 0;
     }
-    if (!close_app()) return failure(L"Jotila could not save and close. Close it and run Setup again.");
+    if (!close_app()) return failure(L"Jotilla could not save and close. Close it and run Setup again.");
     directory_result=SHCreateDirectoryExW(NULL,install_dir,NULL);
     if (directory_result!=ERROR_SUCCESS && directory_result!=ERROR_ALREADY_EXISTS && directory_result!=ERROR_FILE_EXISTS)
         return failure(L"The installation folder could not be created.");
@@ -235,11 +246,11 @@ static int install(void) {
     com=CoInitializeEx(NULL,COINIT_APARTMENTTHREADED);
     links=SUCCEEDED(com) && shortcut(start_link) && shortcut(desktop_link);
     if (SUCCEEDED(com)) CoUninitialize();
-    if (!links || !register_uninstaller()) return failure(L"Jotila was copied, but a shortcut or uninstall entry could not be created. Run Setup again.");
-    if (!retire_legacy_install()) return failure(L"Jotila is installed, but the previous program files could not be retired. Close the previous Setup and run Jotila Setup again. Your notes have been kept.");
-    if (!set_startup(startup)) return failure(L"Jotila is installed, but its Windows startup setting could not be saved. Run Setup again.");
+    if (!links || !register_uninstaller()) return failure(L"Jotilla was copied, but a shortcut or uninstall entry could not be created. Run Setup again.");
+    if (!retire_legacy_install()) return failure(L"Jotilla is installed, but the previous program files could not be retired. Close the previous Setup and run Jotilla Setup again. Your notes have been kept.");
+    if (!set_startup(startup)) return failure(L"Jotilla is installed, but its Windows startup setting could not be saved. Run Setup again.");
     SHChangeNotify(SHCNE_ASSOCCHANGED,SHCNF_IDLIST,NULL,NULL);
-    if (!silent && MessageBoxW(NULL,L"Jotila is installed. Open it now?",L"Jotila Setup",MB_YESNO|MB_ICONINFORMATION)==IDYES)
+    if (!silent && MessageBoxW(NULL,L"Jotilla is installed. Open it now?",L"Jotilla Setup",MB_YESNO|MB_ICONINFORMATION)==IDYES)
         ShellExecuteW(NULL,L"open",app_path,NULL,install_dir,SW_SHOWNORMAL);
     return 0;
 }
@@ -255,12 +266,12 @@ static int cleanup(DWORD parent_pid) {
        never touch notes, archive.path or a portable note archive. */
     if (!set_startup(FALSE)) return failure(L"The Windows startup entry could not be removed. Run Uninstall again.");
     swprintf_s(license,PATH_CAP,L"%s\\LICENSE.txt",install_dir);
-    if (!remove_file(app_path) || !remove_file(uninstall_path) || !remove_file(license)) return failure(L"Jotila could not be removed. Close the application and try again.");
+    if (!remove_file(app_path) || !remove_file(uninstall_path) || !remove_file(license)) return failure(L"Jotilla could not be removed. Close the application and try again.");
     remove_file(start_link); remove_file(desktop_link);
     RegDeleteTreeW(HKEY_CURRENT_USER,UNINSTALL_KEY);
     RemoveDirectoryW(install_dir);
     SHChangeNotify(SHCNE_ASSOCCHANGED,SHCNF_IDLIST,NULL,NULL);
-    if (!silent) MessageBoxW(NULL,L"Jotila has been uninstalled. Your notes have been kept.",L"Jotila",MB_OK|MB_ICONINFORMATION);
+    if (!silent) MessageBoxW(NULL,L"Jotilla has been uninstalled. Your notes have been kept.",L"Jotilla",MB_OK|MB_ICONINFORMATION);
     return 0;
 }
 
@@ -268,10 +279,10 @@ static int uninstall(void) {
     wchar_t temporary[PATH_CAP], helper[PATH_CAP], command[PATH_CAP+80];
     STARTUPINFOW startup={0};
     PROCESS_INFORMATION process={0};
-    if (!silent && MessageBoxW(NULL,L"Uninstall Jotila?\n\nYour saved notes will be kept.",L"Jotila",MB_YESNO|MB_ICONQUESTION)!=IDYES) return 0;
-    if (!close_app()) return failure(L"Jotila could not save and close. Close it before uninstalling.");
+    if (!silent && MessageBoxW(NULL,L"Uninstall Jotilla?\n\nYour saved notes will be kept.",L"Jotilla",MB_YESNO|MB_ICONQUESTION)!=IDYES) return 0;
+    if (!close_app()) return failure(L"Jotilla could not save and close. Close it before uninstalling.");
     if (!GetTempPathW(PATH_CAP,temporary) ||
-        swprintf_s(helper,PATH_CAP,L"%sJotila-cleanup-%lu-%llu.exe",temporary,GetCurrentProcessId(),GetTickCount64())<0 ||
+        swprintf_s(helper,PATH_CAP,L"%sJotilla-cleanup-%lu-%llu.exe",temporary,GetCurrentProcessId(),GetTickCount64())<0 ||
         !CopyFileW(self,helper,TRUE)) return failure(L"The temporary uninstaller could not be created.");
     swprintf_s(command,PATH_CAP+80,L"\"%s\" --cleanup %lu %s",helper,GetCurrentProcessId(),silent?L"/S":L"");
     startup.cb=sizeof(startup); startup.dwFlags=STARTF_USESHOWWINDOW; startup.wShowWindow=SW_HIDE;

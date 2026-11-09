@@ -16,7 +16,7 @@ static NSImage *statusIcon(void) {
         [iota curveToPoint:NSMakePoint(12,5.5) controlPoint1:NSMakePoint(9,3.5) controlPoint2:NSMakePoint(11.5,3.5)]; [iota stroke];
         return YES;
     }];
-    image.template=YES; image.accessibilityDescription=@"Jotila notes"; return image;
+    image.template=YES; image.accessibilityDescription=@"Jotilla notes"; return image;
 }
 
 static OSStatus hotkey(EventHandlerCallRef handler, EventRef event, void *context) {
@@ -78,7 +78,7 @@ static OSStatus hotkey(EventHandlerCallRef handler, EventRef event, void *contex
 }
 - (void)applicationWillFinishLaunching:(NSNotification *)notification {
     (void)notification;
-    self.portable=self.portable || [[NSBundle.mainBundle objectForInfoDictionaryKey:@"JotilaPortable"] boolValue];
+    self.portable=self.portable || [[NSBundle.mainBundle objectForInfoDictionaryKey:@"JotillaPortable"] boolValue];
 }
 - (void)applicationDidFinishLaunching:(NSNotification *)notification {
     (void)notification; NSError *error=nil;
@@ -88,7 +88,7 @@ static OSStatus hotkey(EventHandlerCallRef handler, EventRef event, void *contex
     NSURL *directory=self.initialDirectory;
     if (!self.portable) {
         NSURL *support=[NSFileManager.defaultManager URLForDirectory:NSApplicationSupportDirectory inDomain:NSUserDomainMask appropriateForURL:nil create:YES error:&error];
-        NSURL *root=[support URLByAppendingPathComponent:@"Jotila" isDirectory:YES];
+        NSURL *root=support ? JNProfileRoot(support) : nil;
         if (!support || ![NSFileManager.defaultManager createDirectoryAtURL:root withIntermediateDirectories:YES attributes:nil error:&error]) { JNError(error); [NSApp terminate:nil]; return; }
         _configuration=[root URLByAppendingPathComponent:@"archive.path"];
         if (!directory) {
@@ -98,7 +98,7 @@ static OSStatus hotkey(EventHandlerCallRef handler, EventRef event, void *contex
                 directory=[NSURL fileURLWithPath:saved isDirectory:YES];
                 BOOL isDirectory=NO;
                 if (![NSFileManager.defaultManager fileExistsAtPath:directory.path isDirectory:&isDirectory] || !isDirectory) {
-                    JNError([NSError errorWithDomain:@"Jotila" code:1 userInfo:@{NSLocalizedDescriptionKey:@"The configured archive is unavailable. Reconnect its drive. Its location has not been changed."}]); [NSApp terminate:nil]; return;
+                    JNError([NSError errorWithDomain:@"Jotilla" code:1 userInfo:@{NSLocalizedDescriptionKey:@"The configured archive is unavailable. Reconnect its drive. Its location has not been changed."}]); [NSApp terminate:nil]; return;
                 }
             } else directory=[root URLByAppendingPathComponent:@"notes" isDirectory:YES];
         }
@@ -113,7 +113,7 @@ static OSStatus hotkey(EventHandlerCallRef handler, EventRef event, void *contex
     if (status==noErr) status=RegisterEventHotKey(kVK_ANSI_N,controlKey|optionKey|cmdKey,(EventHotKeyID){0x4a6f746c,1},GetApplicationEventTarget(),0,&_hotkey);
     RegisterEventHotKey(kVK_ANSI_Equal,controlKey|optionKey,(EventHotKeyID){0x4a6f746c,2},GetApplicationEventTarget(),0,&_hotkeyPlus);
     RegisterEventHotKey(kVK_ANSI_Equal,controlKey|optionKey|shiftKey,(EventHotKeyID){0x4a6f746c,3},GetApplicationEventTarget(),0,&_hotkeyShiftPlus);
-    if (status!=noErr) NSLog(@"Jotila: global shortcut unavailable (%d); use the menu bar item.",(int)status);
+    if (status!=noErr) NSLog(@"Jotilla: global shortcut unavailable (%d); use the menu bar item.",(int)status);
     /* Restoring an existing session never activates the app or creates a note. */
     [self restore]; _launched=YES;
     if (!self.store.records.count && !self.startup) [self newNote:nil];
@@ -125,12 +125,12 @@ static OSStatus hotkey(EventHandlerCallRef handler, EventRef event, void *contex
 }
 - (void)installMenu {
     NSMenu *main=[NSMenu new], *appMenu=[NSMenu new], *file=[NSMenu new], *edit=[NSMenu new], *format=[NSMenu new];
-    NSArray *menus=@[appMenu,file,edit,format]; NSArray *titles=@[@"Jotila",@"File",@"Edit",@"Format"];
+    NSArray *menus=@[appMenu,file,edit,format]; NSArray *titles=@[@"Jotilla",@"File",@"Edit",@"Format"];
     for (NSUInteger i=0;i<menus.count;++i) [main addItemWithTitle:titles[i] action:nil keyEquivalent:@""].submenu=menus[i];
-    [appMenu addItemWithTitle:@"About Jotila" action:@selector(orderFrontStandardAboutPanel:) keyEquivalent:@""];
+    [appMenu addItemWithTitle:@"About Jotilla" action:@selector(orderFrontStandardAboutPanel:) keyEquivalent:@""];
     NSMenuItem *login=[appMenu addItemWithTitle:@"Start at login" action:@selector(toggleLogin:) keyEquivalent:@""]; login.target=self;
     login.state=SMAppService.mainAppService.status==SMAppServiceStatusEnabled ? NSControlStateValueOn : NSControlStateValueOff;
-    [appMenu addItem:NSMenuItem.separatorItem]; [appMenu addItemWithTitle:@"Quit Jotila" action:@selector(terminate:) keyEquivalent:@"q"];
+    [appMenu addItem:NSMenuItem.separatorItem]; [appMenu addItemWithTitle:@"Quit Jotilla" action:@selector(terminate:) keyEquivalent:@"q"];
     NSArray *commands=@[@"New note",@"Note explorer",@"Search notes",@"Open archive…",@"Reload external edits"];
     NSArray *keys=@[@"n",@"e",@"f",@"o",@"r"];
     SEL actions[]={@selector(newNote:),@selector(browse:),@selector(search:),@selector(chooseArchive:),@selector(reload:)};
@@ -148,10 +148,10 @@ static OSStatus hotkey(EventHandlerCallRef handler, EventRef event, void *contex
     NSMenuItem *findAlias=[file addItemWithTitle:@"Search notes" action:@selector(search:) keyEquivalent:@"F"]; findAlias.target=self; findAlias.hidden=YES;
     NSApp.mainMenu=main;
     _status=[NSStatusBar.systemStatusBar statusItemWithLength:NSSquareStatusItemLength];
-    _status.autosaveName=@"JotilaMenuBar"; _status.visible=YES;
+    _status.autosaveName=@"JotilaMenuBar"; _status.visible=YES; /* Stable menu-bar position preference. */
     _status.button.title=@""; _status.button.image=statusIcon(); _status.button.imagePosition=NSImageOnly;
-    _status.button.toolTip=@"Jotila — new note; double-click for explorer"; [_status.button setAccessibilityLabel:@"Jotila notes"];
-    NSMenu *tray=[file copy]; [tray addItem:NSMenuItem.separatorItem]; [tray addItemWithTitle:@"Quit Jotila" action:@selector(terminate:) keyEquivalent:@"q"]; _tray=tray;
+    _status.button.toolTip=@"Jotilla — new note; double-click for explorer"; [_status.button setAccessibilityLabel:@"Jotilla notes"];
+    NSMenu *tray=[file copy]; [tray addItem:NSMenuItem.separatorItem]; [tray addItemWithTitle:@"Quit Jotilla" action:@selector(terminate:) keyEquivalent:@"q"]; _tray=tray;
     _status.button.target=self; _status.button.action=@selector(statusClicked:); [_status.button sendActionOn:NSEventMaskLeftMouseUp|NSEventMaskRightMouseUp];
 }
 - (void)statusClicked:(id)sender {

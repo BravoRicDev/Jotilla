@@ -1,5 +1,5 @@
-#ifndef JOTILA_METADATA_H
-#define JOTILA_METADATA_H
+#ifndef JOTILLA_METADATA_H
+#define JOTILLA_METADATA_H
 #include <windows.h>
 
 /* One bounded read per snapshot. The caller owns the decoded buffer. */

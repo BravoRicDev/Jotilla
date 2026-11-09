@@ -1,11 +1,11 @@
-#ifndef JOTILA_LOCATION_H
-#define JOTILA_LOCATION_H
+#ifndef JOTILLA_LOCATION_H
+#define JOTILLA_LOCATION_H
 #include <windows.h>
 
 #define LOCATION_CAP 1024
 
-/* Fresh installs use Jotila; upgrades retain the existing archive in place and
-   atomically remember its path. Explicit Jotila settings always take priority. */
+/* Fresh installs use Jotilla; upgrades retain the existing archive in place and
+   atomically remember its path. Explicit Jotilla settings always take priority. */
 BOOL location_user_paths(const wchar_t *local, wchar_t config[LOCATION_CAP], wchar_t fallback[LOCATION_CAP]);
 
 /* archive.path is independent of per-archive notes.ini. Missing configuration

@@ -29,7 +29,7 @@ BOOL metadata_next(MetadataCursor *cursor, wchar_t **key, wchar_t **value) {
     return FALSE;
 }
 /* Read once, preserving every section/key during the first Unicode migration.
-   Existing Jotila metadata is ASCII; legacy ANSI files use the Windows ACP. */
+   Existing Jotilla metadata is ASCII; legacy ANSI files use the Windows ACP. */
 BOOL metadata_read(const wchar_t *path, wchar_t **result, BOOL *unicode) {
     HANDLE file;
     LARGE_INTEGER size;

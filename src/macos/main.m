@@ -12,7 +12,7 @@ int main(int argc, const char *argv[]) {
                 NSString *path=[NSString stringWithUTF8String:argv[++i]];
                 if (!path.isAbsolutePath) { fprintf(stderr,"--archive requires an absolute path\n"); return 2; }
                 delegate.initialDirectory=[NSURL fileURLWithPath:path isDirectory:YES];
-            } else if (strncmp(argv[i],"-psn_",5)) { fprintf(stderr,"Usage: Jotila [--portable] [--startup] [--archive /path/to/notes]\n"); return 2; }
+            } else if (strncmp(argv[i],"-psn_",5)) { fprintf(stderr,"Usage: Jotilla [--portable] [--startup] [--archive /path/to/notes]\n"); return 2; }
         }
         if (smoke && (!delegate.portable || !delegate.initialDirectory)) { fprintf(stderr,"Smoke test requires --portable --archive PATH\n"); return 2; }
         if (smoke) {

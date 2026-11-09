@@ -38,7 +38,7 @@ int wmain(void) {
     char body[2048];
     int sizes[] = {100, 1000, 10000}, created = 0, pass, i, run, status = 1;
     if (!items || !GetTempPathW(1024, temporary)) { free(items); return 1; }
-    swprintf_s(root, 1024, L"%sJotila-search-profile-%lu-%llu", temporary, GetCurrentProcessId(), GetTickCount64());
+    swprintf_s(root, 1024, L"%sJotilla-search-profile-%lu-%llu", temporary, GetCurrentProcessId(), GetTickCount64());
     swprintf_s(settings, 1024, L"%s\\notes.ini", root);
     if (!CreateDirectoryW(root, NULL)) { free(items); return 1; }
     window = CreateWindowExW(0, L"STATIC", L"", 0, 0, 0, 0, 0, HWND_MESSAGE, NULL, GetModuleHandleW(NULL), NULL);

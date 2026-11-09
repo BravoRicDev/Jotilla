@@ -3,17 +3,17 @@ $root = Split-Path -Parent $PSScriptRoot
 $dist = Join-Path $root 'dist'
 $stage = Join-Path $root 'build\portable'
 New-Item -ItemType Directory -Path $stage -Force | Out-Null
-Copy-Item -LiteralPath (Join-Path $dist 'Jotila.exe') -Destination $stage
+Copy-Item -LiteralPath (Join-Path $dist 'Jotilla.exe') -Destination $stage
 Copy-Item -LiteralPath (Join-Path $root 'LICENSE') -Destination $stage
 $readme = @'
-Jotila - Sticky notes, on silicon
+Jotilla - Sticky notes, on silicon
 
-Run Jotila.exe. Ctrl+Alt++ creates a note exactly at the mouse pointer.
+Run Jotilla.exe. Ctrl+Alt++ creates a note exactly at the mouse pointer.
 Single-click the tray icon for a new note; double-click to browse notes.
 Tray creation keeps the usual staggered position.
 Open notes return to their saved positions, sizes and folded state after restart.
 Closed notes remain archived. Unplugged monitors cannot strand a note's title bar.
-The Setup EXE offers an optional "Start Jotila when I sign in to Windows" checkbox.
+The Setup EXE offers an optional "Start Jotilla when I sign in to Windows" checkbox.
 Updates retain that choice. Portable mode does not register automatic startup.
 Minimizing the browser hides it beside the clock; double-click restores it.
 Drag the bar to move it; use - to collapse and X to close.
@@ -38,13 +38,13 @@ The chosen folder becomes the default; archive.path stores its location.
 Keep portable.flag beside the EXE to retain portable mode.
 Back up the entire archive, including notes.ini and RTF formatting files.
 
-https://github.com/GarauGarau/Jotila
+https://github.com/GarauGarau/Jotilla
 '@
 [IO.File]::WriteAllText((Join-Path $stage 'README.txt'), $readme, [Text.UTF8Encoding]::new($false))
 [IO.File]::WriteAllText((Join-Path $stage 'portable.flag'), '')
-$zip = Join-Path $dist 'Jotila-portable-x64.zip'
-Compress-Archive -LiteralPath (Join-Path $stage 'Jotila.exe'),(Join-Path $stage 'README.txt'),(Join-Path $stage 'LICENSE'),(Join-Path $stage 'portable.flag') -DestinationPath $zip -Force
-$assets = @('Jotila.exe','Jotila-Setup-x64.exe','Jotila-portable-x64.zip')
+$zip = Join-Path $dist 'Jotilla-portable-x64.zip'
+Compress-Archive -LiteralPath (Join-Path $stage 'Jotilla.exe'),(Join-Path $stage 'README.txt'),(Join-Path $stage 'LICENSE'),(Join-Path $stage 'portable.flag') -DestinationPath $zip -Force
+$assets = @('Jotilla.exe','Jotilla-Setup-x64.exe','Jotilla-portable-x64.zip')
 $lines = foreach ($name in $assets) {
     $hash = (Get-FileHash -LiteralPath (Join-Path $dist $name) -Algorithm SHA256).Hash.ToLowerInvariant()
     "$hash  $name"

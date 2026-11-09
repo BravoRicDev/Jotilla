@@ -123,10 +123,10 @@ int main(void) {
     mutex=OpenMutexW(SYNCHRONIZE,FALSE,L"Local\\PicoSlip.SingleInstance");
     if (mutex) { CloseHandle(mutex); puts("SKIP: real-process startup checks leave the running user application untouched."); return 0; }
     require(GetTempPathW(CAP,temporary)>0,"locate temporary directory");
-    swprintf_s(root,CAP,L"%sJotila startup è %lu-%llu",temporary,GetCurrentProcessId(),GetTickCount64());
+    swprintf_s(root,CAP,L"%sJotilla startup è %lu-%llu",temporary,GetCurrentProcessId(),GetTickCount64());
     require(CreateDirectoryW(root,NULL),"create private portable root");
-    path(executable,L"Jotila.exe");
-    require(CopyFileW(L"dist\\Jotila.exe",executable,TRUE),"copy release executable into portable fixture");
+    path(executable,L"Jotilla.exe");
+    require(CopyFileW(L"dist\\Jotilla.exe",executable,TRUE),"copy release executable into portable fixture");
     fixture(L"portable.flag","");
     start(TRUE);
     require(note_windows(windows)==0,"automatic startup of an empty archive creates no blank note");

@@ -33,11 +33,29 @@ static void emptyArchives(void) {
     require([store reload:&error] && store.records.count==4,"blank notes stay excluded after another reload");
     require([NSFileManager.defaultManager removeItemAtURL:root error:&error],"remove legacy blank-note fixture");
 }
+static void brandingProfiles(void) {
+    NSURL *support=[[NSURL fileURLWithPath:NSTemporaryDirectory() isDirectory:YES] URLByAppendingPathComponent:NSUUID.UUID.UUIDString];
+    NSURL *current=[support URLByAppendingPathComponent:@"Jotilla" isDirectory:YES];
+    NSURL *previous=[support URLByAppendingPathComponent:@"Jotila" isDirectory:YES];
+    NSURL *config=[previous URLByAppendingPathComponent:@"archive.path"];
+    NSFileManager *files=NSFileManager.defaultManager; NSError *error=nil;
+    require([JNProfileRoot(support) isEqual:current],"fresh installations use the new brand's profile");
+    require([files createDirectoryAtURL:previous withIntermediateDirectories:YES attributes:nil error:&error],"create previous-brand profile fixture");
+    NSData *saved=[@"/Volumes/Disconnected/notes" dataUsingEncoding:NSUTF8StringEncoding];
+    require(JNWrite(saved,config,&error),"remember a disconnected archive in the old profile");
+    require([JNProfileRoot(support) isEqual:previous] && [[NSData dataWithContentsOfURL:config] isEqual:saved],
+            "renaming preserves the existing archive preference even when its drive is disconnected");
+    require(![files fileExistsAtPath:current.path],"discovering an old profile does not create a replacement");
+    require([files createDirectoryAtURL:current withIntermediateDirectories:YES attributes:nil error:&error],"create explicit new-brand profile");
+    require([JNProfileRoot(support) isEqual:current],"an explicit new-brand profile takes priority");
+    require([files removeItemAtURL:support error:&error],"remove private branding fixtures");
+}
 int main(void) {
     @autoreleasepool {
         [NSApplication sharedApplication];
         emptyArchives();
-        NSURL *root=[[NSURL fileURLWithPath:NSTemporaryDirectory() isDirectory:YES] URLByAppendingPathComponent:[@"Jotila-tests-" stringByAppendingString:NSUUID.UUID.UUIDString] isDirectory:YES];
+        brandingProfiles();
+        NSURL *root=[[NSURL fileURLWithPath:NSTemporaryDirectory() isDirectory:YES] URLByAppendingPathComponent:[@"Jotilla-tests-" stringByAppendingString:NSUUID.UUID.UUIDString] isDirectory:YES];
         NSError *error=nil;
         JNStore *store=[[JNStore alloc] initWithDirectory:root error:&error];
         require(store!=nil,"create isolated archive");
@@ -112,7 +130,7 @@ int main(void) {
         require([[[JNQuery alloc] initWithText:@"release"] terms].count==1,"parsed search terms available for highlighting");
         require([[[JNQuery alloc] initWithText:@"release"] matchesFile:search cancelled:^BOOL{return NO;} excerpt:&excerpt error:&error] && [excerpt containsString:@"release plan"],"bounded search excerpt includes match across chunk boundary");
         require(excerpt.length<400,"search excerpt stays bounded");
-        NSURL *moved=[root.URLByDeletingLastPathComponent URLByAppendingPathComponent:[@"Jotila-moved-" stringByAppendingString:NSUUID.UUID.UUIDString]];
+        NSURL *moved=[root.URLByDeletingLastPathComponent URLByAppendingPathComponent:[@"Jotilla-moved-" stringByAppendingString:NSUUID.UUID.UUIDString]];
         JNStore *copy=[store copyToDirectory:moved error:&error]; require(copy!=nil,"copy archive into locked empty folder");
         require([NSFileManager.defaultManager contentsEqualAtPath:[root URLByAppendingPathComponent:@"notes.ini"].path andPath:[moved URLByAppendingPathComponent:@"notes.ini"].path],"migration preserves metadata bytes");
         require([NSFileManager.defaultManager contentsEqualAtPath:[root URLByAppendingPathComponent:@"search.txt"].path andPath:[moved URLByAppendingPathComponent:@"search.txt"].path],"migration preserves note bytes");

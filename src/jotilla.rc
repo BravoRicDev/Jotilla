@@ -1,6 +1,6 @@
 #include <windows.h>
 #include "resource.h"
-IDI_APP ICON "assets/jotila.ico"
+IDI_APP ICON "assets/jotilla.ico"
 IDR_LICENSE RCDATA "LICENSE"
 IDD_TITLE DIALOGEX 0, 0, 252, 84
 STYLE DS_SETFONT | DS_MODALFRAME | WS_POPUP | WS_CAPTION | WS_SYSMENU
@@ -35,11 +35,11 @@ BEGIN
   BLOCK "040904B0"
   BEGIN
    VALUE "CompanyName", "Alessio Garau\0"
-   VALUE "FileDescription", "Jotila - Tiny Sticky Notes for Windows\0"
+   VALUE "FileDescription", "Jotilla - Tiny Sticky Notes for Windows\0"
    VALUE "FileVersion", APP_VERSION "\0"
-   VALUE "InternalName", "Jotila\0"
-   VALUE "OriginalFilename", "Jotila.exe\0"
-   VALUE "ProductName", "Jotila\0"
+   VALUE "InternalName", "Jotilla\0"
+   VALUE "OriginalFilename", "Jotilla.exe\0"
+   VALUE "ProductName", "Jotilla\0"
    VALUE "ProductVersion", APP_VERSION "\0"
    VALUE "LegalCopyright", "MIT - Alessio Garau\0"
   END

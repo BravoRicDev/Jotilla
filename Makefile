@@ -2,7 +2,7 @@
 ARCH ?= $(shell uname -m)
 MIN_MACOS := 13.0
 OUT := build/macos/$(ARCH)
-APP := $(OUT)/Jotila.app
+APP := $(OUT)/Jotilla.app
 CC := xcrun clang
 COMMON := -arch $(ARCH) -mmacosx-version-min=$(MIN_MACOS) -O2 -Wall -Wextra -Werror -Isrc
 CFLAGS := $(COMMON) -std=c17
@@ -14,7 +14,7 @@ OBJECTS := $(CORE:%.c=$(OUT)/%.o) $(MAC:%.m=$(OUT)/%.o)
 SIGN_IDENTITY ?= -
 
 .PHONY: all run preview test ui-test profile smoke-test analyze universal package
-all: $(APP)/Contents/MacOS/Jotila
+all: $(APP)/Contents/MacOS/Jotilla
 
 $(OUT)/%.o: %.c
 	@mkdir -p $(dir $@)
@@ -24,12 +24,12 @@ $(OUT)/%.o: %.m
 	@mkdir -p $(dir $@)
 	$(CC) $(OBJCFLAGS) -MMD -MP -c $< -o $@
 
-$(APP)/Contents/MacOS/Jotila: $(OBJECTS) $(OUT)/src/macos/main.o src/macos/Info.plist assets/jotila.png tools/macos/icon.sh Makefile
+$(APP)/Contents/MacOS/Jotilla: $(OBJECTS) $(OUT)/src/macos/main.o src/macos/Info.plist assets/jotilla.png tools/macos/icon.sh Makefile
 	@mkdir -p $(APP)/Contents/MacOS $(APP)/Contents/Resources
 	$(CC) $(COMMON) $(OBJECTS) $(OUT)/src/macos/main.o $(FRAMEWORKS) -o $@
 	cp src/macos/Info.plist $(APP)/Contents/Info.plist
-	sh tools/macos/icon.sh assets/jotila.png $(OUT)
-	cp $(OUT)/Jotila.icns $(APP)/Contents/Resources/Jotila.icns
+	sh tools/macos/icon.sh assets/jotilla.png $(OUT)
+	cp $(OUT)/Jotilla.icns $(APP)/Contents/Resources/Jotilla.icns
 	codesign --force --sign "$(SIGN_IDENTITY)" --options runtime $(APP)
 	@touch $@
 
@@ -37,27 +37,27 @@ run: all
 	open $(APP)
 
 preview: all
-	@mkdir -p notes/macOS-preview.jotilaarchive
-	open $(APP) --args --portable --archive "$(CURDIR)/notes/macOS-preview.jotilaarchive"
+	@mkdir -p notes/macOS-preview.jotillaarchive
+	open $(APP) --args --portable --archive "$(CURDIR)/notes/macOS-preview.jotillaarchive"
 
-$(OUT)/jotila-tests: $(OBJECTS) $(OUT)/tests/macos/tests.o
+$(OUT)/jotilla-tests: $(OBJECTS) $(OUT)/tests/macos/tests.o
 	$(CC) $(COMMON) $^ $(FRAMEWORKS) -o $@
 
-test: $(OUT)/jotila-tests
-	$(OUT)/jotila-tests
+test: $(OUT)/jotilla-tests
+	$(OUT)/jotilla-tests
 
-$(OUT)/jotila-ui-tests: $(OBJECTS) $(OUT)/tests/macos/ui.o
+$(OUT)/jotilla-ui-tests: $(OBJECTS) $(OUT)/tests/macos/ui.o
 	$(CC) $(COMMON) $^ $(FRAMEWORKS) -o $@
 
-ui-test: $(OUT)/jotila-ui-tests
-	$(OUT)/jotila-ui-tests
+ui-test: $(OUT)/jotilla-ui-tests
+	$(OUT)/jotilla-ui-tests
 
-profile: $(OUT)/jotila-ui-tests
-	JOTILA_PROFILE=1 $(OUT)/jotila-ui-tests
+profile: $(OUT)/jotilla-ui-tests
+	JOTILLA_PROFILE=1 $(OUT)/jotilla-ui-tests
 
 smoke-test: all
 	@archive=$$(mktemp -d "$(CURDIR)/$(OUT)/smoke.XXXXXX"); \
-	  $(APP)/Contents/MacOS/Jotila --portable --archive "$$archive" --smoke-test
+	  $(APP)/Contents/MacOS/Jotilla --portable --archive "$$archive" --smoke-test
 
 analyze:
 	@mkdir -p $(OUT)/analysis

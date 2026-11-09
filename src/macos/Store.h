@@ -1,6 +1,7 @@
 #import <AppKit/AppKit.h>
 
 NS_ASSUME_NONNULL_BEGIN
+FOUNDATION_EXPORT NSURL *JNProfileRoot(NSURL *support);
 FOUNDATION_EXPORT NSString *JNPlain(NSString *text);
 FOUNDATION_EXPORT BOOL JNWrite(NSData *data, NSURL *url, NSError * _Nullable * _Nullable error);
 FOUNDATION_EXPORT NSString * _Nullable JNNormalizeTags(NSString *text, NSError * _Nullable * _Nullable error);

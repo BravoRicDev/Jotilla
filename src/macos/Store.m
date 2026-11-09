@@ -6,8 +6,17 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+NSURL *JNProfileRoot(NSURL *support) {
+    NSURL *current=[support URLByAppendingPathComponent:@"Jotilla" isDirectory:YES];
+    NSURL *previous=[support URLByAppendingPathComponent:@"Jotila" isDirectory:YES];
+    NSFileManager *files=NSFileManager.defaultManager;
+    /* Retain an established profile in place, including a disconnected archive
+       reference. An explicit new profile always takes priority. */
+    return ![files fileExistsAtPath:current.path] && [files fileExistsAtPath:previous.path] ? previous : current;
+}
+
 static NSError *failure(NSString *message) {
-    return [NSError errorWithDomain:@"Jotila" code:1 userInfo:@{NSLocalizedDescriptionKey:message}];
+    return [NSError errorWithDomain:@"Jotilla" code:1 userInfo:@{NSLocalizedDescriptionKey:message}];
 }
 static BOOL fail(NSError **error, NSString *message) {
     if (error) *error = failure(message);
@@ -128,10 +137,12 @@ NSString *JNNormalizeTags(NSString *text, NSError **error) {
     _lock = -1;
     _directory = directory.URLByStandardizingPath.URLByResolvingSymlinksInPath;
     if (![NSFileManager.defaultManager createDirectoryAtURL:_directory withIntermediateDirectories:YES attributes:nil error:error]) return nil;
+    /* Keep the lock name shared with older releases: two brands must never
+       write to the same archive concurrently. */
     NSURL *lockURL = [_directory URLByAppendingPathComponent:@".jotila.lock"];
     _lock = open(lockURL.fileSystemRepresentation, O_CREAT | O_RDWR, 0600);
     if (_lock < 0 || flock(_lock, LOCK_EX | LOCK_NB)) {
-        fail(error, @"This archive is unavailable or already open in another Jotila process."); return nil;
+        fail(error, @"This archive is unavailable or already open in another Jotilla process."); return nil;
     }
     if (![self reload:error]) return nil;
     return self;
@@ -258,7 +269,7 @@ NSString *JNNormalizeTags(NSString *text, NSError **error) {
 - (BOOL)saveMetadata:(NSError **)error {
     NSURL *url = [_directory URLByAppendingPathComponent:@"notes.ini"];
     if (![version(url) isEqual:_metadataVersion])
-        return fail(error, @"Archive metadata changed outside Jotila. Reload the archive before editing further.");
+        return fail(error, @"Archive metadata changed outside Jotilla. Reload the archive before editing further.");
     NSMutableString *ini = [NSMutableString stringWithString:@"\uFEFF"];
     for (NSString *name in [[_sections allKeys] sortedArrayUsingSelector:@selector(compare:)]) {
         NSDictionary *section = _sections[name];
@@ -284,9 +295,9 @@ NSString *JNNormalizeTags(NSString *text, NSError **error) {
 - (BOOL)save:(JNRecord *)record text:(NSAttributedString *)text writeText:(BOOL)writeText writeRich:(BOOL)writeRich error:(NSError **)error {
     NSURL *url = [self URLFor:record extension:@"txt"];
     NSString *expected = _versions[record.identifier] ?: @"missing";
-    if (![version(url) isEqual:expected]) return fail(error, @"This note changed outside Jotila. Export your edit as a copy, then reload the archive.");
+    if (![version(url) isEqual:expected]) return fail(error, @"This note changed outside Jotilla. Export your edit as a copy, then reload the archive.");
     if (![version([_directory URLByAppendingPathComponent:@"notes.ini"]) isEqual:_metadataVersion])
-        return fail(error, @"Archive metadata changed outside Jotila. Export your edit as a copy, then reload the archive.");
+        return fail(error, @"Archive metadata changed outside Jotilla. Export your edit as a copy, then reload the archive.");
     NSString *body = JNPlain(text.string);
     if (![record.title stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet].length && ![body stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet].length) {
         if ([expected isEqual:@"missing"]) return YES;
@@ -320,7 +331,7 @@ NSString *JNNormalizeTags(NSString *text, NSError **error) {
 }
 - (BOOL)remove:(JNRecord *)record error:(NSError **)error {
     if (![version([_directory URLByAppendingPathComponent:@"notes.ini"]) isEqual:_metadataVersion])
-        return fail(error,@"Archive metadata changed outside Jotila. Reload before removing notes.");
+        return fail(error,@"Archive metadata changed outside Jotilla. Reload before removing notes.");
     NSMutableArray<NSURL *> *originals=[NSMutableArray array], *trashed=[NSMutableArray array];
     for (NSString *ext in @[@"txt", @"rtf"]) {
         NSURL *url = [self URLFor:record extension:ext];

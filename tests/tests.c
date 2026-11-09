@@ -46,7 +46,7 @@ static void *trace_realloc(void *memory, size_t size) { ++heap_requests; return 
 #define calloc trace_calloc
 #define realloc trace_realloc
 #define GetCursorPos trace_cursor
-#include "../src/jotila.c"
+#include "../src/jotilla.c"
 #undef WritePrivateProfileStringW
 #undef WritePrivateProfileSectionW
 #undef GetTextMetricsW
@@ -95,10 +95,10 @@ static void tray_checks(void) {
     HWND browser;
     SendMessageW(controller, TRAY_MESSAGE, 1, WM_LBUTTONDOWN);
     SendMessageW(controller, TRAY_MESSAGE, 1, WM_LBUTTONUP);
-    require(note_count() == count && !thread_window(L"Jotila.Archive", NULL),
+    require(note_count() == count && !thread_window(L"Jotilla.Archive", NULL),
             "first tray click waits without creating a note or opening the browser");
     pump(wait);
-    require(note_count() == count + 1 && !thread_window(L"Jotila.Archive", NULL),
+    require(note_count() == count + 1 && !thread_window(L"Jotilla.Archive", NULL),
             "single tray click creates exactly one note after the Windows interval");
     pump(wait);
     require(note_count() == count + 1, "single tray click timer does not repeat");
@@ -108,7 +108,7 @@ static void tray_checks(void) {
     SendMessageW(controller, TRAY_MESSAGE, 1, WM_LBUTTONDOWN);
     SendMessageW(controller, TRAY_MESSAGE, 1, WM_LBUTTONUP);
     SendMessageW(controller, TRAY_MESSAGE, 1, WM_LBUTTONDBLCLK);
-    browser = thread_window(L"Jotila.Archive", NULL);
+    browser = thread_window(L"Jotilla.Archive", NULL);
     require(browser && IsWindowVisible(browser) && note_count() == count,
             "double tray click opens the browser immediately without creating a note");
     SendMessageW(controller, TRAY_MESSAGE, 1, WM_LBUTTONUP);
@@ -128,7 +128,7 @@ static void tray_checks(void) {
     SendMessageW(controller, TRAY_MESSAGE, 1, WM_LBUTTONDOWN);
     SendMessageW(controller, TRAY_MESSAGE, 1, WM_LBUTTONUP);
     SendMessageW(controller, TRAY_MESSAGE, 1, WM_LBUTTONDBLCLK);
-    require(thread_window(L"Jotila.Archive", NULL) == browser && IsWindowVisible(browser) && !IsIconic(browser),
+    require(thread_window(L"Jotilla.Archive", NULL) == browser && IsWindowVisible(browser) && !IsIconic(browser),
             "another double tray click restores and reuses the browser");
     /* Opening a window can divert the final release away from the tray icon. */
     SendMessageW(controller, TRAY_MESSAGE, 1, WM_LBUTTONDOWN);
@@ -867,9 +867,9 @@ static void archive_fixture(const wchar_t *id,const char *text) {
 }
 
 static void CALLBACK confirm_archive_delete(HWND window,UINT message,UINT_PTR timer,DWORD time) {
-    HWND dialog=thread_window(L"#32770",L"Jotila");
+    HWND dialog=thread_window(L"#32770",L"Jotilla");
     (void)window; (void)message; (void)time;
-    if (dialog && GetWindow(dialog,GW_OWNER)==thread_window(L"Jotila.Archive",NULL)) {
+    if (dialog && GetWindow(dialog,GW_OWNER)==thread_window(L"Jotilla.Archive",NULL)) {
         KillTimer(NULL,timer); SendMessageW(dialog,WM_COMMAND,IDYES,0);
     }
 }
@@ -988,7 +988,7 @@ static void archive_checks(void) {
     archive_fixture(second,"#Viaggio\r\nPartenza domani");
     archive_fixture(third,"#Progetto\r\nUna nota di un altro anno");
     browse_notes();
-    window=thread_window(L"Jotila.Archive",NULL);
+    window=thread_window(L"Jotilla.Archive",NULL);
     require(window!=NULL,"archive opens through the note menu command");
     tree=GetDlgItem(window,1); list=GetDlgItem(window,2);
     require(tree && list,"archive consists of a native date tree and a virtual preview list");
@@ -1136,7 +1136,7 @@ static void archive_checks(void) {
     {
         RECT other;
         LOGFONTW font;
-        require((HICON)GetClassLongPtrW(window,GCLP_HICON)==app_icon,"archive title bar uses the Jotila icon");
+        require((HICON)GetClassLongPtrW(window,GCLP_HICON)==app_icon,"archive title bar uses the Jotilla icon");
         require(GetObjectW((HFONT)SendMessageW(tree,WM_GETFONT,0,0),sizeof(font),&font) &&
                 !wcscmp(font.lfFaceName,L"Consolas"),"archive uses a monospaced font");
         ListView_GetItemRect(list,0,&row,LVIR_ICON); ListView_GetItemRect(list,1,&other,LVIR_ICON);
@@ -1183,7 +1183,7 @@ static void archive_checks(void) {
     require(delete_archived_note(third),"delete a single archived note without an RTF");
     wcscpy_s(id,80,notes->id);
     browse_notes();
-    require(thread_window(L"Jotila.Archive",NULL)==window && !wcscmp(notes->id,id),"archive refresh reuses its window without changing notes");
+    require(thread_window(L"Jotilla.Archive",NULL)==window && !wcscmp(notes->id,id),"archive refresh reuses its window without changing notes");
     archive_close();
     {
         wchar_t empty[PATH_CAP];
@@ -1542,7 +1542,7 @@ static void tags_search_checks(void) {
     result = wait_search(worker);
     require(result->unreadable == 1 && result->count == 0, "unreadable notes are reported rather than silently omitted");
     search_result_free(result); CloseHandle(lock); search_destroy(worker);
-    browse_notes(); window = thread_window(L"Jotila.Archive", NULL);
+    browse_notes(); window = thread_window(L"Jotilla.Archive", NULL);
     edit = GetDlgItem(window, 3); list = GetDlgItem(window, 2); tree = GetDlgItem(window, 1);
     require(edit && list, "archive has a native unified search field");
     SetWindowTextW(edit, L"#work budget"); wait_search_ui(window);
@@ -1850,11 +1850,11 @@ int main(int argc, char **argv) {
     interactive_tests=argc==2 && !strcmp(argv[1],"--interactive");
     SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
     require(GetTempPathW(PATH_CAP, temporary) != 0, "temporary directory");
-    swprintf_s(root, PATH_CAP, L"%sJotila-test-è-%lu-%llu", temporary, GetCurrentProcessId(), GetTickCount64());
+    swprintf_s(root, PATH_CAP, L"%sJotilla-test-è-%lu-%llu", temporary, GetCurrentProcessId(), GetTickCount64());
     require(make_paths(root), "create isolated Unicode test directory");
     app_icon=(HICON)LoadImageW(instance,MAKEINTRESOURCEW(IDI_APP),IMAGE_ICON,32,32,0);
     require(app_icon != NULL && register_classes(), "register native C window classes");
-    controller = CreateWindowExW(WS_EX_TOOLWINDOW, APP_CLASS, L"Jotila test", WS_OVERLAPPED,
+    controller = CreateWindowExW(WS_EX_TOOLWINDOW, APP_CLASS, L"Jotilla test", WS_OVERLAPPED,
                                  0, 0, 0, 0, NULL, NULL, instance, NULL);
     require(controller != NULL, "create hotkey controller");
     if (argc==2 && !strcmp(argv[1],"--calendar-only")) { calendar_checks(); shortcut_checks(); goto cleanup; }

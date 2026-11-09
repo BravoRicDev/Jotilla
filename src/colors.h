@@ -1,5 +1,5 @@
-#ifndef JOTILA_COLORS_H
-#define JOTILA_COLORS_H
+#ifndef JOTILLA_COLORS_H
+#define JOTILLA_COLORS_H
 
 #ifdef _WIN32
 #include <windows.h>

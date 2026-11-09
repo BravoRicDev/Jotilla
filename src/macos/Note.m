@@ -166,7 +166,7 @@ NSRect JNConstrainFrame(NSRect frame, NSRect visible) {
     _palette = bounded(s[@"palette"],0,0,PALETTE_COUNT-1);
     _color = bounded(s[@"color"],0,0,PALETTE_SIZES[_palette]-1);
     _customInk = [s[@"custom_ink"] boolValue];
-    panel.appearance=[NSAppearance appearanceNamed:NSAppearanceNameAqua]; panel.title = @"Jotila"; panel.hasShadow=YES; panel.level = NSFloatingWindowLevel;
+    panel.appearance=[NSAppearance appearanceNamed:NSAppearanceNameAqua]; panel.title = @"Jotilla"; panel.hasShadow=YES; panel.level = NSFloatingWindowLevel;
     panel.hidesOnDeactivate = NO; panel.releasedWhenClosed = NO; panel.delegate = self;
     panel.collectionBehavior = NSWindowCollectionBehaviorCanJoinAllSpaces | NSWindowCollectionBehaviorFullScreenAuxiliary;
     panel.minSize = NSMakeSize(180,100); panel.alphaValue = bounded(s[@"opacity"],100,60,100)/100.0;
@@ -232,7 +232,7 @@ NSRect JNConstrainFrame(NSRect frame, NSRect visible) {
     _bar.paper = JNColor(_saveFailed ? RGB(235,161,151) : palette_bar(PALETTES[_palette][_color]));
     _bar.ink = _saveFailed ? NSColor.blackColor : JNColor(palette_bar_ink((int)_palette,(int)_color));
     _record.settings[@"palette"]=@(_palette).stringValue; _record.settings[@"color"]=@(_color).stringValue;
-    self.window.title=_record.title.length?_record.title:@"Jotila";
+    self.window.title=_record.title.length?_record.title:@"Jotilla";
     _bar.caption = _saveFailed ? @"Save failed — retry from menu" : _record.title; _bar.needsDisplay = YES;
     for (JNBarButton *button in _bar.subviews) { button.ink=_bar.ink; button.needsDisplay=YES; }
     _foldButton.folded=_collapsed; _dateButton.assigned=_record.day!=0;
@@ -314,7 +314,7 @@ NSRect JNConstrainFrame(NSRect frame, NSRect visible) {
 }
 - (void)chooseDate:(id)sender {
     (void)sender;
-    if(![_record.title stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet].length && ![_editor.string stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet].length) { JNError([NSError errorWithDomain:@"Jotila" code:1 userInfo:@{NSLocalizedDescriptionKey:@"Add a title or some text before assigning a day."}]); return; }
+    if(![_record.title stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet].length && ![_editor.string stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet].length) { JNError([NSError errorWithDomain:@"Jotilla" code:1 userInfo:@{NSLocalizedDescriptionKey:@"Add a title or some text before assigning a day."}]); return; }
     NSAlert *alert = [NSAlert new]; alert.messageText = @"Assign a day";
     [alert addButtonWithTitle:@"Save"]; [alert addButtonWithTitle:@"Remove day"]; [alert addButtonWithTitle:@"Cancel"];
     NSDatePicker *picker = [[NSDatePicker alloc] initWithFrame:NSMakeRect(0,0,300,170)];

@@ -1,11 +1,11 @@
-#ifndef JOTILA_CALENDAR_H
-#define JOTILA_CALENDAR_H
+#ifndef JOTILLA_CALENDAR_H
+#define JOTILLA_CALENDAR_H
 #include <windows.h>
 #include <commctrl.h>
 #include "date.h"
 
-#define CALENDAR_CLASS L"Jotila.Calendar"
-#define CALENDAR_LIST_CLASS L"Jotila.Day"
+#define CALENDAR_CLASS L"Jotilla.Calendar"
+#define CALENDAR_LIST_CLASS L"Jotilla.Day"
 #define CALENDAR_DAY (NM_FIRST - 80)
 #define CALENDAR_YEAR (NM_FIRST - 81)
 #define CALENDAR_LEAVE (NM_FIRST - 82)

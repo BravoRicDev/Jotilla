@@ -6,7 +6,7 @@ implemented behavior and automated evidence from environment-dependent release
 checks. It does not certify identical behavior on untested Macs.
 
 Release 0.1.1 was also validated on 2026-11-09 by
-[GitHub Actions on native Apple Silicon and Intel runners](https://github.com/GarauGarau/Jotila/actions/runs/42619787162),
+[GitHub Actions on native Apple Silicon and Intel runners](https://github.com/GarauGarau/Jotilla/actions/runs/42619787162),
 both using macOS 15. Both passed storage, AppKit UI, launch and static-analysis
 checks. New right-click regressions cover background/text modes, selection
 preservation, screen placement and repeated application/cancellation. Universal
@@ -15,13 +15,13 @@ ZIP/PKG packaging verifies both CPU slices and the ad hoc app signatures.
 Release 0.1.2 adds a 300-note native grid regression: every card remains separate
 at five window widths and the grid returns correctly from the calendar. Both CPU
 architectures passed the updated suite in
-[this release run](https://github.com/GarauGarau/Jotila/actions/runs/42625516338).
+[this release run](https://github.com/GarauGarau/Jotilla/actions/runs/42625516338).
 The synchronized Windows sources also refresh the list control's cached tile
 dimensions after a monitor DPI change, preventing overlapping archive rows.
 
 ## Feature coverage
 
-The reference is `src/jotila.c`, `src/archive.c`, `src/calendar.c`,
+The reference is `src/jotilla.c`, `src/archive.c`, `src/calendar.c`,
 `src/palette_picker.c`, the bundled palette catalog and the Windows documentation.
 The branch also includes the Windows mixed-DPI palette crash fix; AppKit uses its
 own native popup lifecycle.
@@ -78,13 +78,13 @@ The UI suite creates isolated archives and uses a private pasteboard. It capture
 its own windows in `build/macos/ui-snapshots` (with AppKit view rendering as a
 fallback). The current preview archive is not used as test data.
 
-For a manual trial, quit any running Jotila instance, then use:
+For a manual trial, quit any running Jotilla instance, then use:
 
 ```sh
 make preview
 ```
 
-This uses the repository's ignored `notes/macOS-preview.jotilaarchive`. `make run`
+This uses the repository's ignored `notes/macOS-preview.jotillaarchive`. `make run`
 uses the normal installed-app data location instead. Do not confuse the two
 archives when checking whether previously created notes are present.
 

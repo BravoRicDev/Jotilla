@@ -1,5 +1,5 @@
-#ifndef JOTILA_TAGS_H
-#define JOTILA_TAGS_H
+#ifndef JOTILLA_TAGS_H
+#define JOTILLA_TAGS_H
 #include <windows.h>
 
 #define TAG_NAME_CAP 64

@@ -1,19 +1,19 @@
-# <img src="assets/jotila.png" width="36" height="36" alt="Greek iota on a yellow note"> Jotila - Sticky notes, on silicon
+# <img src="assets/jotilla.png" width="36" height="36" alt="Greek iota on a yellow note"> Jotilla - Sticky notes, on silicon
 
 Small, native notes with autosave, an archive and a calendar. No extra dependencies.
 
-**[Visit the Jotila website](https://garaugarau.github.io/Jotila/)**
+**[Visit the Jotilla website](https://garaugarau.github.io/Jotilla/)**
 
 ## Download
 
 | System | Installer | Portable · no installation |
 |---|---|---|
-| Windows 10/11 · x64 | [Setup (.exe)](https://github.com/GarauGarau/Jotila/releases/download/v1.8.2/Jotila-Setup-x64.exe) | [Portable ZIP](https://github.com/GarauGarau/Jotila/releases/download/v1.8.2/Jotila-portable-x64.zip) |
-| macOS 13+ · Apple Silicon / Intel · preview | [Setup (.pkg)](https://github.com/GarauGarau/Jotila/releases/download/macos-v0.1.2/Jotila-Setup-universal.pkg) | [Portable ZIP](https://github.com/GarauGarau/Jotila/releases/download/macos-v0.1.2/Jotila-portable-universal.zip) |
+| Windows 10/11 · x64 | [Setup (.exe)](https://github.com/GarauGarau/Jotilla/releases/download/v1.8.3/Jotilla-Setup-x64.exe) | [Portable ZIP](https://github.com/GarauGarau/Jotilla/releases/download/v1.8.3/Jotilla-portable-x64.zip) |
+| macOS 13+ · Apple Silicon / Intel · preview | [Setup (.pkg)](https://github.com/GarauGarau/Jotilla/releases/download/macos-v0.1.3/Jotilla-Setup-universal.pkg) | [Portable ZIP](https://github.com/GarauGarau/Jotilla/releases/download/macos-v0.1.3/Jotilla-portable-universal.zip) |
 
-Run the installer, or extract the portable ZIP and launch Jotila. For the Mac portable app, select the included `Notes.jotilaarchive` folder when prompted.
+Run the installer, or extract the portable ZIP and launch Jotilla. For the Mac portable app, select the included `Notes.jotillaarchive` folder when prompted.
 
-[Release notes and checksums](https://github.com/GarauGarau/Jotila/releases). The macOS preview is not notarized.
+[Release notes and checksums](https://github.com/GarauGarau/Jotilla/releases). The macOS preview is not notarized.
 
 ![Formatting, checklists and a collapsed note](docs/screenshots/notes.png)
 
@@ -46,14 +46,22 @@ Search by text or tags: `#work`, `"release plan"`, or `-#` for untagged notes. *
 
 Notes save as UTF-8 text in the archive folder. Empty notes stay unsaved. **Archive** moves or switches folders; back up the whole folder, including `notes.ini` and RTF files. Updates and uninstall preserve your notes.
 
+## Why Jotilla?
+
+The name brings together three ideas:
+
+- **Jota** recalls [iota](https://www.treccani.it/vocabolario/iota1/), the Greek letter ι in the logo and a word for a tiny amount: small thoughts, kept in a small app.
+- **Jotting** is English for a brief note. To [jot something down](https://dictionary.cambridge.org/dictionary/english/jot) is to write it quickly before you forget it.
+- **Postilla** is Italian for a [short annotation or added comment](https://www.treccani.it/vocabolario/postilla/), often written in a text's margin. It supplies the double **l** and the idea of a note alongside what you are doing.
+
 ## Source and builds
 
 | Platform | Branch | Build, installation and data |
 |---|---|---|
-| Windows | [`windows`](https://github.com/GarauGarau/Jotila/tree/windows) · default | [Windows guide](docs/windows.md) |
-| macOS | [`macos`](https://github.com/GarauGarau/Jotila/tree/macos) | [macOS guide](https://github.com/GarauGarau/Jotila/blob/macos/docs/macos.md) · [Feature coverage and validation](https://github.com/GarauGarau/Jotila/blob/macos/docs/macos-validation.md) |
+| Windows | [`windows`](https://github.com/GarauGarau/Jotilla/tree/windows) · default | [Windows guide](docs/windows.md) |
+| macOS | [`macos`](https://github.com/GarauGarau/Jotilla/tree/macos) | [macOS guide](https://github.com/GarauGarau/Jotilla/blob/macos/docs/macos.md) · [Feature coverage and validation](https://github.com/GarauGarau/Jotilla/blob/macos/docs/macos-validation.md) |
 
-The website lives on its own [`gh-pages` branch](https://github.com/GarauGarau/Jotila/tree/gh-pages), with [source and publishing instructions](https://github.com/GarauGarau/Jotila/blob/gh-pages/README.md).
+The website lives on its own [`gh-pages` branch](https://github.com/GarauGarau/Jotilla/tree/gh-pages), with [source and publishing instructions](https://github.com/GarauGarau/Jotilla/blob/gh-pages/README.md).
 
 [Performance measurements](docs/performance.md).
 

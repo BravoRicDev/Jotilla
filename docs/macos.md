@@ -1,6 +1,6 @@
 # Native macOS preview
 
-This branch contains the native macOS implementation of Jotila, built with
+This branch contains the native macOS implementation of Jotilla, built with
 Objective-C/AppKit and the shared C date and palette modules. The note editor,
 archive cards, color wheel, tags, calendar and archive transfer are implemented
 natively. See [feature coverage and local validation](macos-validation.md).
@@ -10,7 +10,7 @@ on both Apple Silicon and Intel with macOS 15 in GitHub Actions. Installed-login
 sessions, physical display changes and clean-machine installation still need
 manual release validation.
 
-[Download the universal Mac app and installer](https://github.com/GarauGarau/Jotila/releases/tag/macos-v0.1.2).
+[Download the universal Mac app and installer](https://github.com/GarauGarau/Jotilla/releases/tag/macos-v0.1.2).
 
 ## Build on a Mac
 
@@ -42,8 +42,8 @@ make package
 
 This builds both architectures and produces local downloads in `dist/macos`:
 
-- `Jotila-portable-universal.zip`
-- `Jotila-Setup-universal.pkg`
+- `Jotilla-portable-universal.zip`
+- `Jotilla-Setup-universal.pkg`
 - `SHA256SUMS.txt`
 
 The default app signature is ad hoc, for development. For Developer ID signing:
@@ -55,18 +55,27 @@ make package SIGN_IDENTITY='Developer ID Application: …' \
 
 Packaging never uploads or publishes anything. Public distribution also needs
 Apple notarization and validation on a clean Mac. The PKG installs only
-`/Applications/Jotila.app`; there are no install scripts that touch notes.
+`/Applications/Jotilla.app`; there are no install scripts that touch notes.
 Disable Start at login before removing the installed app. Moving the app to
 Trash leaves its archive intact.
 
 ## Portable and installed data
 
-Installed default: `~/Library/Application Support/Jotila/notes`. An explicitly
-chosen archive is remembered in `~/Library/Application Support/Jotila/archive.path`.
+Installed default: `~/Library/Application Support/Jotilla/notes`. An explicitly
+chosen archive is remembered in `~/Library/Application Support/Jotilla/archive.path`.
 An unavailable remembered folder stops startup instead of creating a replacement.
 
+Upgrades from Jotila keep the existing profile folder and archive in place.
+The old `.jotilaarchive` extension remains supported alongside `.jotillaarchive`.
+System bundle identifiers, the menu-bar preference and the archive lock filename
+retain their original spelling for compatibility; the app's display name and
+downloads use Jotilla. Quit the previous app before installing the update. If
+`Jotila.app` remains in Applications, remove that older app after opening Jotilla
+and checking your notes; keep the archive folder. Recheck Start at login after
+changing the app's location.
+
 The portable bundle has its own application identity and asks for the archive
-directory each launch. Select the included `Notes.jotilaarchive`, an ordinary
+directory each launch. Select the included `Notes.jotillaarchive`, an ordinary
 folder displayed as a package by Finder, or another existing folder. It writes
 no archive location into the user's preferences and cannot enable Start at login.
 This avoids relying on relative paths during macOS App Translocation. The OS may
@@ -76,8 +85,8 @@ the operating system leaves no traces.
 An explicit path can also be supplied:
 
 ```sh
-build/macos/arm64/Jotila.app/Contents/MacOS/Jotila \
-  --portable --archive '/Volumes/USB/Notes.jotilaarchive'
+build/macos/arm64/Jotilla.app/Contents/MacOS/Jotilla \
+  --portable --archive '/Volumes/USB/Notes.jotillaarchive'
 ```
 
 Use `x86_64` instead of `arm64` on Intel. Keep data outside the signed `.app`.
@@ -171,7 +180,7 @@ Click a tag on a card to filter it. The annual calendar replaces the card area,
 fits the available space and scrolls on smaller windows. Circled days open their
 note or a compact title list with arrows, Page Up/Down, Home/End, Enter and Escape.
 The year can be typed directly, including in the note's native date picker.
-The explorer uses the native calendar symbol; the menu bar uses a vector Jotila
+The explorer uses the native calendar symbol; the menu bar uses a vector Jotilla
 template icon that adapts to light and dark backgrounds.
 
 New notes use native text layout to reject text/font growth or shrinking that
@@ -196,8 +205,8 @@ SHA-256 checksums built from the tagged commit.
 Clone it directly:
 
 ```sh
-git clone --branch macos --single-branch https://github.com/GarauGarau/Jotila.git
-cd Jotila
+git clone --branch macos --single-branch https://github.com/GarauGarau/Jotilla.git
+cd Jotilla
 ```
 
 Then follow the build and validation steps above. To update an existing checkout
