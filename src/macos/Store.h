@@ -10,6 +10,8 @@ FOUNDATION_EXPORT NSString * _Nullable JNNormalizeTags(NSString *text, NSError *
 @property(nonatomic, copy) NSString *title;
 @property(nonatomic, copy) NSString *tags;
 @property(nonatomic) NSUInteger day;
+@property(nonatomic) NSUInteger createdDay, revision;
+@property(nonatomic) BOOL persisted;
 @property(nonatomic, strong) NSMutableDictionary<NSString *, NSString *> *settings;
 @end
 
@@ -28,5 +30,7 @@ FOUNDATION_EXPORT NSString * _Nullable JNNormalizeTags(NSString *text, NSError *
 - (BOOL)saveMetadata:(NSError * _Nullable * _Nullable)error;
 - (BOOL)remove:(JNRecord *)record error:(NSError * _Nullable * _Nullable)error;
 - (NSURL *)URLFor:(JNRecord *)record extension:(NSString *)extension;
+- (nullable JNStore *)copyToDirectory:(NSURL *)directory error:(NSError * _Nullable * _Nullable)error;
+- (BOOL)removeTransferredFiles:(JNStore *)destination error:(NSError * _Nullable * _Nullable)error;
 @end
 NS_ASSUME_NONNULL_END

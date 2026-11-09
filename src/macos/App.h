@@ -8,6 +8,9 @@ FOUNDATION_EXPORT NSColor *JNColor(COLORREF color);
 FOUNDATION_EXPORT void JNError(NSError * _Nullable error);
 FOUNDATION_EXPORT void JNActivate(void);
 FOUNDATION_EXPORT NSString * _Nullable JNAsk(NSString *title, NSString *value);
+FOUNDATION_EXPORT NSFont *JNFont(CGFloat size, BOOL bold);
+FOUNDATION_EXPORT NSString *JNPaletteName(NSInteger index);
+FOUNDATION_EXPORT NSRect JNConstrainFrame(NSRect frame, NSRect visible);
 
 @interface JNNote : NSWindowController <NSWindowDelegate, NSTextViewDelegate>
 @property(nonatomic, strong, readonly) JNRecord *record;
@@ -24,6 +27,12 @@ FOUNDATION_EXPORT NSString * _Nullable JNAsk(NSString *title, NSString *value);
 - (void)resizeBy:(CGFloat)amount;
 - (void)detach;
 - (NSMenu *)contextMenu;
+- (void)showPalette:(nullable id)sender;
+- (void)selectColor:(NSMenuItem *)item;
+- (void)favorite:(NSMenuItem *)item;
+- (void)toggleChecklistAt:(NSUInteger)index;
+- (BOOL)insertNewlineWithShift:(BOOL)shift;
+- (BOOL)resizeTo:(NSSize)size;
 @end
 
 @interface JNBrowser : NSWindowController
@@ -31,6 +40,9 @@ FOUNDATION_EXPORT NSString * _Nullable JNAsk(NSString *title, NSString *value);
 - (instancetype)initWithApp:(JNApp *)app;
 - (void)refresh;
 - (void)focusSearch;
+- (void)showNotes;
+- (void)invalidate;
+- (void)recordChanged:(JNRecord *)record;
 @end
 
 @interface JNApp : NSObject <NSApplicationDelegate>
@@ -39,6 +51,10 @@ FOUNDATION_EXPORT NSString * _Nullable JNAsk(NSString *title, NSString *value);
 @property(nonatomic) BOOL portable;
 @property(nonatomic) BOOL startup;
 @property(nonatomic, strong, nullable) NSURL *initialDirectory;
+@property(nonatomic, readonly) NSInteger sessionPalette;
+- (void)usePalette:(NSInteger)palette;
+- (void)defaultPalette:(NSMenuItem *)sender;
+- (void)revealArchive:(nullable id)sender;
 - (void)newNote:(nullable id)sender;
 - (void)browse:(nullable id)sender;
 - (void)search:(nullable id)sender;
@@ -47,6 +63,7 @@ FOUNDATION_EXPORT NSString * _Nullable JNAsk(NSString *title, NSString *value);
 - (BOOL)flush:(NSError * _Nullable * _Nullable)error;
 - (void)openRecord:(JNRecord *)record activate:(BOOL)activate;
 - (void)changed;
+- (void)changedRecord:(JNRecord *)record;
 - (void)closeNote:(JNNote *)note;
 @end
 NS_ASSUME_NONNULL_END

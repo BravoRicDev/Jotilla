@@ -7,13 +7,13 @@ CC := xcrun clang
 COMMON := -arch $(ARCH) -mmacosx-version-min=$(MIN_MACOS) -O2 -Wall -Wextra -Werror -Isrc
 CFLAGS := $(COMMON) -std=c17
 OBJCFLAGS := $(COMMON) -fobjc-arc -fblocks
-FRAMEWORKS := -framework AppKit -framework Carbon -framework ServiceManagement
+FRAMEWORKS := -framework AppKit -framework Carbon -framework ServiceManagement -framework QuartzCore
 CORE := src/date.c src/colors.c
 MAC := $(filter-out src/macos/main.m,$(wildcard src/macos/*.m))
 OBJECTS := $(CORE:%.c=$(OUT)/%.o) $(MAC:%.m=$(OUT)/%.o)
 SIGN_IDENTITY ?= -
 
-.PHONY: all run test smoke-test analyze universal package
+.PHONY: all run preview test ui-test profile smoke-test analyze universal package
 all: $(APP)/Contents/MacOS/Jotila
 
 $(OUT)/%.o: %.c
@@ -36,11 +36,24 @@ $(APP)/Contents/MacOS/Jotila: $(OBJECTS) $(OUT)/src/macos/main.o src/macos/Info.
 run: all
 	open $(APP)
 
+preview: all
+	@mkdir -p notes/macOS-preview.jotilaarchive
+	open $(APP) --args --portable --archive "$(CURDIR)/notes/macOS-preview.jotilaarchive"
+
 $(OUT)/jotila-tests: $(OBJECTS) $(OUT)/tests/macos/tests.o
 	$(CC) $(COMMON) $^ $(FRAMEWORKS) -o $@
 
 test: $(OUT)/jotila-tests
 	$(OUT)/jotila-tests
+
+$(OUT)/jotila-ui-tests: $(OBJECTS) $(OUT)/tests/macos/ui.o
+	$(CC) $(COMMON) $^ $(FRAMEWORKS) -o $@
+
+ui-test: $(OUT)/jotila-ui-tests
+	$(OUT)/jotila-ui-tests
+
+profile: $(OUT)/jotila-ui-tests
+	JOTILA_PROFILE=1 $(OUT)/jotila-ui-tests
 
 smoke-test: all
 	@archive=$$(mktemp -d "$(CURDIR)/$(OUT)/smoke.XXXXXX"); \
@@ -59,4 +72,4 @@ universal:
 package: universal
 	SIGN_IDENTITY="$(SIGN_IDENTITY)" sh tools/macos/package.sh
 
--include $(OBJECTS:.o=.d) $(OUT)/src/macos/main.d $(OUT)/tests/macos/tests.d
+-include $(OBJECTS:.o=.d) $(OUT)/src/macos/main.d $(OUT)/tests/macos/tests.d $(OUT)/tests/macos/ui.d

@@ -1,10 +1,15 @@
 # Native macOS preview
 
-This branch contains an experimental macOS implementation. It is not a
-release: it was authored on Windows, where AppKit cannot be compiled or run.
-Native compilation, tests, desktop behavior, performance and package installation
-still require validation on a Mac. Do not use the only copy of an archive for
-the first trial.
+This branch contains the native macOS implementation of Jotila, built with
+Objective-C/AppKit and the shared C date and palette modules. The note editor,
+archive cards, color wheel, tags, calendar and archive transfer are implemented
+natively. See [feature coverage and local validation](macos-validation.md).
+
+This remains a development build. Apple Silicon execution is tested on macOS
+15.3.1 using the macOS 15.5 SDK. Intel builds are cross-compiled; a separate Intel
+Mac and installed-login session still need release validation.
+
+[Download the universal Mac app and installer](https://github.com/GarauGarau/Jotila/releases/tag/macos-v0.1.0).
 
 ## Build on a Mac
 
@@ -14,8 +19,10 @@ Tools (`xcode-select --install`), then from the repository root:
 ```sh
 make
 make test
+make ui-test
 make smoke-test
 make analyze
+make profile
 make run
 ```
 
@@ -23,6 +30,8 @@ make run
 manager or Xcode project are needed. The build uses C17, Objective-C with ARC,
 AppKit, Carbon hotkeys and ServiceManagement. Warnings are errors. `make test`
 needs a logged-in graphical Mac session; it uses an isolated temporary archive.
+`make ui-test` exercises actual AppKit controls and writes screenshots under
+`build/macos/ui-snapshots`. `make profile` adds an isolated 10,000-note workload.
 The smoke test launches the real executable with an isolated archive and exits.
 It does not register login startup or use the installed app's settings.
 
@@ -71,8 +80,11 @@ build/macos/arm64/Jotila.app/Contents/MacOS/Jotila \
 ```
 
 Use `x86_64` instead of `arm64` on Intel. Keep data outside the signed `.app`.
-Quit before moving the archive. Opening another archive preserves the previous
-one; automatic archive migration/moving has not yet been ported.
+Quit before moving the archive. The Archive dialog offers Open or create archive and Move current archive.
+Moving requires an empty, separate destination. The destination is locked,
+copies are flushed and verified, and the saved location changes before verified
+originals are removed. A failed copy leaves the current archive active. Files
+changed externally during cleanup are kept in the old folder.
 
 ## Architecture and persistence
 
@@ -84,7 +96,10 @@ The AppKit frontend is under `src/macos`:
 - `Store`: bounded metadata decoding, archive lock, TXT/RTF and atomic replacement.
 - `Note`: native editor, note window, formatting and debounced persistence.
 - `Search`: bounded streaming UTF-8 search with cancellation and tag prefiltering.
-- `Browser`: archive table, search queue and calendar.
+- `Browser`: virtualized note cards, cached previews, filters and search queue.
+- `Calendar`: annual view, hit testing, keyboard and accessibility navigation.
+- `Palette`: vector wheel, short Core Animation transitions and favorite controls.
+- `Tags`: native token editor and bounded completion suggestions.
 - `App`: lifecycle, menus, archive switching, hotkey and login item integration.
 
 TXT remains authoritative UTF-8. Explicit titles retain the Windows `#title`
@@ -103,52 +118,79 @@ archive lock coordinates Mac instances; it is not a synchronization protocol
 with Windows, cloud clients or other editors.
 
 Clean saves do no work. Window geometry changes write metadata only. Formatting
-changes write RTF without rewriting TXT. Search uses one cancellable serial
-operation queue, 8 KiB input chunks and bounded overlap; it retains no full note
-bodies. Only a visible explorer requests searches. Results include bounded text
-previews. The pure tag matcher reads no TXT; the explorer separately reads
-previews for displayed search results. A large-archive benchmark is still pending.
+changes write RTF without rewriting TXT. Body edits compare the record's metadata
+with its saved snapshot, avoiding full INI serialization when metadata is unchanged.
+The visible archive updates that one card for ordinary edits; query or tag changes
+trigger a new filtered snapshot.
+
+Search uses a cancellable serial operation queue, 8 KiB chunks, bounded overlap
+and short contextual excerpts. Tag-only filters use metadata synchronously. A
+separate serial preview queue reads at most 2 KiB for requested visible cards;
+its cache is capped at 256 entries / 1 MiB. Archive changes invalidate the cache
+with a generation key. Hidden explorers schedule no searches or preview reads.
+Calendar hover invalidates only the affected cells; month/day labels and palette
+paths are retained. Color transitions last 120 ms, respect Reduce Motion and use
+Core Animation without a polling timer. See the validation report for measured
+10,000-note results.
 
 Mac geometry uses `mac_x/y/width/height` keys so it does not overwrite Windows
 coordinates. Note state, palette indices, tags and calendar dates are shared.
 
-## Preview controls and remaining validation
+## Native controls
 
-Global new note: **Control+Option+Command+N**. Inside the app: **Command+N** new
-note, **Command+E** explorer, **Command+F** search, **Command+R** reload,
-**Command+T** tags, **Command+D** calendar day. Standard Command shortcuts handle
-clipboard and undo. Command+B/I/U and Command+Shift+X format selected text.
+Global new note: **Control+Option+Command+N**; **Control+Option+plus** is also
+registered. Inside the app: **Command+N** new note, **Command+E** explorer,
+**Command+F** search, **Command+R** reload, **Command+T** tags, **Command+D** day,
+**Command+P** color wheel and **Command+S** save. F5 also reloads from the editor
+and archive. Standard Command shortcuts handle clipboard and undo.
+Command+B/I/U and Command+Shift+X format selected text or the insertion style.
 Command+plus/minus, Command+wheel and pinch resize the selection or the note.
-Shift+Enter promotes a first-line `#title` or starts a `*` checklist; Enter
-continues checklist items. Click a checkbox to toggle it.
 
-Drag the bar to move; double-click to rename; minus folds, close archives.
-The context menu exposes all palettes, foreground colors, favorites and opacity.
-The explorer has a yearly calendar and date-filtered note list. Closing the
-explorer hides it; the menu bar item brings it back. Start at login is available
-only for the installed app in `/Applications`.
+Notes retain the bordered card, divided title bar, left calendar button and
+fold/close buttons. Double-click the bar to rename. Closing archives the note.
+Notes are saved when either the title or body contains non-whitespace text.
+Legacy empty TXT files are excluded on reload without deleting the originals;
+clearing a saved note's body and title removes it from the archive, with files recoverable
+in Trash. Undo can save the restored note again. Shift+Enter promotes a first-line
+`#title` in one undo group, or starts a checklist after an isolated `*`. Enter
+continues checklist items, Backspace removes their marker, and clicking a box
+toggles both the marker and the task's strikethrough. Pasted text is plain text.
 
-This preview has not reached Windows feature parity. Native Mac verification
-must cover RTF round trips (fonts, colors, sizes, emphasis and Unicode), undo of
-mixed editing/formatting, title promotion, input methods, clipboard, focus,
-multi-monitor recovery, login, low-disk failures, archive switching, installation
-and upgrade. Current differences to address before release:
+Right-click text to open the 80-palette wheel. A selection changes foreground
+color; otherwise it changes the note and session palette. Left/Right browse,
+Up/Down/Tab select a wedge, Enter applies, F toggles the favorite, and Escape
+cancels. The three original palettes remain in the title-bar context menu,
+alongside note sizes, opacity, tags, export, retry and folder access. Popular
+palettes draw new colors from shuffled bags without repeating a distinct color
+within one cycle. Background changes preserve manual foreground colors.
 
-- Palette selection uses native menus; the animated wheel is not ported.
-- Tag suggestions/sidebar and automatic archive moving are not ported.
-- The editor currently scrolls overflowing text; Windows' content-fit resize
-  constraint needs a native layout implementation and tests.
-- Cleared saved notes remain recoverable as empty notes rather than being
-  automatically removed; new blank notes remain unsaved.
-- Calendar accessibility and full keyboard navigation need a native UI pass.
-- Global hotkeys, title-promotion undo and foreground-color undo need desktop
-  testing; no claims of identical behavior are made yet.
+The explorer shows colored cards with lazy previews, creation-date and tag
+filters, full-text search with highlighted excerpts, multi-selection and Trash.
+Click a tag on a card to filter it. The annual calendar replaces the card area,
+fits the available space and scrolls on smaller windows. Circled days open their
+note or a compact title list with arrows, Page Up/Down, Home/End, Enter and Escape.
+The year can be typed directly, including in the note's native date picker.
+The explorer uses the native calendar symbol; the menu bar uses a vector Jotila
+template icon that adapts to light and dark backgrounds.
+
+New notes use native text layout to reject text/font growth or shrinking that
+would clip content. Already oversized imported text remains scrollable. Notes
+float across Spaces; the explorer moves to the active Space. Disconnecting a
+display keeps title bars reachable. The menu bar item creates a note on single
+click, opens the archive on double-click and presents its menu on right-click.
+Start at login uses ServiceManagement and is available only for an installed app
+under `/Applications`.
+
+Physical multi-monitor transitions, every input method, real sign-out/login,
+clean-machine installation and upgrade are environment-dependent checks listed
+in the validation report; automated tests are not a substitute for those runs.
 
 ## Retrieve the preview on a Mac
 
 The `feature/macos-native` branch is published on the public repository and
-tracks `origin/feature/macos-native`. It is separate from `main`; publishing the
-branch does not make it a tested release or provide compiled Mac downloads.
+tracks `origin/feature/macos-native`. It is separate from `main`. The
+`macos-v0.1.0` prerelease provides the universal portable app, PKG installer and
+SHA-256 checksums built from the tagged commit.
 
 Clone it directly:
 

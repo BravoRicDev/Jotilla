@@ -40,11 +40,16 @@ static NSString *fold(NSString *text) {
     for (NSString *tag in _tags) if (![names containsObject:tag]) return NO;
     return YES;
 }
+- (BOOL)requiresText { return _terms.count!=0; }
+- (NSArray<NSString *> *)terms { return _terms; }
 - (BOOL)matchesFile:(NSURL *)url cancelled:(BOOL (^)(void))cancelled error:(NSError **)error {
+    return [self matchesFile:url cancelled:cancelled excerpt:NULL error:error];
+}
+- (BOOL)matchesFile:(NSURL *)url cancelled:(BOOL (^)(void))cancelled excerpt:(NSString **)excerpt error:(NSError **)error {
     if (!_terms.count) return YES;
     NSInputStream *stream = [NSInputStream inputStreamWithURL:url]; [stream open];
     unsigned found=0, all=(1u<<(unsigned)_terms.count)-1;
-    unsigned char bytes[8192+4]; NSUInteger pending=0; NSString *tail=@"";
+    unsigned char bytes[8192+4]; NSUInteger pending=0; NSString *tail=@"", *snippet=nil;
     while (!cancelled()) {
         NSInteger read = [stream read:bytes+pending maxLength:8192];
         if (read<0) { if (error) *error=stream.streamError; break; }
@@ -59,17 +64,27 @@ static NSString *fold(NSString *text) {
             if (length-lead<width) usable=lead;
         }
         if (read>0 && usable && bytes[usable-1]=='\r') --usable;
+        NSString *chunk=[[NSString alloc] initWithBytes:bytes length:usable encoding:NSUTF8StringEncoding];
+        /* Return errors outside the per-chunk pool so they remain alive for the caller. */
+        if (!chunk) { if (error) *error=[NSError errorWithDomain:NSCocoaErrorDomain code:NSFileReadInapplicableStringEncodingError userInfo:@{NSFilePathErrorKey:url.path}]; [stream close]; return NO; }
         @autoreleasepool {
-            NSString *chunk=[[NSString alloc] initWithBytes:bytes length:usable encoding:NSUTF8StringEncoding];
-            if (!chunk) { if (error) *error=[NSError errorWithDomain:NSCocoaErrorDomain code:NSFileReadInapplicableStringEncodingError userInfo:@{NSFilePathErrorKey:url.path}]; [stream close]; return NO; }
-            NSString *window=[tail stringByAppendingString:fold(JNPlain(chunk))];
-            for (NSUInteger t=0;t<_terms.count;++t)
-                if (!(found&(1u<<t)) && [window rangeOfString:_terms[t] options:NSLiteralSearch].location!=NSNotFound) found|=1u<<t;
-            NSUInteger start=window.length>_overlap ? window.length-_overlap : 0;
-            if (start && CFStringIsSurrogateLowCharacter([window characterAtIndex:start])) --start;
+            NSString *window=[tail stringByAppendingString:JNPlain(chunk)];
+            for (NSUInteger t=0;t<_terms.count;++t) {
+                NSRange match=[window rangeOfString:_terms[t] options:NSCaseInsensitiveSearch|NSDiacriticInsensitiveSearch];
+                if(match.location!=NSNotFound) {
+                    found|=1u<<t;
+                    if(excerpt && !snippet) {
+                        NSUInteger start=match.location>80?match.location-80:0, end=MIN(window.length,NSMaxRange(match)+240);
+                        NSRange range=[window rangeOfComposedCharacterSequencesForRange:NSMakeRange(start,end-start)];
+                        snippet=[NSString stringWithFormat:@"%@%@%@",start?@"…":@"",[window substringWithRange:range],end<window.length?@"…":@""];
+                    }
+                }
+            }
+            NSUInteger overlap=MAX(1024,_overlap*4), start=window.length>overlap ? window.length-overlap : 0;
+            if(start) start=[window rangeOfComposedCharacterSequenceAtIndex:start].location;
             tail=[window substringFromIndex:start];
         }
-        if (found==all) { [stream close]; return YES; }
+        if (found==all) { if(excerpt) *excerpt=snippet; [stream close]; return YES; }
         pending=length-usable; if (pending) memmove(bytes,bytes+usable,pending);
         if (!read) break;
     }
