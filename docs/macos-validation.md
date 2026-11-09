@@ -19,6 +19,14 @@ architectures passed the updated suite in
 The synchronized Windows sources also refresh the list control's cached tile
 dimensions after a monitor DPI change, preventing overlapping archive rows.
 
+Release 0.1.3 adopts the Jotilla name and preserves existing profiles, archive
+associations and locking. Eight additional checks cover fresh profiles, existing
+archive preferences, disconnected drives and explicit new-profile priority.
+[Apple Silicon and Intel validation](https://github.com/GarauGarau/Jotilla/actions/runs/42628573505)
+passed 292,454 core checks and 1,462 native UI checks on each architecture, plus
+application launch and static analysis. Universal packaging uses the new app and
+download names while retaining the existing bundle and package identities.
+
 ## Feature coverage
 
 The reference is `src/jotilla.c`, `src/archive.c`, `src/calendar.c`,
