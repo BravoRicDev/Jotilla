@@ -59,6 +59,8 @@ h2 { font-size: 20px; line-height: 1.4; letter-spacing: -.5px; }
 .fine-print { margin-top: 17px; color: var(--muted); font-size: 11px; line-height: 1.7; }
 .download-help { margin-top: 10px; font-size: 12px; }
 .wide-example { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.8fr); align-items: center; gap: 34px; margin-top: 30px; }
+.section-heading + .wide-example { align-items: start; margin-top: 0; }
+#in-use .section-heading { margin-bottom: 18px; }
 .eyebrow { display: block; margin-bottom: 10px; color: var(--muted); font-size: 10px; }
 h3 { font-size: 22px; line-height: 1.25; letter-spacing: -.5px; }
 .example-copy p { margin-top: 14px; font-size: 13px; }
