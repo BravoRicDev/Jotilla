@@ -2,7 +2,7 @@
 setlocal
 cd /d "%~dp0"
 if /i not "%VSCMD_ARG_TGT_ARCH%"=="x64" call :compiler
-if errorlevel 1 exit /b 1
+if not "%errorlevel%"=="0" exit /b 1
 if not exist build mkdir build
 if not exist dist mkdir dist
 set "JOTILA_CFLAGS=/nologo /TC /std:c17 /W4 /WX /O2 /MT /utf-8 /Fd"build\compiler.pdb""
@@ -11,31 +11,31 @@ set "JOTILA_LIBS=build\archive.obj build\calendar.obj build\date.obj build\metad
 set "JOTILA_MANIFEST=/MANIFEST:EMBED /MANIFESTINPUT:src\app.manifest"
 if /i "%~1"=="analyze" goto analyze
 cl %JOTILA_CFLAGS% tools\make_icon.c /Fo"build\make_icon.obj" /Fe"build\make_icon.exe" /link ole32.lib windowscodecs.lib uuid.lib
-if errorlevel 1 exit /b 1
+if not "%errorlevel%"=="0" exit /b 1
 build\make_icon.exe
-if errorlevel 1 exit /b 1
+if not "%errorlevel%"=="0" exit /b 1
 rc /nologo /fo build\jotila.res src\jotila.rc
-if errorlevel 1 exit /b 1
+if not "%errorlevel%"=="0" exit /b 1
 cl %JOTILA_CFLAGS% /c src\archive.c /Fo"build\archive.obj"
-if errorlevel 1 exit /b 1
+if not "%errorlevel%"=="0" exit /b 1
 cl %JOTILA_CFLAGS% /c src\calendar.c /Fo"build\calendar.obj"
-if errorlevel 1 exit /b 1
+if not "%errorlevel%"=="0" exit /b 1
 cl %JOTILA_CFLAGS% /c src\date.c /Fo"build\date.obj"
-if errorlevel 1 exit /b 1
+if not "%errorlevel%"=="0" exit /b 1
 cl %JOTILA_CFLAGS% /c src\metadata.c /Fo"build\metadata.obj"
-if errorlevel 1 exit /b 1
+if not "%errorlevel%"=="0" exit /b 1
 cl %JOTILA_CFLAGS% /c src\tags.c /Fo"build\tags.obj"
-if errorlevel 1 exit /b 1
+if not "%errorlevel%"=="0" exit /b 1
 cl %JOTILA_CFLAGS% /c src\search.c /Fo"build\search.obj"
-if errorlevel 1 exit /b 1
+if not "%errorlevel%"=="0" exit /b 1
 cl %JOTILA_CFLAGS% /c src\location.c /Fo"build\location.obj"
-if errorlevel 1 exit /b 1
+if not "%errorlevel%"=="0" exit /b 1
 cl %JOTILA_CFLAGS% /c src\colors.c /Fo"build\colors.obj"
-if errorlevel 1 exit /b 1
+if not "%errorlevel%"=="0" exit /b 1
 cl %JOTILA_CFLAGS% /c src\palette_picker.c /Fo"build\palette_picker.obj"
-if errorlevel 1 exit /b 1
+if not "%errorlevel%"=="0" exit /b 1
 cl %JOTILA_CFLAGS% /c src\palette_art.c /Fo"build\palette_art.obj"
-if errorlevel 1 exit /b 1
+if not "%errorlevel%"=="0" exit /b 1
 if /i "%~1"=="test-only" goto tests
 if /i "%~1"=="screenshots-only" goto screenshots
 if /i "%~1"=="profile-only" goto profile
@@ -45,11 +45,11 @@ if /i "%~1"=="calendar-profile" goto calendarprofile
 if /i "%~1"=="tags-profile" goto tagsprofile
 if /i "%~1"=="test-checked" goto tests
 cl %JOTILA_CFLAGS% src\jotila.c /Fo"build\jotila.obj" /Fe"dist\Jotila.exe" /link build\jotila.res /SUBSYSTEM:WINDOWS %JOTILA_MANIFEST% %JOTILA_LIBS%
-if errorlevel 1 exit /b 1
+if not "%errorlevel%"=="0" exit /b 1
 rc /nologo /fo build\setup.res src\setup.rc
-if errorlevel 1 exit /b 1
+if not "%errorlevel%"=="0" exit /b 1
 cl %JOTILA_CFLAGS% src\setup.c /Fo"build\setup.obj" /Fe"dist\Jotila-Setup-x64.exe" /link build\setup.res /SUBSYSTEM:WINDOWS %JOTILA_MANIFEST% user32.lib shell32.lib ole32.lib uuid.lib advapi32.lib comctl32.lib
-if errorlevel 1 exit /b 1
+if not "%errorlevel%"=="0" exit /b 1
 if /i "%~1"=="test" goto tests
 if /i "%~1"=="screenshots" goto screenshots
 echo Ready: %CD%\dist\Jotila.exe
@@ -57,60 +57,60 @@ exit /b 0
 
 :tests
 cl %JOTILA_CFLAGS% tests\tests.c /Fo"build\tests.obj" /Fe"build\tests.exe" /link build\jotila.res /SUBSYSTEM:CONSOLE %JOTILA_MANIFEST% %JOTILA_LIBS%
-if errorlevel 1 exit /b 1
+if not "%errorlevel%"=="0" exit /b 1
 build\tests.exe %~2
-if errorlevel 1 exit /b 1
+if not "%errorlevel%"=="0" exit /b 1
 cl %JOTILA_CFLAGS% tests\setup_checks.c /Fo"build\setup_checks.obj" /Fe"build\setup_checks.exe" /link /SUBSYSTEM:CONSOLE %JOTILA_MANIFEST% user32.lib shell32.lib ole32.lib uuid.lib advapi32.lib comctl32.lib
-if errorlevel 1 exit /b 1
+if not "%errorlevel%"=="0" exit /b 1
 build\setup_checks.exe
-if errorlevel 1 exit /b 1
+if not "%errorlevel%"=="0" exit /b 1
 cl %JOTILA_CFLAGS% tests\calendar_paint.c /Fo"build\calendar_paint.obj" /Fe"build\calendar_paint.exe" /link build\date.obj user32.lib gdi32.lib comctl32.lib %JOTILA_MANIFEST%
-if errorlevel 1 exit /b 1
+if not "%errorlevel%"=="0" exit /b 1
 build\calendar_paint.exe
-if errorlevel 1 exit /b 1
+if not "%errorlevel%"=="0" exit /b 1
 cl %JOTILA_CFLAGS% tests\archive_cache.c /Fo"build\archive_cache.obj" /Fe"build\archive_cache.exe" /link %JOTILA_MANIFEST% %JOTILA_LIBS:build\archive.obj =%
-if errorlevel 1 exit /b 1
+if not "%errorlevel%"=="0" exit /b 1
 build\archive_cache.exe
-if errorlevel 1 exit /b 1
+if not "%errorlevel%"=="0" exit /b 1
 if not exist dist\Jotila.exe exit /b 0
 cl %JOTILA_CFLAGS% tests\startup_checks.c /Fo"build\startup_checks.obj" /Fe"build\startup_checks.exe" /link user32.lib %JOTILA_MANIFEST%
-if errorlevel 1 exit /b 1
+if not "%errorlevel%"=="0" exit /b 1
 build\startup_checks.exe
 exit /b %errorlevel%
 
 :screenshots
 cl %JOTILA_CFLAGS% tests\demo.c /Fo"build\demo.obj" /Fe"build\demo.exe" /link build\jotila.res /SUBSYSTEM:CONSOLE %JOTILA_MANIFEST% %JOTILA_LIBS%
-if errorlevel 1 exit /b 1
+if not "%errorlevel%"=="0" exit /b 1
 build\demo.exe %~2
 exit /b %errorlevel%
 
 :profile
 cl %JOTILA_CFLAGS% tools\profile.c /Fo"build\profile.obj" /Fe"build\profile.exe" /link user32.lib psapi.lib
-if errorlevel 1 exit /b 1
+if not "%errorlevel%"=="0" exit /b 1
 build\profile.exe "%CD%\dist\Jotila.exe"
 exit /b %errorlevel%
 
 :searchprofile
 cl %JOTILA_CFLAGS% tools\search_profile.c /Fo"build\search_profile.obj" /Fe"build\search_profile.exe" /link build\search.obj build\tags.obj build\metadata.obj user32.lib normaliz.lib psapi.lib
-if errorlevel 1 exit /b 1
+if not "%errorlevel%"=="0" exit /b 1
 build\search_profile.exe
 exit /b %errorlevel%
 
 :storageprofile
 cl %JOTILA_CFLAGS% tools\storage_profile.c /Fo"build\storage_profile.obj" /Fe"build\storage_profile.exe" /link build\jotila.res /SUBSYSTEM:CONSOLE %JOTILA_MANIFEST% %JOTILA_LIBS%
-if errorlevel 1 exit /b 1
+if not "%errorlevel%"=="0" exit /b 1
 build\storage_profile.exe
 exit /b %errorlevel%
 
 :calendarprofile
 cl %JOTILA_CFLAGS% tools\calendar_profile.c /Fo"build\calendar_profile.obj" /Fe"build\calendar_profile.exe" /link build\date.obj user32.lib gdi32.lib comctl32.lib %JOTILA_MANIFEST%
-if errorlevel 1 exit /b 1
+if not "%errorlevel%"=="0" exit /b 1
 build\calendar_profile.exe
 exit /b %errorlevel%
 
 :tagsprofile
 cl %JOTILA_CFLAGS% tools\tags_profile.c /Fo"build\tags_profile.obj" /Fe"build\tags_profile.exe" /link build\metadata.obj normaliz.lib
-if errorlevel 1 exit /b 1
+if not "%errorlevel%"=="0" exit /b 1
 build\tags_profile.exe
 exit /b %errorlevel%
 
