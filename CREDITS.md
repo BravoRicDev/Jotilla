@@ -1,7 +1,7 @@
 # Artwork and media
 
-The Jotila logo, screenshots and recordings come from the
-[Jotila repository](https://github.com/GarauGarau/Jotila), MIT license.
+The Jotilla logo, screenshots and recordings come from the
+[Jotilla repository](https://github.com/GarauGarau/Jotilla), MIT license.
 Screenshots and demos show the Windows application, not a simulated interface.
 
 Artwork is provided by Birmingham Museums Trust under **CC0 / Public Domain**.

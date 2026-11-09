@@ -1,15 +1,15 @@
-# Jotila website
+# Jotilla website
 
-The public website for [Jotila](https://github.com/GarauGarau/Jotila), served at
-**https://garaugarau.github.io/Jotila/** by GitHub Pages.
+The public website for [Jotilla](https://github.com/GarauGarau/Jotilla), served at
+**https://garaugarau.github.io/Jotilla/** by GitHub Pages.
 
 This independent `gh-pages` branch contains only the website. Application code
-lives on [`windows`](https://github.com/GarauGarau/Jotila/tree/windows) (default)
-and [`macos`](https://github.com/GarauGarau/Jotila/tree/macos).
+lives on [`windows`](https://github.com/GarauGarau/Jotilla/tree/windows) (default)
+and [`macos`](https://github.com/GarauGarau/Jotilla/tree/macos).
 
 ## Structure
 
-- `index.html`: introduction, platform choices, use cases and artwork credits.
+- `index.html`: introduction, platform choices, use cases, the name's three roots and artwork credits.
 - `windows.html`, `macos.html`: installer and portable downloads for each system.
 - `style.css`: shared responsive layout, system fonts and note-window styling.
 - `assets/`: local logo, optimized artwork, real app screenshots and MP4 demos.
@@ -24,8 +24,8 @@ credits use native HTML. Videos request metadata only and never autoplay.
 Clone just this branch:
 
 ```sh
-git clone --branch gh-pages --single-branch https://github.com/GarauGarau/Jotila.git Jotila-site
-cd Jotila-site
+git clone --branch gh-pages --single-branch https://github.com/GarauGarau/Jotilla.git Jotilla-site
+cd Jotilla-site
 python -m http.server 8080
 ```
 
@@ -49,6 +49,6 @@ poster when replacing a recording. Conversion tools are not site dependencies.
 
 Before publishing changes, check narrow and wide layouts, keyboard navigation,
 the platform-to-edition flow, four release downloads, media playback and credits.
-All local URLs are relative so the site works under the `/Jotila/` project path.
+All local URLs are relative so the site works under the `/Jotilla/` project path.
 
 See [artwork and media credits](CREDITS.md). Site code is [MIT-licensed](LICENSE).
