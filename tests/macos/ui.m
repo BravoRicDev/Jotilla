@@ -53,6 +53,33 @@ static void redo(JNNote *note) { check(note.editor.undoManager.canRedo,"command 
 static NSEvent *key(NSWindow *window, NSString *characters, unsigned short code, NSEventModifierFlags modifiers) {
     return [NSEvent keyEventWithType:NSEventTypeKeyDown location:NSZeroPoint modifierFlags:modifiers timestamp:0 windowNumber:window.windowNumber context:nil characters:characters charactersIgnoringModifiers:characters isARepeat:NO keyCode:code];
 }
+static void rightClickPalettes(JNNote *note) {
+    NSRect original=note.window.frame;
+    for(NSScreen *screen in NSScreen.screens) {
+        NSRect frame=original; frame.origin=NSMakePoint(NSMinX(screen.visibleFrame)+32,NSMinY(screen.visibleFrame)+32);
+        [note.window setFrame:JNConstrainFrame(frame,screen.visibleFrame) display:YES];
+        for(NSUInteger i=0;i<12;++i) {
+            [note.window makeKeyAndOrderFront:nil]; [note.window makeFirstResponder:note.editor];
+            NSRange selection=NSMakeRange(0,i%2 ? MIN(5,note.editor.string.length) : 0);
+            note.editor.selectedRange=selection;
+            NSPoint point=[note.editor convertPoint:NSMakePoint(40,20) toView:nil];
+            NSEvent *event=[NSEvent mouseEventWithType:NSEventTypeRightMouseDown location:point modifierFlags:0 timestamp:0 windowNumber:note.window.windowNumber context:nil eventNumber:0 clickCount:1 pressure:1];
+            [note.window sendEvent:event];
+            JNPalette *picker=[note valueForKey:@"picker"];
+            check(picker.window.visible && picker.window.parentWindow==note.window,"right-click opens an attached palette");
+            check(picker.window.screen==screen && NSContainsRect(screen.visibleFrame,picker.window.frame),"right-click palette stays on its screen");
+            check(NSEqualRanges(note.editor.selectedRange,selection),"right-click preserves text selection");
+            check([((NSTextField *)[picker valueForKey:@"mode"]).stringValue isEqual:selection.length ? @"Selected text" : @"Note color"],"right-click selects background or text mode");
+            NSInteger background=[note.record.settings[@"palette"] integerValue];
+            if(i%3) {
+                [picker step:1]; [picker choose:0];
+                check([note.record.settings[@"palette"] integerValue]==(selection.length ? background : picker.palette),"right-click applies only the requested color mode");
+            } else [picker cancel:nil];
+            check(!picker.window.visible && !picker.window.parentWindow,"right-click palette closes cleanly for repeated use");
+        }
+    }
+    [note.window setFrame:original display:YES]; note.editor.selectedRange=NSMakeRange(0,0);
+}
 static NSView *findView(NSView *root, Class cls) {
     if([root isKindOfClass:cls]) return root;
     for(NSView *child in root.subviews) { NSView *found=findView(child,cls); if(found) return found; } return nil;
@@ -138,6 +165,7 @@ int main(void) { @autoreleasepool {
     check(status.button.image.TIFFRepresentation.length>0,"menu-bar vector icon renders");
     capture(status.button.window.contentView,@"menu-bar.png");
     check(note.window.keyWindow && note.window.firstResponder==note.editor,"note accepts actual text focus");
+    rightClickPalettes(note);
     check([NSApp.mainMenu performKeyEquivalent:key(note.window,@"e",14,NSEventModifierFlagCommand)],"Command E dispatches explorer");
     check(browser.window.keyWindow,"Command E focuses explorer");
     [note.window makeKeyAndOrderFront:nil]; [note.window makeFirstResponder:note.editor];
