@@ -92,6 +92,40 @@ static void answerAlert(NSString *buttonTitle, void (^edit)(NSWindow *)) {
         check(NO,"dialog button exists");
     });
 }
+static void denseBrowserChecks(void) {
+    NSURL *root=[[NSURL fileURLWithPath:NSTemporaryDirectory() isDirectory:YES] URLByAppendingPathComponent:NSUUID.UUID.UUIDString];
+    [NSFileManager.defaultManager createDirectoryAtURL:root withIntermediateDirectories:YES attributes:nil error:NULL];
+    NSMutableString *ini=[NSMutableString string];
+    for(NSUInteger i=0;i<300;++i) {
+        NSString *identifier=[NSString stringWithFormat:@"20260101_grid_%03lu",(unsigned long)i];
+        check([@"A realistic note preview\nWith another line." writeToURL:[root URLByAppendingPathComponent:[identifier stringByAppendingPathExtension:@"txt"]] atomically:NO encoding:NSUTF8StringEncoding error:NULL],"write private dense-grid fixture");
+        [ini appendFormat:@"[%@]\nopen=0\ntags=work\n",identifier];
+    }
+    [ini writeToURL:[root URLByAppendingPathComponent:@"notes.ini"] atomically:NO encoding:NSUTF8StringEncoding error:NULL];
+    NSError *error=nil; JNApp *app=[JNApp new]; app.store=[[JNStore alloc] initWithDirectory:root error:&error];
+    check(app.store.records.count==300,"dense browser loads 300 notes"); [app browse:nil]; pump(0.1);
+    JNBrowser *browser=[app valueForKey:@"browser"]; NSCollectionView *cards=[browser valueForKey:@"cards"];
+    const CGFloat widths[]={660,850,1200,710,850};
+    for(NSUInteger w=0;w<sizeof(widths)/sizeof(widths[0]);++w) {
+        [browser.window setContentSize:NSMakeSize(widths[w],520)]; pump(0.05);
+        NSRect frames[300]; BOOL separated=YES,valid=YES;
+        for(NSUInteger i=0;i<300;++i) {
+            NSCollectionViewLayoutAttributes *attributes=[cards.collectionViewLayout layoutAttributesForItemAtIndexPath:[NSIndexPath indexPathForItem:i inSection:0]];
+            if(!attributes) { valid=NO; break; }
+            frames[i]=attributes.frame;
+            valid=valid && frames[i].size.width>0 && frames[i].size.height>0 && NSMinX(frames[i])>=0 && NSMaxX(frames[i])<=cards.bounds.size.width+1;
+            for(NSUInteger j=0;j<i;++j) {
+                if(NSIntersectsRect(frames[i],frames[j])) separated=NO;
+                if(fabs(NSMinY(frames[i])-NSMinY(frames[j]))<1 && fabs(NSMinX(frames[i])-NSMinX(frames[j]))-frames[i].size.width<3.9) separated=NO;
+                if(fabs(NSMinX(frames[i])-NSMinX(frames[j]))<1 && fabs(NSMinY(frames[i])-NSMinY(frames[j]))-frames[i].size.height<3.9) separated=NO;
+            }
+        }
+        check(valid && separated,"dense native grid keeps all rows and columns separated after resize");
+    }
+    [browser toggleCalendar:nil]; [browser toggleCalendar:nil]; pump(0.05);
+    check([cards numberOfItemsInSection:0]==300 && cards.visibleItems.count>0,"dense grid returns from calendar with visible cards");
+    [browser windowShouldClose:browser.window]; [NSFileManager.defaultManager removeItemAtURL:root error:NULL];
+}
 static void profile(void) {
     NSURL *root=[[NSURL fileURLWithPath:NSTemporaryDirectory() isDirectory:YES] URLByAppendingPathComponent:NSUUID.UUID.UUIDString];
     [NSFileManager.defaultManager createDirectoryAtURL:root withIntermediateDirectories:YES attributes:nil error:NULL];
@@ -305,6 +339,7 @@ int main(void) { @autoreleasepool {
     for(JNNote *n in app.notes.allValues) { [n detach]; }
     [browser.window orderOut:nil];
     [NSFileManager.defaultManager removeItemAtURL:root error:NULL];
+    denseBrowserChecks();
     if(getenv("JOTILA_PROFILE")) profile();
     printf("PASS: %u native UI checks.\n",checks);
 } return 0; }
