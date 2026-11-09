@@ -1,8 +1,9 @@
 name: Windows build and tests
 on:
   push:
-    branches: [main]
+    branches: [windows]
   pull_request:
+    branches: [windows]
   workflow_dispatch:
 permissions:
   contents: read
