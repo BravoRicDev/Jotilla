@@ -127,6 +127,15 @@ static void profile(void) {
 }
 int main(void) { @autoreleasepool {
     [NSApplication sharedApplication]; [NSApp setActivationPolicy:NSApplicationActivationPolicyAccessory]; [NSApp finishLaunching];
+    /* The command-line test runner has no Finder launch to hand it focus.
+       Activation is asynchronous, so establish it before checking key windows. */
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+    [NSApp activateIgnoringOtherApps:YES];
+#pragma clang diagnostic pop
+    NSDate *activationDeadline=[NSDate dateWithTimeIntervalSinceNow:5];
+    while(!NSApp.active && activationDeadline.timeIntervalSinceNow>0) pump(0.02);
+    check(NSApp.active,"UI test process acquires application focus");
     NSURL *root=[[NSURL fileURLWithPath:NSTemporaryDirectory() isDirectory:YES] URLByAppendingPathComponent:NSUUID.UUID.UUIDString];
     NSError *error=nil; JNApp *app=[JNApp new]; app.store=[[JNStore alloc] initWithDirectory:root error:&error];
     check(app.store!=nil,"isolated UI archive");
