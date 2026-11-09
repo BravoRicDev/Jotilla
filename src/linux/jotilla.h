@@ -58,6 +58,7 @@ char *store_tags_catalog(Store *store);
 char *store_tag_counts(Store *store);
 int store_app_get_int(Store *store, const char *key, int fallback);
 void store_app_set_int(Store *store, const char *key, int value);
+void store_set_archive_path(Store *store, const char *path);
 /* Imposta i tag di una nota. */
 /* Imposta tag normalizzati e salva. */
 void store_set_tags(Store *store, Note *note, const char *raw);

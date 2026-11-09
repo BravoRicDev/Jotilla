@@ -77,6 +77,16 @@ static ArchiveWindow *get_state(GtkWidget *window) {
     return g_object_get_data(G_OBJECT(window), ARCHIVE_STATE_KEY);
 }
 
+/* Imposta tooltip e nome accessibile per un controllo. */
+static void set_accessible_label(GtkWidget *widget, const char *label) {
+    AtkObject *accessible;
+
+    if (!widget || !label) return;
+    gtk_widget_set_tooltip_text(widget, label);
+    accessible = gtk_widget_get_accessible(widget);
+    if (accessible) atk_object_set_name(accessible, label);
+}
+
 /* Svuota un list box rimuovendo i figli. */
 static void clear_listbox(GtkWidget *list) {
     GList *children = gtk_container_get_children(GTK_CONTAINER(list));
@@ -474,7 +484,7 @@ static GtkWidget *build_note_card(ArchiveWindow *aw, Note *note,
     remove = gtk_button_new_from_icon_name("user-trash-symbolic",
                                            GTK_ICON_SIZE_BUTTON);
     gtk_widget_set_valign(remove, GTK_ALIGN_CENTER);
-    gtk_widget_set_tooltip_text(remove, "Delete note");
+    set_accessible_label(remove, "Delete note");
     gtk_style_context_add_class(gtk_widget_get_style_context(remove), "flat");
     g_object_set_data(G_OBJECT(remove), "note", note);
     g_signal_connect(remove, "clicked", G_CALLBACK(on_delete_clicked), aw);
@@ -575,7 +585,7 @@ static GtkWidget *build_note_row(ArchiveWindow *aw, Note *note) {
     remove = gtk_button_new_from_icon_name("user-trash-symbolic",
                                            GTK_ICON_SIZE_BUTTON);
     gtk_widget_set_valign(remove, GTK_ALIGN_CENTER);
-    gtk_widget_set_tooltip_text(remove, "Delete note");
+    set_accessible_label(remove, "Delete note");
     gtk_style_context_add_class(gtk_widget_get_style_context(remove), "flat");
     g_object_set_data(G_OBJECT(remove), "note", note);
     g_signal_connect(remove, "clicked", G_CALLBACK(on_delete_clicked), aw);
@@ -667,15 +677,31 @@ static void on_delete_selected(GtkButton *button, gpointer data) {
     GtkWidget *dialog;
     gint response;
     GPtrArray *ids;
+    GHashTable *seen;
     guint failures = 0;
     guint i;
     char *message;
 
     (void)button;
     selected = gtk_flow_box_get_selected_children(GTK_FLOW_BOX(aw->flow));
-    count = (guint)g_list_length(selected);
+    if (!selected) return;
+
+    ids = g_ptr_array_new_with_free_func(g_free);
+    seen = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
+    for (item = selected; item != NULL; item = item->next) {
+        Note *note = g_object_get_data(G_OBJECT(item->data), "note");
+
+        if (!note || !note->id) continue;
+        if (g_hash_table_contains(seen, note->id)) continue;
+        g_hash_table_add(seen, g_strdup(note->id));
+        g_ptr_array_add(ids, g_strdup(note->id));
+    }
+    g_hash_table_destroy(seen);
+    g_list_free(selected);
+
+    count = ids->len;
     if (!count) {
-        g_list_free(selected);
+        g_ptr_array_free(ids, TRUE);
         return;
     }
 
@@ -693,16 +719,9 @@ static void on_delete_selected(GtkButton *button, gpointer data) {
     gtk_widget_destroy(dialog);
     g_free(message);
     if (response != GTK_RESPONSE_YES) {
-        g_list_free(selected);
+        g_ptr_array_free(ids, TRUE);
         return;
     }
-
-    ids = g_ptr_array_new_with_free_func(g_free);
-    for (item = selected; item != NULL; item = item->next) {
-        Note *note = g_object_get_data(G_OBJECT(item->data), "note");
-        if (note && note->id) g_ptr_array_add(ids, g_strdup(note->id));
-    }
-    g_list_free(selected);
 
     for (i = 0; i < ids->len; ++i) {
         GError *error = NULL;
@@ -762,9 +781,8 @@ static void on_sidebar_toggle(GtkButton *button, gpointer data) {
     gtk_stack_set_visible_child_name(
         GTK_STACK(aw->sidebar_stack),
         aw->sidebar_tags ? "tags" : "dates");
-    gtk_widget_set_tooltip_text(GTK_WIDGET(button),
-                                aw->sidebar_tags ? "Show dates"
-                                                 : "Show tags");
+    set_accessible_label(GTK_WIDGET(button),
+                         aw->sidebar_tags ? "Show dates" : "Show tags");
 }
 
 /* Mostra il catalogo dei tag. */
@@ -1247,6 +1265,30 @@ static void repopulate_list(ArchiveWindow *aw) {
     g_string_free(subtitle, TRUE);
 }
 
+/* Marca sul calendario ogni giorno distinto che contiene almeno una nota. */
+static void refresh_calendar_marks(ArchiveWindow *aw) {
+    GHashTable *seen;
+    guint i;
+
+    if (!aw || !aw->calendar) return;
+    gtk_calendar_clear_marks(GTK_CALENDAR(aw->calendar));
+    if (!aw->store || !aw->store->notes) return;
+
+    seen = g_hash_table_new(g_direct_hash, g_direct_equal);
+    for (i = 0; i < aw->store->notes->len; ++i) {
+        Note *note = g_ptr_array_index(aw->store->notes, i);
+        guint day;
+
+        if (!note || !note->date || !date_valid(note->date)) continue;
+        day = note->date % 100u;
+        if (!day || g_hash_table_contains(seen, GUINT_TO_POINTER(day)))
+            continue;
+        g_hash_table_add(seen, GUINT_TO_POINTER(day));
+        gtk_calendar_mark_day(GTK_CALENDAR(aw->calendar), day);
+    }
+    g_hash_table_destroy(seen);
+}
+
 /* Aggiorna il calendario e le note del giorno. */
 static void update_calendar(ArchiveWindow *aw) {
     guint year = 0;
@@ -1262,6 +1304,7 @@ static void update_calendar(ArchiveWindow *aw) {
 
     if (!aw || !aw->calendar || !aw->calendar_list) return;
 
+    refresh_calendar_marks(aw);
     gtk_calendar_get_date(GTK_CALENDAR(aw->calendar), &year, &month, &day);
     if (day == 0) {
         clear_listbox(aw->calendar_list);
@@ -1508,37 +1551,37 @@ GtkWidget *archive_window_new(Store *store) {
     gtk_header_bar_pack_start(GTK_HEADER_BAR(header), new_note);
 
     calendar_button = gtk_button_new_with_label("Calendar");
-    gtk_widget_set_tooltip_text(calendar_button, "Toggle the calendar view");
+    set_accessible_label(calendar_button, "Toggle the calendar view");
     g_signal_connect(calendar_button, "clicked",
                      G_CALLBACK(on_calendar_clicked), aw);
     gtk_header_bar_pack_start(GTK_HEADER_BAR(header), calendar_button);
 
     sidebar_button = gtk_button_new_with_label("Dates/Tags");
-    gtk_widget_set_tooltip_text(sidebar_button, "Show tags");
+    set_accessible_label(sidebar_button, "Show tags");
     g_signal_connect(sidebar_button, "clicked",
                      G_CALLBACK(on_sidebar_toggle), aw);
     gtk_header_bar_pack_start(GTK_HEADER_BAR(header), sidebar_button);
 
     delete_button = gtk_button_new_with_label("Delete selected");
-    gtk_widget_set_tooltip_text(delete_button,
-                                "Delete the selected notes from the archive");
+    set_accessible_label(delete_button,
+                         "Delete the selected notes from the archive");
     g_signal_connect(delete_button, "clicked",
                      G_CALLBACK(on_delete_selected), aw);
     gtk_header_bar_pack_start(GTK_HEADER_BAR(header), delete_button);
 
     open_folder = gtk_button_new_with_label("Open folder\342\200\246");
-    gtk_widget_set_tooltip_text(open_folder, "Switch archive folder");
+    set_accessible_label(open_folder, "Switch archive folder");
     g_signal_connect(open_folder, "clicked",
                      G_CALLBACK(on_open_folder), aw);
     gtk_header_bar_pack_end(GTK_HEADER_BAR(header), open_folder);
 
     tags_button = gtk_button_new_with_label("Tags");
-    gtk_widget_set_tooltip_text(tags_button, "Show all tags");
+    set_accessible_label(tags_button, "Show all tags");
     g_signal_connect(tags_button, "clicked", G_CALLBACK(on_tags_clicked), aw);
     gtk_header_bar_pack_end(GTK_HEADER_BAR(header), tags_button);
 
     refresh_button = gtk_button_new_with_label("Refresh");
-    gtk_widget_set_tooltip_text(refresh_button, "Reload the archive");
+    set_accessible_label(refresh_button, "Reload the archive");
     g_signal_connect_swapped(refresh_button, "clicked",
                              G_CALLBACK(archive_window_refresh), window);
     gtk_header_bar_pack_end(GTK_HEADER_BAR(header), refresh_button);

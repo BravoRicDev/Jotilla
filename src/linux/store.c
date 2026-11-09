@@ -1,6 +1,7 @@
 /* Persistenza note su disco: archivio testo/RTF e metadati INI. */
 /* Fornisce apertura, salvataggio, cancellazione e ricerca. */
 #include "jotilla.h"
+#include "palette.h"
 #include "tags.h"
 
 #include <errno.h>
@@ -571,6 +572,47 @@ void store_free(Store *store)
     g_free(store);
 }
 
+/* Sacchetto mescolato dei colori della palette attiva. */
+static int shuffle_bag[COLOR_COUNT];
+static int shuffle_left = 0;
+static int shuffle_palette = -1;
+
+/* Limita un indice di palette all'intervallo valido. */
+static int palette_clamp(int palette)
+{
+    if (palette < 0)
+        return 0;
+    if (palette >= PALETTE_COUNT)
+        return PALETTE_COUNT - 1;
+    return palette;
+}
+
+/* Estrae un colore dal sacchetto Fisher-Yates della palette indicata. */
+static int draw_shuffled_color(int palette)
+{
+    int size = PALETTE_SIZES[palette];
+    int i;
+
+    if (size < 1)
+        size = 1;
+    if (size > COLOR_COUNT)
+        size = COLOR_COUNT;
+    if (palette != shuffle_palette || shuffle_left <= 0) {
+        for (i = 0; i < size; ++i)
+            shuffle_bag[i] = i;
+        for (i = size - 1; i > 0; --i) {
+            int j = g_random_int_range(0, i + 1);
+            int swap = shuffle_bag[i];
+            shuffle_bag[i] = shuffle_bag[j];
+            shuffle_bag[j] = swap;
+        }
+        shuffle_left = size;
+        shuffle_palette = palette;
+    }
+    --shuffle_left;
+    return shuffle_bag[shuffle_left];
+}
+
 /* Crea nuova nota con id univoco. */
 Note *store_new(Store *store, const char *text)
 {
@@ -631,6 +673,29 @@ Note *store_new(Store *store, const char *text)
     }
     g_free(note->text);
     note->text = g_strdup(text ? text : "");
+
+    {
+        int palette = palette_clamp(store_app_get_int(store, "palette", 0));
+        int favorite = store_app_get_int(store, "favorite_palette", -1);
+        int size;
+
+        if (favorite >= 0 && favorite < PALETTE_COUNT) {
+            palette = favorite;
+            note->color = draw_shuffled_color(palette);
+        } else {
+            int next = store_app_get_int(store, "next_color", 0);
+
+            size = PALETTE_SIZES[palette];
+            if (size < 1)
+                size = 1;
+            next %= size;
+            if (next < 0)
+                next += size;
+            note->color = next;
+            store_app_set_int(store, "next_color", (note->color + 1) % size);
+        }
+        note->palette = palette;
+    }
 
     position = store->notes->len;
     for (guint i = 0; i < store->notes->len; ++i) {
@@ -1061,6 +1126,37 @@ void store_app_set_int(Store *store, const char *key, int value)
     }
 
     g_key_file_set_integer(keyfile, "app", key, value);
+    data = g_key_file_to_data(keyfile, &length, &error);
+    if (data) {
+        (void)write_atomic(store->notes_ini, data, length, NULL);
+        g_free(data);
+    }
+    g_clear_error(&error);
+    g_key_file_free(keyfile);
+}
+
+/* Imposta il percorso archivio nella sezione [app], conservando le altre chiavi. */
+void store_set_archive_path(Store *store, const char *path)
+{
+    GKeyFile *keyfile;
+    GError *error = NULL;
+    char *data;
+    gsize length = 0;
+
+    if (!store || !path)
+        return;
+
+    keyfile = g_key_file_new();
+    if (g_file_test(store->notes_ini, G_FILE_TEST_IS_REGULAR) &&
+        !g_key_file_load_from_file(keyfile, store->notes_ini,
+                                   G_KEY_FILE_KEEP_COMMENTS | G_KEY_FILE_KEEP_TRANSLATIONS,
+                                   &error)) {
+        g_clear_error(&error);
+        g_key_file_free(keyfile);
+        keyfile = g_key_file_new();
+    }
+
+    g_key_file_set_string(keyfile, "app", "archive.path", path);
     data = g_key_file_to_data(keyfile, &length, &error);
     if (data) {
         (void)write_atomic(store->notes_ini, data, length, NULL);

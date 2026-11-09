@@ -2,33 +2,50 @@
 
 Goal: make Jotilla 100% compatible with Linux (GNOME, KDE, Hyprland, Sway, etc.), while preserving its native, lightweight, file-based character.
 
-## 0. Implementation status (2026-11-09)
+## 0. Implementation status (2026-11-10)
 
-The first Linux implementation is in place and builds/tests on this machine.
+The Linux implementation is in place and builds/tests on this machine.
 
 - **Toolkit:** GTK3 3.24 (GTK4 development headers were not installed in the build environment; GTK3 is available system-wide). The architecture keeps GTK code isolated so a GTK4 migration can be done later.
-- **Build:** CMake + Ninja; targets `jotilla`, `test_core`, `test_rtf`, `window_probe`.
+- **Build:** CMake + Ninja; targets `jotilla`, `test_core`, `test_rtf`, `test_extended`, `window_probe`, `xui`.
 - **Implemented:**
   - XDG storage: `$XDG_DATA_HOME/jotilla/notes`, `$XDG_CONFIG_HOME/jotilla/notes.ini`.
   - File-compatible notes: UTF-8 `.txt`, `.rtf` companion, INI metadata (`notes.ini`).
-  - Sticky-note windows matching the original design: 1 px paper border, same-colour title bar with calendar icon, title, collapse (`—`) and close (`×`), right-click menu for all actions, autosave (400 ms debounce), title from first line, formatting (bold/italic/underline/strikethrough, text color), checklist marker insertion.
-  - Archive window: search, tag filter, list view, calendar view, delete, open.
-  - Tags normalization and catalog; calendar date assignment.
-  - Palettes (Pastel, Black and white, Yellow only), opacity, keep-above/sticky.
+  - Note windows: 1 px paper border, same-colour title bar with calendar icon, title, collapse (`—`) and close (`×`); right-click menu for all actions; autosave (400 ms debounce) and save-on-quit; title promotion (first line, or Shift+Enter); checklist markers (`☐`/`☑`) with paragraph strikethrough and single undo.
+  - Formatting: bold, italic, underline, strikethrough and text colour; undo/redo; word-wrap toggle; five note sizes (Small, Medium, Large, Extra large, Square); opacity control.
+  - Palette picker: 83 palettes (3 built-in + 80 popular) with previous/next navigation and a persisted favourite palette.
+  - Archive window: tile view, search with match highlighting, multi-select delete, date/tag tree filters, calendar filtering, tag autocomplete.
+  - Tags normalisation and catalog; calendar date assignment with monthly and annual (year) views.
+  - Tray icon (`GtkStatusIcon`/XEmbed) and global hotkey `Ctrl+Alt++`, both on X11 only.
+  - Autostart via an XDG autostart `.desktop` entry; portable mode via `portable.flag`; single instance via `GApplication`/D-Bus.
   - Always-on-top: works on X11/XWayland; documented GNOME Wayland limitation.
   - Packaging: `.desktop`, SVG icon, AppStream metainfo, Flatpak manifest, AppImage script.
 - **Verification run:**
-  - `ctest` (Debug, Release, ASan/UBSan): core, RTF, E2E all pass.
+  - `ctest` (Debug, Release, ASan/UBSan): core, RTF, extended, E2E all pass.
   - E2E: `xvfb-run` self-test + smoke test + real-window probe (window title observed: "Untitled").
   - Native Wayland smoke (`--smoke-test`) and X11 smoke both exit 0 and create a note.
   - Visual check under Xvfb: note window and archive window render correctly.
   - `desktop-file-validate` passes; `appstreamcli validate --no-net` passes (1 pedantic).
   - `cmake --install` installs binary, desktop file, icon and metainfo correctly.
 - **Known gaps / next steps:**
+  - Wayland has no system tray (GtkStatusIcon uses X11 XEmbed) and no global hotkeys. Use a GNOME custom shortcut (`Super+Alt+J` is already configured) or run with `GDK_BACKEND=x11`.
   - GNOME Wayland cannot grant client-requested always-on-top; use `GDK_BACKEND=x11` or a Shell extension.
   - No `wlr-layer-shell` integration yet (library not installed); KDE/wlroots AoT currently relies on window rules/keep-above.
-  - Windows-only features not yet ported: tray icon, global hotkeys, full 80-palette catalog, exact RichEdit/TOM parity, per-monitor DPI tweaks, installer/uninstaller.
+  - Exact RichEdit/TOM parity and per-monitor DPI tweaks are not complete.
+  - No Linux installer/uninstaller; distribution is via CMake install and packaging.
   - GTK4 migration (fractional scaling, `GtkColumnView`, `gtk4-layer-shell`) remains optional.
+
+### Remaining platform-specific limitations
+
+| Limitation | Affected platform | Workaround / status |
+|---|---|---|
+| System tray icon (GtkStatusIcon/XEmbed) | Wayland (all compositors) | Run with `GDK_BACKEND=x11` |
+| Global hotkey `Ctrl+Alt++` | Wayland (all compositors) | GNOME custom shortcut (`Super+Alt+J` configured) or `GDK_BACKEND=x11` |
+| Client-requested always-on-top / sticky | GNOME Wayland | XWayland (`GDK_BACKEND=x11`) or Shell extension |
+| wlr-layer-shell overlay notes | wlroots/KDE | Not integrated; window rules/keep-above used instead |
+| Exact RichEdit/TOM formatting parity | All | RTF mapped through GtkTextBuffer tags (subset) |
+| Per-monitor DPI / fractional scaling | All | GDK scaling; depends on GTK3 backend |
+| Installer/uninstaller | Linux | CMake install + deb/rpm/Flatpak/AppImage packaging |
 
 ## 1. Executive summary
 

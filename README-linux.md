@@ -51,9 +51,23 @@ metadata, so they remain readable and portable.
 
 ## Features
 
-- Autosaving sticky notes with rich-text formatting
-- Archive browser with search, tags and calendar filtering
-- Custom colour palettes and opacity control
+- Sticky-note windows with title promotion (first line, or Shift+Enter) and
+  checklist markers (`☐`/`☑`)
+- Rich-text formatting: bold, italic, underline, strikethrough and text colour
+- Undo/redo
+- Palette picker with 80+ palettes (3 built-in plus the 80 popular palettes)
+  and a favourite palette
+- Note sizes (Small, Medium, Large, Extra large, Square), opacity control and
+  a word-wrap toggle
+- Autosave (400 ms debounce) and save-on-quit
+- Archive tile view with search-match highlighting, multi-select delete,
+  date/tag tree filters and calendar filtering
+- Calendar annual (year) view
+- Tag normalisation, filtering and autocomplete
+- System tray and global hotkey on X11 (see *Platform limitations*)
+- Optional autostart via an XDG autostart desktop entry
+- Portable mode (`portable.flag`) and single-instance behaviour
+  (`GApplication`/D-Bus)
 - Always-on-top and sticky notes
 - File-based storage with no database and no bundled runtime
 
@@ -69,8 +83,11 @@ Each note is a borderless sticky note with a coloured title bar:
 Right-click anywhere on the note for the full menu: new note, archive, tags,
 calendar, formatting, palette, opacity, always-on-top, sticky, delete and close.
 
-Keyboard shortcuts: `Ctrl+N` new note, `Ctrl+S` save, `Ctrl+B/I/U`
-bold/italic/underline, `Ctrl+Shift+X` strikethrough, `Esc` close.
+Keyboard shortcuts: `Ctrl+N` new note, `Ctrl+S` save, `Ctrl+Z`/`Ctrl+Y`
+(also `Ctrl+Shift+Z`) undo/redo, `Ctrl+B/I/U` bold/italic/underline,
+`Ctrl+Shift+X` strikethrough, `Ctrl+A` select all, `Ctrl++`/`Ctrl+-` and the
+mouse wheel resize text, `Shift+Enter` promotes the title, `Enter` continues a
+checklist item, `Esc` saves and closes.
 
 ## Always-on-top notes
 
@@ -86,6 +103,30 @@ GDK_BACKEND=x11 jotilla
 
 KDE and wlroots-based compositors may honour keep-above depending on their
 window rules; Jotilla prints a warning when the request may be ignored.
+
+## Platform limitations
+
+Jotilla on Linux is built with GTK3 (3.24). Two desktop-integration features
+are only available under X11:
+
+- **System tray:** implemented with `GtkStatusIcon`, which depends on the X11
+  XEmbed system-tray protocol. There is no tray icon on native Wayland
+  sessions.
+- **Global hotkeys:** `Ctrl+Alt++` is grabbed through X11 key grabbing and is
+  unavailable on native Wayland.
+
+Workarounds on Wayland (for example GNOME):
+
+- Bind a desktop shortcut to launch Jotilla. A `Super+Alt+J` GNOME custom
+  shortcut is already configured.
+- Or run Jotilla through XWayland, which restores both the tray icon and the
+  global hotkey:
+
+  ```sh
+  GDK_BACKEND=x11 jotilla
+  ```
+
+See *Always-on-top notes* above for the related Wayland stacking restriction.
 
 ## Packaging
 

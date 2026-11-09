@@ -477,6 +477,165 @@ static void test_store_delete_nonexistent(void) {
     g_free(base);
 }
 
+static void test_search_accent_insensitive(void) {
+    GError *err = NULL;
+    char *base;
+    char *archive;
+    char *config;
+    Store *store;
+    Note *note;
+
+    base = g_dir_make_tmp("jotilla-ext-accent-XXXXXX", &err);
+    g_assert_no_error(err);
+    g_assert_nonnull(base);
+    make_dirs(base, &archive, &config);
+
+    store = store_open(archive, config, &err);
+    g_assert_no_error(err);
+    g_assert_nonnull(store);
+
+    note = store_new(store, "Caf\xc3\xa9");
+    g_assert_nonnull(note);
+    g_assert_true(store_save(store, note, &err));
+    g_assert_no_error(err);
+
+    /* fold_text rimuove gli accenti: "cafe" trova "Café". */
+    g_assert_cmpuint(search_count(store, "cafe", NULL), ==, 1);
+    g_assert_cmpuint(search_count(store, "CAFE", NULL), ==, 1);
+    g_assert_cmpuint(search_count(store, "caf\xc3\xa9", NULL), ==, 1);
+    g_assert_cmpuint(search_count(store, "CAF\xc3\x89", NULL), ==, 1);
+    g_assert_cmpuint(search_count(store, "tea", NULL), ==, 0);
+
+    store_free(store);
+    remove_tree(archive);
+    remove_tree(config);
+    remove_tree(base);
+    g_free(archive);
+    g_free(config);
+    g_free(base);
+}
+
+static void test_custom_ink_persistence(void) {
+    GError *err = NULL;
+    char *base;
+    char *archive;
+    char *config;
+    char *id;
+    Store *store;
+    Store *reopened;
+    Note *note;
+    Note *found;
+
+    base = g_dir_make_tmp("jotilla-ext-ink-XXXXXX", &err);
+    g_assert_no_error(err);
+    g_assert_nonnull(base);
+    make_dirs(base, &archive, &config);
+
+    store = store_open(archive, config, &err);
+    g_assert_no_error(err);
+    g_assert_nonnull(store);
+
+    note = store_new(store, "custom ink");
+    g_assert_nonnull(note);
+    g_assert_false(note->custom_ink);
+    id = g_strdup(note->id);
+    g_assert_nonnull(id);
+
+    note->custom_ink = TRUE;
+    g_assert_true(store_save(store, note, &err));
+    g_assert_no_error(err);
+    store_free(store);
+
+    reopened = store_open(archive, config, &err);
+    g_assert_no_error(err);
+    g_assert_nonnull(reopened);
+    found = store_get(reopened, id);
+    g_assert_nonnull(found);
+    g_assert_true(found->custom_ink);
+    store_free(reopened);
+
+    g_free(id);
+    remove_tree(archive);
+    remove_tree(config);
+    remove_tree(base);
+    g_free(archive);
+    g_free(config);
+    g_free(base);
+}
+
+static void test_search_term_limit(void) {
+    GError *err = NULL;
+    char *base;
+    char *archive;
+    char *config;
+    GString *full;
+    GString *partial;
+    GString *query;
+    GString *bad_query;
+    GPtrArray *results;
+    Store *store;
+    Note *note;
+    guint i;
+
+    base = g_dir_make_tmp("jotilla-ext-terms-XXXXXX", &err);
+    g_assert_no_error(err);
+    g_assert_nonnull(base);
+    make_dirs(base, &archive, &config);
+
+    store = store_open(archive, config, &err);
+    g_assert_no_error(err);
+    g_assert_nonnull(store);
+
+    /* Nota con tutti i 20 termini. */
+    full = g_string_new(NULL);
+    for (i = 1; i <= 20; ++i)
+        g_string_append_printf(full, "t%02u ", i);
+    note = store_new(store, full->str);
+    g_assert_nonnull(note);
+
+    /* Nota limitata ai primi 16 termini. */
+    partial = g_string_new(NULL);
+    for (i = 1; i <= 16; ++i)
+        g_string_append_printf(partial, "t%02u ", i);
+    note = store_new(store, partial->str);
+    g_assert_nonnull(note);
+
+    /* La query con 20 termini non deve andare in crash; il parser ne usa 16. */
+    query = g_string_new(NULL);
+    for (i = 1; i <= 20; ++i) {
+        if (i > 1)
+            g_string_append_c(query, ' ');
+        g_string_append_printf(query, "t%02u", i);
+    }
+    results = store_search(store, query->str, NULL, &err);
+    g_assert_no_error(err);
+    g_assert_nonnull(results);
+    g_assert_cmpuint(results->len, ==, 2);
+    g_ptr_array_free(results, TRUE);
+
+    /* Termine assente nei primi 16: la nota non deve risultare. */
+    bad_query = g_string_new("absent");
+    for (i = 1; i <= 19; ++i)
+        g_string_append_printf(bad_query, " t%02u", i);
+    results = store_search(store, bad_query->str, NULL, &err);
+    g_assert_no_error(err);
+    g_assert_nonnull(results);
+    g_assert_cmpuint(results->len, ==, 0);
+    g_ptr_array_free(results, TRUE);
+
+    g_string_free(bad_query, TRUE);
+    g_string_free(query, TRUE);
+    g_string_free(partial, TRUE);
+    g_string_free(full, TRUE);
+    store_free(store);
+    remove_tree(archive);
+    remove_tree(config);
+    remove_tree(base);
+    g_free(archive);
+    g_free(config);
+    g_free(base);
+}
+
 /* ------------------------------------------------------------------- RTF */
 
 static GtkTextBuffer *new_buffer(void) {
@@ -762,6 +921,9 @@ int main(int argc, char **argv) {
     g_test_add_func("/extended/store", test_store_extended);
     g_test_add_func("/extended/store_robustness", test_store_robustness);
     g_test_add_func("/extended/store_delete_nonexistent", test_store_delete_nonexistent);
+    g_test_add_func("/extended/search_accent_insensitive", test_search_accent_insensitive);
+    g_test_add_func("/extended/custom_ink_persistence", test_custom_ink_persistence);
+    g_test_add_func("/extended/search_term_limit", test_search_term_limit);
     g_test_add_func("/extended/rtf_multiple_runs", test_rtf_multiple_runs);
     g_test_add_func("/extended/rtf_escapes_newlines", test_rtf_escapes_and_newlines);
     g_test_add_func("/extended/rtf_empty_malformed", test_rtf_empty_and_malformed);

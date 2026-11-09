@@ -199,6 +199,239 @@ static void test_store(void) {
     g_free(config_dir);
 }
 
+static void test_tag_counts_and_suggest(void) {
+    GError *err = NULL;
+    char *archive_dir;
+    char *config_dir;
+    char *counts;
+    Store *store;
+    Note *note;
+    GPtrArray *suggestions;
+    const char *catalog = "urgent\t1\nwork\t2\nurgent2\t5\nzebra\t9\nUrgent3\t3";
+
+    archive_dir = g_dir_make_tmp("jotilla-test-tags-XXXXXX", &err);
+    g_assert_no_error(err);
+    g_assert_nonnull(archive_dir);
+
+    config_dir = g_dir_make_tmp("jotilla-test-tags-cfg-XXXXXX", &err);
+    g_assert_no_error(err);
+    g_assert_nonnull(config_dir);
+
+    store = store_open(archive_dir, config_dir, &err);
+    g_assert_no_error(err);
+    g_assert_nonnull(store);
+
+    note = store_new(store, "urgent task");
+    g_assert_nonnull(note);
+    store_set_tags(store, note, "Work; urgent");
+
+    note = store_new(store, "misc task");
+    g_assert_nonnull(note);
+    store_set_tags(store, note, "work; misc");
+
+    counts = store_tag_counts(store);
+    g_assert_nonnull(counts);
+    g_assert_nonnull(strstr(counts, "urgent\t1"));
+    g_assert_nonnull(strstr(counts, "work\t2"));
+    g_assert_nonnull(strstr(counts, "misc\t1"));
+
+    /* Prefisso case-insensitive, ordinamento per conteggio decrescente. */
+    suggestions = tags_suggest_from(catalog, "ur", NULL, 10);
+    g_assert_nonnull(suggestions);
+    g_assert_cmpuint(suggestions->len, ==, 3);
+    g_assert_cmpstr(g_ptr_array_index(suggestions, 0), ==, "urgent2");
+    g_assert_cmpstr(g_ptr_array_index(suggestions, 1), ==, "Urgent3");
+    g_assert_cmpstr(g_ptr_array_index(suggestions, 2), ==, "urgent");
+    g_ptr_array_free(suggestions, TRUE);
+
+    /* I tag gia' assegnati sono esclusi. */
+    suggestions = tags_suggest_from(catalog, "UR", "urgent2", 10);
+    g_assert_nonnull(suggestions);
+    g_assert_cmpuint(suggestions->len, ==, 2);
+    g_assert_cmpstr(g_ptr_array_index(suggestions, 0), ==, "Urgent3");
+    g_assert_cmpstr(g_ptr_array_index(suggestions, 1), ==, "urgent");
+    g_ptr_array_free(suggestions, TRUE);
+
+    /* Il limite massimo viene rispettato. */
+    suggestions = tags_suggest_from(catalog, "ur", "urgent2", 1);
+    g_assert_nonnull(suggestions);
+    g_assert_cmpuint(suggestions->len, ==, 1);
+    g_assert_cmpstr(g_ptr_array_index(suggestions, 0), ==, "Urgent3");
+    g_ptr_array_free(suggestions, TRUE);
+
+    /* Nessun prefisso corrispondente, max non positivo e catalogo vuoto. */
+    suggestions = tags_suggest_from(catalog, "zz", NULL, 10);
+    g_assert_nonnull(suggestions);
+    g_assert_cmpuint(suggestions->len, ==, 0);
+    g_ptr_array_free(suggestions, TRUE);
+
+    suggestions = tags_suggest_from(catalog, "ur", NULL, 0);
+    g_assert_nonnull(suggestions);
+    g_assert_cmpuint(suggestions->len, ==, 0);
+    g_ptr_array_free(suggestions, TRUE);
+
+    suggestions = tags_suggest_from("", "ur", NULL, 10);
+    g_assert_nonnull(suggestions);
+    g_assert_cmpuint(suggestions->len, ==, 0);
+    g_ptr_array_free(suggestions, TRUE);
+
+    g_free(counts);
+    store_free(store);
+    remove_tree(archive_dir);
+    remove_tree(config_dir);
+    g_free(archive_dir);
+    g_free(config_dir);
+}
+
+static void test_app_int_persistence(void) {
+    GError *err = NULL;
+    char *archive_dir;
+    char *config_dir;
+    Store *store;
+    Store *reopened;
+
+    archive_dir = g_dir_make_tmp("jotilla-test-app-XXXXXX", &err);
+    g_assert_no_error(err);
+    g_assert_nonnull(archive_dir);
+
+    config_dir = g_dir_make_tmp("jotilla-test-app-cfg-XXXXXX", &err);
+    g_assert_no_error(err);
+    g_assert_nonnull(config_dir);
+
+    store = store_open(archive_dir, config_dir, &err);
+    g_assert_no_error(err);
+    g_assert_nonnull(store);
+
+    /* Chiave assente: viene restituito il fallback. */
+    g_assert_cmpint(store_app_get_int(store, "missing", 7), ==, 7);
+
+    store_app_set_int(store, "window_width", 1280);
+    g_assert_cmpint(store_app_get_int(store, "window_width", 0), ==, 1280);
+
+    store_app_set_int(store, "negative", -5);
+    g_assert_cmpint(store_app_get_int(store, "negative", 0), ==, -5);
+
+    store_free(store);
+
+    /* I valori sopravvivono alla riapertura dello store. */
+    reopened = store_open(archive_dir, config_dir, &err);
+    g_assert_no_error(err);
+    g_assert_nonnull(reopened);
+    g_assert_cmpint(store_app_get_int(reopened, "window_width", 0), ==, 1280);
+    g_assert_cmpint(store_app_get_int(reopened, "negative", 0), ==, -5);
+    g_assert_cmpint(store_app_get_int(reopened, "missing", 7), ==, 7);
+
+    store_free(reopened);
+    remove_tree(archive_dir);
+    remove_tree(config_dir);
+    g_free(archive_dir);
+    g_free(config_dir);
+}
+
+static void test_note_id_format(void) {
+    GError *err = NULL;
+    char *archive_dir;
+    char *config_dir;
+    GRegex *regex;
+    Store *store;
+    guint i;
+
+    archive_dir = g_dir_make_tmp("jotilla-test-id-XXXXXX", &err);
+    g_assert_no_error(err);
+    g_assert_nonnull(archive_dir);
+
+    config_dir = g_dir_make_tmp("jotilla-test-id-cfg-XXXXXX", &err);
+    g_assert_no_error(err);
+    g_assert_nonnull(config_dir);
+
+    regex = g_regex_new(
+        "^note-[0-9]{4}-[0-9]{2}-[0-9]{2}_[0-9]{2}-[0-9]{2}-[0-9]{2}"
+        "-[0-9]{3}-[0-9]{3}$",
+        0, 0, &err);
+    g_assert_no_error(err);
+    g_assert_nonnull(regex);
+
+    store = store_open(archive_dir, config_dir, &err);
+    g_assert_no_error(err);
+    g_assert_nonnull(store);
+
+    for (i = 0; i < 8; ++i) {
+        Note *note = store_new(store, "id format");
+        g_assert_nonnull(note);
+        g_assert_nonnull(note->id);
+        g_assert_true(g_regex_match(regex, note->id, 0, NULL));
+    }
+
+    g_regex_unref(regex);
+    store_free(store);
+    remove_tree(archive_dir);
+    remove_tree(config_dir);
+    g_free(archive_dir);
+    g_free(config_dir);
+}
+
+static void test_archive_path_persistence(void) {
+    GError *err = NULL;
+    char *base;
+    char *archive_a;
+    char *archive_b;
+    char *config_dir;
+    char *ini_path;
+    char *stored;
+    GKeyFile *keyfile;
+    Store *store;
+    Store *reopened;
+
+    base = g_dir_make_tmp("jotilla-test-arcpath-XXXXXX", &err);
+    g_assert_no_error(err);
+    g_assert_nonnull(base);
+
+    archive_a = g_build_filename(base, "archive-a", NULL);
+    archive_b = g_build_filename(base, "archive-b", NULL);
+    config_dir = g_build_filename(base, "config", NULL);
+    g_assert_cmpint(g_mkdir_with_parents(archive_a, 0700), ==, 0);
+    g_assert_cmpint(g_mkdir_with_parents(archive_b, 0700), ==, 0);
+    g_assert_cmpint(g_mkdir_with_parents(config_dir, 0700), ==, 0);
+
+    store = store_open(archive_a, config_dir, &err);
+    g_assert_no_error(err);
+    g_assert_nonnull(store);
+
+    /* Un'altra chiave [app] non deve essere persa dal cambio percorso. */
+    store_app_set_int(store, "keep_me", 321);
+    store_set_archive_path(store, archive_b);
+
+    ini_path = g_build_filename(config_dir, "notes.ini", NULL);
+    keyfile = g_key_file_new();
+    g_assert_true(g_key_file_load_from_file(keyfile, ini_path, G_KEY_FILE_NONE, &err));
+    g_assert_no_error(err);
+
+    stored = g_key_file_get_string(keyfile, "app", "archive.path", &err);
+    g_assert_no_error(err);
+    g_assert_cmpstr(stored, ==, archive_b);
+    g_assert_cmpint(g_key_file_get_integer(keyfile, "app", "keep_me", &err), ==, 321);
+    g_assert_no_error(err);
+
+    g_free(stored);
+    g_key_file_free(keyfile);
+    g_free(ini_path);
+    store_free(store);
+
+    /* Riapre senza percorso esplicito: deve usare quello configurato. */
+    reopened = store_open(NULL, config_dir, &err);
+    g_assert_no_error(err);
+    g_assert_nonnull(reopened);
+    g_assert_cmpstr(store_archive_dir(reopened), ==, archive_b);
+    g_assert_cmpint(store_app_get_int(reopened, "keep_me", 0), ==, 321);
+    store_free(reopened);
+
+    remove_tree(base);
+    g_free(archive_a);
+    g_free(archive_b);
+    g_free(config_dir);
+    g_free(base);
+}
+
 int main(int argc, char **argv) {
     g_test_init(&argc, &argv, NULL);
 
@@ -206,6 +439,10 @@ int main(int argc, char **argv) {
     g_test_add_func("/core/tags", test_tags);
     g_test_add_func("/core/palette", test_palette);
     g_test_add_func("/core/store", test_store);
+    g_test_add_func("/core/tag_counts_suggest", test_tag_counts_and_suggest);
+    g_test_add_func("/core/app_int_persistence", test_app_int_persistence);
+    g_test_add_func("/core/note_id_format", test_note_id_format);
+    g_test_add_func("/core/archive_path_persistence", test_archive_path_persistence);
 
     return g_test_run();
 }

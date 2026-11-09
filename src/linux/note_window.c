@@ -49,8 +49,26 @@ static GtkTextView *window_view(GtkWidget *window)
     return g_object_get_data(G_OBJECT(window), "textview");
 }
 
+typedef struct {
+    char *rtf;
+    int cursor;
+} UndoSnapshot;
+
 /* Salva il contenuto e lo stato della finestra. */
 static void save_now(GtkWidget *window);
+/* Applica un colore di testo alla selezione. */
+static void apply_foreground(GtkWidget *window, const char *hex);
+/* Registra lo stato corrente nella pila undo. */
+static void snapshot_push(GtkWidget *window, const char *rtf, int cursor);
+/* Offset del cursore corrente. */
+static int snapshot_cursor(GtkWidget *window);
+/* Azzera le pile e registra lo stato corrente come base. */
+static void snapshot_reset(GtkWidget *window);
+/* Libera tutte le istantanee della finestra. */
+static void snapshot_clear_all(GtkWidget *window);
+/* Annulla/ripristina l'ultima modifica. */
+static void do_undo(GtkWidget *window);
+static void do_redo(GtkWidget *window);
 
 /* Annulla il timer di salvataggio pendente. */
 static void remove_timeout(GtkWidget *window)
@@ -214,6 +232,9 @@ static void save_now(GtkWidget *window)
         if (saved) {
             set_save_error(window, FALSE);
             g_object_set_data(G_OBJECT(window), "dirty", GINT_TO_POINTER(0));
+            if (!GPOINTER_TO_INT(g_object_get_data(G_OBJECT(window), "restoring")) &&
+                note->rtf != NULL)
+                snapshot_push(window, note->rtf, snapshot_cursor(window));
         } else {
             guint id;
 
@@ -229,6 +250,232 @@ static void save_now(GtkWidget *window)
         if (hook != NULL && hook->fn != NULL)
             hook->fn(note, hook->data);
     }
+}
+
+/* Libera una istantanea. */
+static void snapshot_free(gpointer data)
+{
+    UndoSnapshot *snap = data;
+
+    if (snap == NULL)
+        return;
+    g_free(snap->rtf);
+    g_free(snap);
+}
+
+/* Copia una istantanea. */
+static UndoSnapshot *snapshot_clone(const UndoSnapshot *src)
+{
+    UndoSnapshot *copy;
+
+    if (src == NULL)
+        return NULL;
+
+    copy = g_new0(UndoSnapshot, 1);
+    copy->rtf = g_strdup(src->rtf != NULL ? src->rtf : "");
+    copy->cursor = src->cursor;
+    return copy;
+}
+
+/* Restituisce (creandola se richiesto) una pila di istantanee. */
+static GPtrArray *snapshot_stack(GtkWidget *window, const char *key, gboolean create)
+{
+    GPtrArray *stack = g_object_get_data(G_OBJECT(window), key);
+
+    if (stack == NULL && create) {
+        stack = g_ptr_array_new_with_free_func(snapshot_free);
+        g_object_set_data_full(G_OBJECT(window), key, stack,
+                               (GDestroyNotify)g_ptr_array_unref);
+    }
+    return stack;
+}
+
+/* Offset del cursore corrente. */
+static int snapshot_cursor(GtkWidget *window)
+{
+    GtkTextView *view = window_view(window);
+    GtkTextBuffer *buffer;
+    GtkTextIter iter;
+
+    if (view == NULL)
+        return 0;
+
+    buffer = gtk_text_view_get_buffer(view);
+    if (buffer == NULL)
+        return 0;
+
+    gtk_text_buffer_get_iter_at_mark(buffer, &iter,
+                                     gtk_text_buffer_get_insert(buffer));
+    return gtk_text_iter_get_offset(&iter);
+}
+
+/* Registra lo stato corrente nella pila undo. */
+static void snapshot_push(GtkWidget *window, const char *rtf, int cursor)
+{
+    GPtrArray *stack = snapshot_stack(window, "undo-stack", TRUE);
+    GPtrArray *redo;
+    UndoSnapshot *snap;
+    const char *value = rtf != NULL ? rtf : "";
+
+    if (stack == NULL)
+        return;
+
+    if (stack->len > 0) {
+        UndoSnapshot *top = g_ptr_array_index(stack, stack->len - 1);
+        if (top != NULL && g_strcmp0(top->rtf, value) == 0)
+            return;
+    }
+
+    snap = g_new0(UndoSnapshot, 1);
+    snap->rtf = g_strdup(value);
+    snap->cursor = cursor;
+    g_ptr_array_add(stack, snap);
+
+    while (stack->len > 100)
+        g_ptr_array_remove_index(stack, 0);
+
+    redo = snapshot_stack(window, "redo-stack", TRUE);
+    if (redo != NULL)
+        g_ptr_array_set_size(redo, 0);
+}
+
+/* Azzera le pile e registra lo stato corrente come base. */
+static void snapshot_reset(GtkWidget *window)
+{
+    GtkTextView *view = window_view(window);
+    GtkTextBuffer *buffer;
+    char *rtf;
+    int cursor;
+
+    g_object_set_data(G_OBJECT(window), "undo-stack", NULL);
+    g_object_set_data(G_OBJECT(window), "redo-stack", NULL);
+    snapshot_stack(window, "undo-stack", TRUE);
+    snapshot_stack(window, "redo-stack", TRUE);
+
+    if (view == NULL)
+        return;
+
+    buffer = gtk_text_view_get_buffer(view);
+    if (buffer == NULL)
+        return;
+
+    rtf = rtf_from_buffer(buffer);
+    cursor = snapshot_cursor(window);
+    snapshot_push(window, rtf != NULL ? rtf : "", cursor);
+    g_free(rtf);
+}
+
+/* Libera tutte le istantanee della finestra. */
+static void snapshot_clear_all(GtkWidget *window)
+{
+    g_object_set_data(G_OBJECT(window), "undo-stack", NULL);
+    g_object_set_data(G_OBJECT(window), "redo-stack", NULL);
+}
+
+/* Ripristina una istantanea nel buffer senza registrarla di nuovo. */
+static void snapshot_restore(GtkWidget *window, const UndoSnapshot *snap)
+{
+    GtkTextView *view = window_view(window);
+    GtkTextBuffer *buffer;
+    Note *note = window_note(window);
+
+    if (snap == NULL || view == NULL)
+        return;
+
+    buffer = gtk_text_view_get_buffer(view);
+    if (buffer == NULL)
+        return;
+
+    g_object_set_data(G_OBJECT(window), "loading", GINT_TO_POINTER(1));
+    g_object_set_data(G_OBJECT(window), "restoring", GINT_TO_POINTER(1));
+
+    rtf_to_buffer(snap->rtf != NULL ? snap->rtf : "", buffer);
+
+    {
+        GtkTextIter iter;
+        int count = gtk_text_buffer_get_char_count(buffer);
+        int pos = snap->cursor;
+
+        if (pos < 0)
+            pos = 0;
+        if (pos > count)
+            pos = count;
+        gtk_text_buffer_get_iter_at_offset(buffer, &iter, pos);
+        gtk_text_buffer_place_cursor(buffer, &iter);
+    }
+
+    if (note != NULL) {
+        g_free(note->rtf);
+        note->rtf = g_strdup(snap->rtf != NULL ? snap->rtf : "");
+    }
+
+    g_object_set_data(G_OBJECT(window), "loading", GINT_TO_POINTER(0));
+
+    update_title(window);
+    touch(window);
+    save_now(window);
+
+    g_object_set_data(G_OBJECT(window), "restoring", GINT_TO_POINTER(0));
+}
+
+/* Annulla l'ultima modifica. */
+static void do_undo(GtkWidget *window)
+{
+    GPtrArray *undo = g_object_get_data(G_OBJECT(window), "undo-stack");
+    GPtrArray *redo;
+    UndoSnapshot *cur;
+    UndoSnapshot *copy;
+    UndoSnapshot *target;
+
+    if (undo == NULL || undo->len <= 1)
+        return;
+
+    redo = snapshot_stack(window, "redo-stack", TRUE);
+
+    cur = g_ptr_array_index(undo, undo->len - 1);
+    copy = snapshot_clone(cur);
+    if (copy != NULL && redo != NULL) {
+        g_ptr_array_add(redo, copy);
+        while (redo->len > 100)
+            g_ptr_array_remove_index(redo, 0);
+    } else {
+        snapshot_free(copy);
+    }
+
+    g_ptr_array_remove_index(undo, undo->len - 1);
+
+    target = g_ptr_array_index(undo, undo->len - 1);
+    snapshot_restore(window, target);
+}
+
+/* Ripristina l'ultima modifica annullata. */
+static void do_redo(GtkWidget *window)
+{
+    GPtrArray *redo = g_object_get_data(G_OBJECT(window), "redo-stack");
+    GPtrArray *undo;
+    UndoSnapshot *cur;
+    UndoSnapshot *copy;
+    UndoSnapshot *target;
+
+    if (redo == NULL || redo->len == 0)
+        return;
+
+    undo = snapshot_stack(window, "undo-stack", TRUE);
+
+    cur = g_ptr_array_index(redo, redo->len - 1);
+    copy = snapshot_clone(cur);
+    if (copy != NULL && undo != NULL) {
+        g_ptr_array_add(undo, copy);
+        while (undo->len > 100)
+            g_ptr_array_remove_index(undo, 0);
+    } else {
+        snapshot_free(copy);
+    }
+
+    g_ptr_array_remove_index(redo, redo->len - 1);
+
+    target = g_ptr_array_index(undo, undo->len - 1);
+    snapshot_restore(window, target);
 }
 
 /* Rimuove il provider CSS dallo schermo/contesto. */
@@ -475,8 +722,26 @@ static void on_palette_popover_destroy(GtkWidget *popover, gpointer data)
         g_object_set_data(G_OBJECT(window), "palette-popover", NULL);
 }
 
+/* Applica al testo selezionato il colore scelto dal picker. */
+static void on_text_color_picked(int palette, int color, gpointer data)
+{
+    GtkWidget *window = data;
+    const char *hex;
+
+    if (palette < 0 || palette >= PALETTE_COUNT ||
+        color < 0 || color >= COLOR_COUNT)
+        return;
+
+    hex = palette_color_hex(palette, color);
+    if (hex == NULL || hex[0] == '\0')
+        return;
+
+    apply_foreground(window, hex);
+}
+
 /* Apre il picker palette; event puo' essere NULL per il menu. */
-static void show_palette_picker(GtkWidget *window, GdkEventButton *event)
+static void show_palette_picker_mode(GtkWidget *window, GdkEventButton *event,
+                                     gboolean text_mode)
 {
     Note *note = window_note(window);
     Store *store = window_store(window);
@@ -491,8 +756,9 @@ static void show_palette_picker(GtkWidget *window, GdkEventButton *event)
 
     popover = palette_picker_new(GTK_WINDOW(window),
                                  store != NULL ? store->config_dir : NULL,
-                                 note->palette, note->color, FALSE,
-                                 on_palette_picked, on_palette_favorite, window);
+                                 note->palette, note->color, text_mode,
+                                 text_mode ? on_text_color_picked : on_palette_picked,
+                                 text_mode ? NULL : on_palette_favorite, window);
     if (popover == NULL)
         return;
 
@@ -520,6 +786,12 @@ static void show_palette_picker(GtkWidget *window, GdkEventButton *event)
     gtk_popover_popup(GTK_POPOVER(popover));
 }
 
+/* Apre il picker in modalita' colore nota. */
+static void show_palette_picker(GtkWidget *window, GdkEventButton *event)
+{
+    show_palette_picker_mode(window, event, FALSE);
+}
+
 /* Carica il testo/RTF della nota nella view. */
 static void load_note(GtkWidget *window)
 {
@@ -543,6 +815,7 @@ static void load_note(GtkWidget *window)
         gtk_text_buffer_set_text(buffer, note->text != NULL ? note->text : "", -1);
     g_object_set_data(G_OBJECT(window), "loading", GINT_TO_POINTER(0));
 
+    snapshot_reset(window);
     update_title(window);
 }
 
@@ -852,7 +1125,16 @@ static gboolean on_view_button_press(GtkWidget *widget, GdkEventButton *event,
     GtkTextView *view = GTK_TEXT_VIEW(widget);
 
     if (event->type == GDK_BUTTON_PRESS && event->button == 3) {
-        show_palette_picker(window, event);
+        GtkTextBuffer *buffer = gtk_text_view_get_buffer(view);
+        GtkTextIter start, end;
+        gboolean has_selection = FALSE;
+
+        if (buffer != NULL &&
+            gtk_text_buffer_get_selection_bounds(buffer, &start, &end) &&
+            !gtk_text_iter_equal(&start, &end))
+            has_selection = TRUE;
+
+        show_palette_picker_mode(window, event, has_selection);
         return TRUE;
     }
 
@@ -995,6 +1277,39 @@ static void on_tags_activate(GtkMenuItem *item, gpointer data)
     gtk_entry_set_placeholder_text(GTK_ENTRY(entry), "tag1, tag2");
     gtk_entry_set_activates_default(GTK_ENTRY(entry), TRUE);
     gtk_box_pack_start(GTK_BOX(content), entry, TRUE, TRUE, 0);
+
+    {
+        char *catalog = store_tags_catalog(store);
+        GtkEntryCompletion *completion = gtk_entry_completion_new();
+        GtkListStore *model = gtk_list_store_new(1, G_TYPE_STRING);
+
+        if (catalog != NULL) {
+            char **lines = g_strsplit(catalog, "\n", -1);
+            guint i = 0;
+
+            if (lines[0] != NULL &&
+                g_strcmp0(g_strstrip(lines[0]), "All tags") == 0)
+                i = 1;
+
+            for (; lines[i] != NULL; ++i) {
+                char *name = g_strstrip(lines[i]);
+                GtkTreeIter iter;
+
+                if (name[0] == '\0')
+                    continue;
+                gtk_list_store_append(model, &iter);
+                gtk_list_store_set(model, &iter, 0, name, -1);
+            }
+            g_strfreev(lines);
+        }
+
+        gtk_entry_completion_set_model(completion, GTK_TREE_MODEL(model));
+        gtk_entry_completion_set_text_column(completion, 0);
+        gtk_entry_set_completion(GTK_ENTRY(entry), completion);
+        g_object_unref(model);
+        g_object_unref(completion);
+        g_free(catalog);
+    }
 
     gtk_widget_show_all(dialog);
     if (gtk_dialog_run(GTK_DIALOG(dialog)) == GTK_RESPONSE_ACCEPT) {
@@ -1356,6 +1671,14 @@ static void on_sticky_toggled(GtkCheckMenuItem *item, gpointer data)
     platform_set_sticky(window, gtk_check_menu_item_get_active(item));
 }
 
+/* Attiva/disattiva l'avvio automatico al login. */
+static void on_autostart_toggled(GtkCheckMenuItem *item, gpointer data)
+{
+    (void)data;
+
+    platform_autostart_set(gtk_check_menu_item_get_active(item));
+}
+
 /* Gestore menu: nuova nota. */
 static void on_menu_new(GtkMenuItem *item, gpointer data)
 {
@@ -1405,6 +1728,20 @@ static void on_format_checklist(GtkMenuItem *item, gpointer data)
     insert_checklist(data);
 }
 
+/* Gestore menu: annulla. */
+static void on_undo_activate(GtkMenuItem *item, gpointer data)
+{
+    (void)item;
+    do_undo(data);
+}
+
+/* Gestore menu: ripristina. */
+static void on_redo_activate(GtkMenuItem *item, gpointer data)
+{
+    (void)item;
+    do_redo(data);
+}
+
 /* Crea una voce di menu con tooltip. */
 static GtkWidget *tip_item(const char *label, const char *tip)
 {
@@ -1448,6 +1785,8 @@ static GtkWidget *build_menu(GtkWidget *window)
     submenu = gtk_menu_new();
 
     {
+        GtkWidget *undo = tip_item("Undo", "Undo the last change (Ctrl+Z)");
+        GtkWidget *redo = tip_item("Redo", "Redo the last undone change (Ctrl+Y)");
         GtkWidget *bold = tip_item("Bold", "Bold text (Ctrl+B)");
         GtkWidget *italic = tip_item("Italic", "Italic text (Ctrl+I)");
         GtkWidget *underline = tip_item("Underline", "Underline text (Ctrl+U)");
@@ -1455,6 +1794,8 @@ static GtkWidget *build_menu(GtkWidget *window)
         GtkWidget *checklist = tip_item("Insert checklist item", "Insert a checklist marker");
         GtkWidget *color = tip_item("Text color...", "Choose the text colour");
 
+        g_signal_connect(undo, "activate", G_CALLBACK(on_undo_activate), window);
+        g_signal_connect(redo, "activate", G_CALLBACK(on_redo_activate), window);
         g_signal_connect(bold, "activate", G_CALLBACK(on_format_bold), window);
         g_signal_connect(italic, "activate", G_CALLBACK(on_format_italic), window);
         g_signal_connect(underline, "activate", G_CALLBACK(on_format_underline), window);
@@ -1462,6 +1803,9 @@ static GtkWidget *build_menu(GtkWidget *window)
         g_signal_connect(checklist, "activate", G_CALLBACK(on_format_checklist), window);
         g_signal_connect(color, "activate", G_CALLBACK(on_color_activate), window);
 
+        gtk_menu_shell_append(GTK_MENU_SHELL(submenu), undo);
+        gtk_menu_shell_append(GTK_MENU_SHELL(submenu), redo);
+        gtk_menu_shell_append(GTK_MENU_SHELL(submenu), gtk_separator_menu_item_new());
         gtk_menu_shell_append(GTK_MENU_SHELL(submenu), bold);
         gtk_menu_shell_append(GTK_MENU_SHELL(submenu), italic);
         gtk_menu_shell_append(GTK_MENU_SHELL(submenu), underline);
@@ -1575,6 +1919,13 @@ static GtkWidget *build_menu(GtkWidget *window)
     g_signal_connect(item, "toggled", G_CALLBACK(on_sticky_toggled), window);
     gtk_menu_shell_append(GTK_MENU_SHELL(menu), item);
 
+    item = gtk_check_menu_item_new_with_label("Start at login");
+    gtk_widget_set_tooltip_text(item, "Launch Jotilla automatically when you log in");
+    gtk_check_menu_item_set_active(GTK_CHECK_MENU_ITEM(item),
+                                   platform_autostart_enabled());
+    g_signal_connect(item, "toggled", G_CALLBACK(on_autostart_toggled), window);
+    gtk_menu_shell_append(GTK_MENU_SHELL(menu), item);
+
     gtk_menu_shell_append(GTK_MENU_SHELL(menu), gtk_separator_menu_item_new());
 
     item = tip_item("Delete note...", "Delete this note");
@@ -1664,6 +2015,8 @@ static void on_destroy(GtkWidget *widget, gpointer data)
 
     /* Rimuove l'eventuale retry programmato da un salvataggio fallito. */
     remove_timeout(window);
+
+    snapshot_clear_all(window);
 
     popover = g_object_get_data(G_OBJECT(window), "palette-popover");
     if (popover != NULL) {
@@ -1819,19 +2172,6 @@ static gboolean promote_title(GtkWidget *window)
     return TRUE;
 }
 
-/* Undo/redo: GTK3 usa segnali se le funzioni dedicate non esistono. */
-static void buffer_undo(GtkTextBuffer *buffer)
-{
-    if (g_signal_lookup("undo", G_OBJECT_TYPE(buffer)) != 0)
-        g_signal_emit_by_name(buffer, "undo");
-}
-
-static void buffer_redo(GtkTextBuffer *buffer)
-{
-    if (g_signal_lookup("redo", G_OBJECT_TYPE(buffer)) != 0)
-        g_signal_emit_by_name(buffer, "redo");
-}
-
 /* Ctrl+rotella cambia la dimensione del testo. */
 static gboolean on_view_scroll(GtkWidget *widget, GdkEventScroll *event,
                                gpointer data)
@@ -1897,26 +2237,15 @@ static gboolean on_key_press(GtkWidget *widget, GdkEventKey *event, gpointer dat
             return TRUE;
         case GDK_KEY_z:
         case GDK_KEY_Z:
-        {
-            GtkTextView *view = window_view(window);
-            GtkTextBuffer *buffer = view != NULL ? gtk_text_view_get_buffer(view) : NULL;
-            if (buffer != NULL) {
-                if (shift)
-                    buffer_redo(buffer);
-                else
-                    buffer_undo(buffer);
-            }
+            if (shift)
+                do_redo(window);
+            else
+                do_undo(window);
             return TRUE;
-        }
         case GDK_KEY_y:
         case GDK_KEY_Y:
-        {
-            GtkTextView *view = window_view(window);
-            GtkTextBuffer *buffer = view != NULL ? gtk_text_view_get_buffer(view) : NULL;
-            if (buffer != NULL)
-                buffer_redo(buffer);
+            do_redo(window);
             return TRUE;
-        }
         case GDK_KEY_a:
         case GDK_KEY_A:
         {
