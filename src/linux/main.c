@@ -618,7 +618,15 @@ int main(int argc, char **argv)
     }
 
     /* Istanza unica tramite GApplication (D-Bus). */
-    gapp = g_application_new("org.jotilla.Jotilla", G_APPLICATION_DEFAULT_FLAGS);
+    {
+        char *app_id;
+        if (g_getenv("JOTILLA_NO_SINGLE_INSTANCE") != NULL)
+            app_id = g_strdup_printf("org.jotilla.Jotilla.test%d", (int)getpid());
+        else
+            app_id = g_strdup("org.jotilla.Jotilla");
+        gapp = g_application_new(app_id, G_APPLICATION_DEFAULT_FLAGS);
+        g_free(app_id);
+    }
     g_signal_connect(gapp, "activate", G_CALLBACK(on_app_activate), &ctx);
 
     if (!g_application_register(gapp, NULL, &err)) {
@@ -687,8 +695,6 @@ int main(int argc, char **argv)
         on_show_archive(&ctx);
         g_timeout_add(1200, quit_loop, NULL);
     }
-
-    g_application_activate(gapp);
 
     gtk_main();
 

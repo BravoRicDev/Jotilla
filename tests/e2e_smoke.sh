@@ -5,6 +5,7 @@ set -euo pipefail
 
 # GTK3 leaks (not our code) must not fail the smoke test under sanitizers.
 export ASAN_OPTIONS="${ASAN_OPTIONS:+$ASAN_OPTIONS:}detect_leaks=0"
+export JOTILLA_NO_SINGLE_INSTANCE=1
 
 fail() {
     echo "FAIL: $*" >&2
@@ -20,6 +21,7 @@ BIN="$1"
 PROBE="${2:-./build/window_probe}"
 
 export GDK_BACKEND=x11
+export JOTILLA_NO_SINGLE_INSTANCE=1
 unset WAYLAND_DISPLAY
 
 if [ ! -x "$BIN" ]; then

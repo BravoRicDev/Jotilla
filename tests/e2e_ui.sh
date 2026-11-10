@@ -56,30 +56,35 @@ fi
 XUI="$(readlink -f "${XUI}")"
 
 TMP="$(mktemp -d)"
-export DISPLAY=:96
+_disp=90
+while [ -e "/tmp/.X${_disp}-lock" ] || [ -e "/tmp/.X11-unix/X${_disp}" ]; do
+    _disp=$((_disp + 1))
+done
+export DISPLAY=":${_disp}"
 export GDK_BACKEND=x11
+export JOTILLA_NO_SINGLE_INSTANCE=1
 unset WAYLAND_DISPLAY
 
 echo "==> UI E2E: bin=${BIN} xui=${XUI}"
 
 # ---------------------------------------------------------------- Xvfb
-Xvfb :96 -screen 0 1280x1024x24 -nolisten tcp >"${TMP}/xvfb.log" 2>&1 &
+Xvfb "${DISPLAY}" -screen 0 1280x1024x24 -nolisten tcp >"${TMP}/xvfb.log" 2>&1 &
 XVFB_PID=$!
 
 ready=0
 for _ in $(seq 1 50); do
-    if [ -S /tmp/.X11-unix/X96 ] && xset q >/dev/null 2>&1; then
+    if [ -S /tmp/.X11-unix/X${DISPLAY#:} ] && xset q >/dev/null 2>&1; then
         ready=1
         break
     fi
     sleep 0.1
 done
 if [ "${ready}" -ne 1 ]; then
-    echo "FAIL: Xvfb :96 did not become ready" >&2
+    echo "FAIL: Xvfb ${DISPLAY} did not become ready" >&2
     cat "${TMP}/xvfb.log" >&2 || true
     exit 1
 fi
-pass "Xvfb :96 started"
+pass "Xvfb ${DISPLAY} started"
 
 # ------------------------------------------------------- helpers
 wait_find() {
@@ -137,9 +142,9 @@ pass "note window found (win=${WIN} ${X} ${Y} ${W} ${H})"
 
 # ------------------------------------------------- type into body
 "${XUI}" click "${WIN}" $((X + W / 2)) $((Y + H / 2))
-sleep 0.2
+sleep 2.0
 "${XUI}" type "${WIN}" 'hello ui test'
-sleep 1.2
+sleep 3.0
 
 if note_contains 'hello ui test'; then
     pass "typed text persisted to archive"
@@ -192,7 +197,7 @@ else
     fail "could not re-locate note window for archive shortcut"
 fi
 "${XUI}" click "${WIN}" $((X + W / 2)) $((Y + H / 2))
-sleep 0.2
+sleep 1.0
 "${XUI}" ctrlkey "${WIN}" e
 
 if line="$(wait_find 'Archive' 5)"; then
@@ -202,7 +207,7 @@ if line="$(wait_find 'Archive' 5)"; then
     # No window manager: close the archive through its client-side header
     # button so it does not keep the process alive during the close test.
     "${XUI}" click "${AWIN}" $((AX + AW - 16)) $((AY + 20)) || true
-    sleep 0.5
+    sleep 1.0
     if wait_find_gone 'Archive' 2; then
         pass "archive window closed"
     else
@@ -216,7 +221,7 @@ fi
 if line="$(wait_find 'hello ui test' 2)"; then
     read -r _ WIN X Y W H TITLE <<<"${line}"
     "${XUI}" click "${WIN}" $((X + W / 2)) $((Y + H / 2))
-    sleep 0.2
+    sleep 1.0
     "${XUI}" ctrlkey "${WIN}" n
 else
     fail "could not focus note window for ctrl+n"
@@ -224,7 +229,7 @@ fi
 
 if line="$(wait_find 'Untitled' 5)"; then
     read -r _ NWIN NX NY NW NH NTITLE <<<"${line}"
-    sleep 0.5
+    sleep 1.0
     count="$(note_txt_count)"
     if [ "${count}" -ge 2 ]; then
         pass "ctrl+n created a second note (${count} note files)"

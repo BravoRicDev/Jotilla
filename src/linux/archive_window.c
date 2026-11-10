@@ -7,6 +7,7 @@
 #include "archive_window.h"
 #include "date.h"
 #include "palette.h"
+#include "platform.h"
 #include "tags.h"
 
 #define ARCHIVE_STATE_KEY "archive-window-state"
@@ -1591,6 +1592,30 @@ static void on_open_folder(GtkButton *button, gpointer data) {
     gtk_widget_destroy(dialog);
 }
 
+/* Abilita o disabilita l'avvio automatico da menu. */
+static void on_autostart_toggled(GtkCheckMenuItem *item, gpointer data) {
+    (void)data;
+    platform_autostart_set(gtk_check_menu_item_get_active(item));
+}
+
+/* Apre la cartella archivio corrente nel file manager. */
+static void on_open_archive_folder(GtkMenuItem *item, gpointer data) {
+    ArchiveWindow *aw = data;
+    char *uri;
+    GError *error = NULL;
+
+    (void)item;
+    if (!aw->store || !aw->store->archive_dir) return;
+    uri = g_filename_to_uri(aw->store->archive_dir, NULL, NULL);
+    if (!uri) return;
+    if (!g_app_info_launch_default_for_uri(uri, NULL, &error)) {
+        g_warning("Impossibile aprire la cartella archivio: %s",
+                  error ? error->message : "errore sconosciuto");
+        if (error) g_error_free(error);
+    }
+    g_free(uri);
+}
+
 /* Applica il filtro selezionato nell'albero delle date. */
 static void on_date_tree_selection_changed(GtkTreeSelection *selection,
                                            gpointer data) {
@@ -1651,6 +1676,11 @@ GtkWidget *archive_window_new(Store *store) {
     GtkWidget *open_folder;
     GtkWidget *tags_button;
     GtkWidget *refresh_button;
+    GtkWidget *menu_button;
+    GtkWidget *menu;
+    GtkWidget *autostart_item;
+    GtkWidget *open_archive_item;
+    GtkWidget *refresh_item;
     GtkWidget *content;
     GtkWidget *paned;
     GtkWidget *right;
@@ -1719,6 +1749,36 @@ GtkWidget *archive_window_new(Store *store) {
     g_signal_connect_swapped(refresh_button, "clicked",
                              G_CALLBACK(archive_window_refresh), window);
     gtk_header_bar_pack_end(GTK_HEADER_BAR(header), refresh_button);
+
+    menu = gtk_menu_new();
+
+    autostart_item = gtk_check_menu_item_new_with_label("Start at login");
+    gtk_check_menu_item_set_active(GTK_CHECK_MENU_ITEM(autostart_item),
+                                   platform_autostart_enabled());
+    g_signal_connect(autostart_item, "toggled",
+                     G_CALLBACK(on_autostart_toggled), aw);
+    gtk_menu_shell_append(GTK_MENU_SHELL(menu), autostart_item);
+
+    open_archive_item = gtk_menu_item_new_with_label("Open archive folder");
+    g_signal_connect(open_archive_item, "activate",
+                     G_CALLBACK(on_open_archive_folder), aw);
+    gtk_menu_shell_append(GTK_MENU_SHELL(menu), open_archive_item);
+
+    gtk_menu_shell_append(GTK_MENU_SHELL(menu),
+                          gtk_separator_menu_item_new());
+
+    refresh_item = gtk_menu_item_new_with_label("Refresh");
+    g_signal_connect_swapped(refresh_item, "activate",
+                             G_CALLBACK(archive_window_refresh), window);
+    gtk_menu_shell_append(GTK_MENU_SHELL(menu), refresh_item);
+
+    gtk_widget_show_all(menu);
+
+    menu_button = gtk_menu_button_new();
+    gtk_button_set_label(GTK_BUTTON(menu_button), "\342\213\256");
+    gtk_menu_button_set_popup(GTK_MENU_BUTTON(menu_button), menu);
+    set_accessible_label(menu_button, "Archive settings");
+    gtk_header_bar_pack_end(GTK_HEADER_BAR(header), menu_button);
 
     gtk_window_set_titlebar(GTK_WINDOW(window), header);
 
