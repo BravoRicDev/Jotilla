@@ -13,6 +13,7 @@ static unsigned metadata_writes, metric_queries, graphic_creations, heap_request
 static BOOL interactive_tests;
 static unsigned paste_notices;
 static int inspect_message_box(HWND owner, LPCWSTR message, LPCWSTR title, UINT flags);
+static HRESULT inspect_scroll_options(const TASKDIALOGCONFIG *dialog, int *button, int *radio, BOOL *checked);
 static BOOL fake_cursor;
 static POINT test_cursor;
 static BOOL trace_cursor(LPPOINT point) {
@@ -49,7 +50,9 @@ static void *trace_realloc(void *memory, size_t size) { ++heap_requests; return 
 #define realloc trace_realloc
 #define GetCursorPos trace_cursor
 #define MessageBoxW inspect_message_box
+#define TaskDialogIndirect inspect_scroll_options
 #include "../src/jotilla.c"
+#undef TaskDialogIndirect
 #undef MessageBoxW
 #undef WritePrivateProfileStringW
 #undef WritePrivateProfileSectionW
@@ -501,9 +504,10 @@ static void options_checks(void) {
     require(swscanf_s(note->id,L"note-%4u-%2u-%2u_%2u-%2u-%2u-%3u-%u",&year,&month,&day,&hour,&minute,&second,&millisecond,&suffix)==8,
             "archive names expose sortable creation date and time");
     menu=build_note_menu(note);
-    require(menu && GetMenuItemCount(menu)==10 && GetMenuItemID(menu,9)==CMD_TAGS && GetMenuItemID(menu,0)==CMD_ARCHIVE && GetMenuItemID(menu,1)==CMD_BROWSE &&
+    require(menu && GetMenuItemCount(menu)==11 && GetMenuItemID(menu,10)==CMD_TAGS && GetMenuItemID(menu,0)==CMD_ARCHIVE && GetMenuItemID(menu,1)==CMD_BROWSE &&
             GetMenuItemID(menu,4)==CMD_TITLE && GetMenuItemCount(GetSubMenu(menu,3))==5 &&
-            GetMenuItemCount(GetSubMenu(menu,5))==5 && GetMenuItemCount(GetSubMenu(menu,7))==3,"context menu exposes all requested choices");
+            GetMenuItemCount(GetSubMenu(menu,5))==5 && GetMenuItemID(menu,6)==CMD_SCROLL &&
+            GetMenuItemCount(GetSubMenu(menu,8))==3,"context menu exposes all requested choices");
     DestroyMenu(menu);
     replace_text(note,L"Saved size preset");
     require(resize_note(note,4),"square preset is available");
@@ -1835,6 +1839,7 @@ static void location_checks(void) {
 #include "calendar_checks.c"
 #include "session_checks.c"
 #include "clipboard_checks.c"
+#include "scrolling_checks.c"
 
 int main(int argc, char **argv) {
     wchar_t temporary[PATH_CAP], root[PATH_CAP], id[80], path[PATH_CAP], text[256], pattern[PATH_CAP];
@@ -1875,6 +1880,7 @@ int main(int argc, char **argv) {
     require(controller != NULL, "create hotkey controller");
     /* Explicit mode: these checks replace the system clipboard contents. */
     if (argc==2 && !strcmp(argv[1],"--clipboard-only")) { clipboard_checks(); goto cleanup; }
+    if (argc==2 && !strcmp(argv[1],"--scrolling-only")) { scrolling_checks(); goto cleanup; }
     if (argc==2 && !strcmp(argv[1],"--calendar-only")) { calendar_checks(); shortcut_checks(); goto cleanup; }
     if (argc==2 && !strcmp(argv[1],"--archive-only")) {
         require(new_note()!=NULL,"create archive test owner");
@@ -1997,6 +2003,7 @@ int main(int argc, char **argv) {
     editing_checks();
     resizing_checks();
     text_size_checks();
+    scrolling_checks();
     archive_checks();
     tags_search_checks();
     empty_note_checks();

@@ -26,9 +26,18 @@ pointer. Creating a note from the tray keeps the usual staggered position.
 Minimizing the explorer hides it in the tray; double-click the tray icon to return.
 
 **Ctrl + C / X / V** copy, cut and paste text, including between Jotilla and other
-apps. **Shift + Insert** also pastes. If the pasted text exceeds the note's visible
+apps. **Shift + Insert** also pastes. With scrolling off, if the pasted text exceeds the note's visible
 space, an information dialog explains how to proceed: enlarge the note or paste
 less text. The existing text, formatting and selection are preserved.
+
+Right-click the note's title bar and choose **Scrollable text**. The dialog offers
+**Only this note** or **This note and new notes**. Text wraps to the note width;
+the native vertical scroll bar, mouse wheel and keyboard navigate longer text.
+The note keeps its mode when closed, reopened, folded or restored after restart.
+The default is saved in the current archive and applies to future notes; existing
+notes retain their own setting. The same menu can turn scrolling off and reset
+the default. If the text cannot fit without scrolling, enlarge the note or
+shorten the text first: switching modes never truncates content.
 
 ## Notes and portable data
 
@@ -60,6 +69,9 @@ See [performance measurements](performance.md).
 Run `build\tests.exe --clipboard-only` for the clipboard and paste-warning checks.
 This optional test replaces the system clipboard contents; CI runs it separately
 from the default suite.
+The default suite also checks scrolling, its scope dialog and persisted choices;
+`build\tests.exe --scrolling-only` runs that group separately. Startup checks
+verify long notes and the default across two launches of the release executable.
 
 ## Update an existing checkout
 

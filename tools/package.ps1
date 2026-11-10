@@ -19,7 +19,7 @@ Minimizing the browser hides it beside the clock; double-click restores it.
 Drag the bar to move it; use - to collapse and X to close.
 Ctrl++ / Ctrl+- / Ctrl+mouse wheel or a touchpad pinch resizes the note.
 With text selected, the same gesture changes only its font size.
-Sizing stops before text would be clipped; Ctrl+Z/Ctrl+Y undo/redo font changes.
+With scrolling off, sizing stops before text would be clipped; Ctrl+Z/Ctrl+Y undo/redo font changes.
 Right-click the bar for the archive, opacity, title, size and three original palettes.
 Right-click the text for the color wheel; Left/Right browse all 80 Color-Hex Popular palettes.
 Click a color to apply and close; Escape cancels.
@@ -28,8 +28,12 @@ Select text before right-clicking to change only its text color.
 #Title + Shift+Enter makes a title; Enter keeps it as text.
 Ctrl+E opens the note explorer; Ctrl+Z/Ctrl+Y undo/redo text and formatting.
 Ctrl+C/X/V copy, cut and paste text between notes and other apps; Shift+Insert also pastes.
-If pasted text does not fit, a notice asks you to enlarge the note or paste less text.
+With scrolling off, if pasted text does not fit, a notice asks you to enlarge the note or paste less text.
 The existing text, formatting and selection are preserved.
+Right-click the bar and choose Scrollable text for longer text with vertical scrolling.
+Choose Only this note or This note and new notes. Both choices survive restart.
+Existing notes retain their own setting. The default is stored in the current archive.
+The same menu turns scrolling off; enlarge or shorten overflowing notes first.
 The calendar icon assigns one day to a note; click it again to change or remove the day.
 The square button beside Archive opens the calendar. Click a circled day to open its notes.
 Type a year directly in either calendar. Arrow/Page/Home/End keys navigate day lists; Enter opens and Esc returns.

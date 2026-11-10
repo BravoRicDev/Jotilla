@@ -82,6 +82,16 @@ static void clipboard_checks(void) {
             "empty clipboard is a silent no-op");
     require(save_note(note), "save successful clipboard edit");
     expect_file(note->path, "Outside è 😀\r\nSecond line");
+    require(set_note_scrolling(note, TRUE), "enable scrolling for long clipboard input");
+    clipboard_fixture(controller, overflow);
+    SendMessageW(note->edit, EM_SETSEL, 0, -1); shortcut(note, 'V', FALSE);
+    require(paste_notices == expected && !wcscmp(note->accepted_text, overflow),
+            "scrollable mode accepts the complete oversized clipboard without a warning");
+    shortcut(note, 'Z', FALSE);
+    require(!wcscmp(note->accepted_text, L"Outside è 😀\r\nSecond line"), "undo reverses the complete long paste");
+    shortcut(note, 'Y', FALSE);
+    require(!wcscmp(note->accepted_text, overflow) && paste_notices == expected,
+            "redo restores a long paste in scrollable mode without rejecting it");
     DestroyWindow(external); destroy_note(note);
     puts("PASS: clipboard overflow notices, native paste routes, preserved content, undo/redo and external text interchange.");
 }
