@@ -2168,11 +2168,74 @@ static void on_view_destroy(GtkWidget *view, gpointer data)
 }
 
 /* Avvia il trascinamento della finestra dall'header. */
+/* Bordo di ridimensionamento sotto il puntatore, o -1. */
+static gint resize_edge_at(GtkWidget *window, GtkWidget *source,
+                           gint x, gint y)
+{
+    gint wx = 0, wy = 0;
+    gint width, height;
+    gboolean left, right, top, bottom;
+
+    if (!gtk_widget_translate_coordinates(source, window, x, y, &wx, &wy))
+        return -1;
+    width = gtk_widget_get_allocated_width(window);
+    height = gtk_widget_get_allocated_height(window);
+    left = wx < 8;
+    right = wx >= width - 8;
+    top = wy < 8;
+    bottom = wy >= height - 8;
+    if (top && left) return GDK_WINDOW_EDGE_NORTH_WEST;
+    if (top && right) return GDK_WINDOW_EDGE_NORTH_EAST;
+    if (bottom && left) return GDK_WINDOW_EDGE_SOUTH_WEST;
+    if (bottom && right) return GDK_WINDOW_EDGE_SOUTH_EAST;
+    if (left) return GDK_WINDOW_EDGE_WEST;
+    if (right) return GDK_WINDOW_EDGE_EAST;
+    if (top) return GDK_WINDOW_EDGE_NORTH;
+    if (bottom) return GDK_WINDOW_EDGE_SOUTH;
+    return -1;
+}
+
+static gboolean begin_resize(GtkWidget *window, GdkWindowEdge edge,
+                             GdkEventButton *event)
+{
+    GdkWindow *gdk_window = gtk_widget_get_window(window);
+
+    if (gdk_window == NULL)
+        return FALSE;
+    if (event->device != NULL)
+        gdk_window_begin_resize_drag_for_device(gdk_window, edge, event->device,
+                                                event->button,
+                                                (gint)event->x_root,
+                                                (gint)event->y_root, event->time);
+    else
+        gdk_window_begin_resize_drag(gdk_window, edge, event->button,
+                                     (gint)event->x_root, (gint)event->y_root,
+                                     event->time);
+    return TRUE;
+}
+
+static gboolean on_resize_press(GtkWidget *source, GdkEventButton *event,
+                                gpointer data)
+{
+    GtkWidget *window = data;
+    gint edge;
+
+    if (event->type != GDK_BUTTON_PRESS || event->button != 1)
+        return FALSE;
+    edge = resize_edge_at(window, source, (gint)event->x, (gint)event->y);
+    return edge >= 0 ? begin_resize(window, (GdkWindowEdge)edge, event) : FALSE;
+}
+
 static gboolean on_header_press(GtkWidget *widget, GdkEventButton *event, gpointer data)
 {
     GtkWidget *window = data;
 
-    (void)widget;
+    if (event->type == GDK_BUTTON_PRESS && event->button == 1) {
+        gint edge = resize_edge_at(window, widget, (gint)event->x, (gint)event->y);
+
+        if (edge >= 0)
+            return begin_resize(window, (GdkWindowEdge)edge, event);
+    }
 
     if (event->type == GDK_2BUTTON_PRESS && event->button == 1) {
         on_edit_title_activate(NULL, window);
@@ -2757,6 +2820,7 @@ GtkWidget *note_window_new(Store *store, Note *note)
     g_object_set_data(G_OBJECT(window), "scrolled", scrolled);
     g_signal_connect(view, "destroy", G_CALLBACK(on_view_destroy), window);
     g_signal_connect(view, "button-press-event", G_CALLBACK(on_view_button_press), window);
+    g_signal_connect(view, "button-press-event", G_CALLBACK(on_resize_press), window);
     g_signal_connect(view, "scroll-event", G_CALLBACK(on_view_scroll), window);
 
     load_note(window);
@@ -2769,6 +2833,8 @@ GtkWidget *note_window_new(Store *store, Note *note)
     g_signal_connect(window, "configure-event", G_CALLBACK(on_configure), NULL);
     g_signal_connect(window, "key-press-event", G_CALLBACK(on_key_press), NULL);
     g_signal_connect(window, "focus-out-event", G_CALLBACK(on_focus_out), NULL);
+    g_signal_connect(scrolled, "button-press-event", G_CALLBACK(on_resize_press), window);
+    g_signal_connect(window, "button-press-event", G_CALLBACK(on_resize_press), window);
     g_signal_connect(window, "delete-event", G_CALLBACK(on_delete), NULL);
     g_signal_connect(window, "destroy", G_CALLBACK(on_destroy), NULL);
 

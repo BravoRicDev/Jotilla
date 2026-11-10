@@ -48,6 +48,7 @@ typedef struct {
     GtkWidget *calendar_year;
     GtkWidget *calendar_prev;
     GtkWidget *calendar_next;
+    GtkWidget *calendar_today_button;
     GtkWidget *calendar_list;
     GtkWidget *calendar_label;
     GtkWidget *sidebar_stack;
@@ -1745,13 +1746,13 @@ static void calendar_commit_year(ArchiveWindow *aw) {
     calendar_set_year(aw, (guint)value);
 }
 
-/* Apre la prima nota di una data, se presente. */
+/* Apre la prima nota visibile di una data, se presente. */
 static void open_day_first_note(ArchiveWindow *aw, guint32 date) {
     guint i;
 
-    if (!aw->store || !aw->store->notes) return;
-    for (i = 0; i < aw->store->notes->len; ++i) {
-        Note *note = g_ptr_array_index(aw->store->notes, i);
+    if (!aw->visible_notes) return;
+    for (i = 0; i < aw->visible_notes->len; ++i) {
+        Note *note = g_ptr_array_index(aw->visible_notes, i);
 
         if (!note || note->date != date) continue;
         if (aw->open_cb) aw->open_cb(note, aw->open_data);
@@ -1915,6 +1916,19 @@ static void on_calendar_year_step(GtkButton *button, gpointer data) {
     if (year < DATE_MIN_YEAR) year = DATE_MIN_YEAR;
     if (year > DATE_MAX_YEAR) year = DATE_MAX_YEAR;
     calendar_set_year(aw, (guint)year);
+}
+
+/* Torna al giorno corrente. */
+static void on_calendar_today_clicked(GtkButton *button, gpointer data) {
+    ArchiveWindow *aw = data;
+    guint32 today = calendar_today_date();
+
+    (void)button;
+    if (!date_valid(today)) return;
+    aw->cal_today = today;
+    calendar_set_year(aw, today / 10000u);
+    calendar_select_date(aw, today, TRUE);
+    gtk_widget_grab_focus(aw->calendar);
 }
 
 /* Marca sulla vista annuale ogni giorno che contiene almeno una nota. */
@@ -2509,6 +2523,13 @@ GtkWidget *archive_window_new(Store *store) {
         g_signal_connect(aw->calendar_next, "clicked",
                          G_CALLBACK(on_calendar_year_step), aw);
         gtk_box_pack_start(GTK_BOX(calendar_nav), aw->calendar_next,
+                           FALSE, FALSE, 0);
+
+        aw->calendar_today_button = gtk_button_new_with_label("Today");
+        set_accessible_label(aw->calendar_today_button, "Go to today");
+        g_signal_connect(aw->calendar_today_button, "clicked",
+                         G_CALLBACK(on_calendar_today_clicked), aw);
+        gtk_box_pack_start(GTK_BOX(calendar_nav), aw->calendar_today_button,
                            FALSE, FALSE, 0);
         gtk_box_pack_start(GTK_BOX(calendar_page), calendar_nav,
                            FALSE, FALSE, 0);
