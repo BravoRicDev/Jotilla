@@ -117,7 +117,8 @@ are only available under X11:
 Workarounds on Wayland (for example GNOME):
 
 - Bind a desktop shortcut to launch Jotilla. A `Super+Alt+J` GNOME custom
-  shortcut is already configured.
+  shortcut is already configured; it starts Jotilla, or creates a new note if
+  it is already running (the Windows `Ctrl+Alt++` equivalent).
 - Or run Jotilla through XWayland, which restores both the tray icon and the
   global hotkey:
 

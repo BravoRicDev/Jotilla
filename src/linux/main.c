@@ -71,10 +71,7 @@ static void on_app_activate(GApplication *app, gpointer data)
     if (ctx == NULL || ctx->store == NULL)
         return;
 
-    if (ctx->store->notes->len == 0)
-        on_new_note(ctx);
-    else
-        on_show_archive(ctx);
+    on_new_note(ctx);
 }
 
 /* Aggiorna l'archivio quando una nota cambia. */
