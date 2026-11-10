@@ -31,8 +31,10 @@ space, an information dialog explains how to proceed: enlarge the note or paste
 less text. The existing text, formatting and selection are preserved.
 
 Right-click the note's title bar and choose **Scrollable text**. The dialog offers
-**Only this note** or **This note and new notes**. Text wraps to the note width;
-the native vertical scroll bar, mouse wheel and keyboard navigate longer text.
+**Only this note** or **This note and new notes**. Text wraps to the note width.
+Use the mouse wheel, Page Up/Down or Ctrl+Home/End to navigate longer text;
+no scroll bar is shown or reserves space inside the note. Wheel input respects
+the Windows lines/page preference and accumulates partial wheel movements.
 The note keeps its mode when closed, reopened, folded or restored after restart.
 The default is saved in the current archive and applies to future notes; existing
 notes retain their own setting. The same menu can turn scrolling off and reset

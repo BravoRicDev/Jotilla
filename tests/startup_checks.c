@@ -142,6 +142,8 @@ static void scrolling_restart_checks(void) {
         require((SendDlgItemMessageW(scrolling, 10, EM_GETOPTIONS, 0, 0) & ECO_AUTOVSCROLL) &&
                 !(SendDlgItemMessageW(bounded, 10, EM_GETOPTIONS, 0, 0) & ECO_AUTOVSCROLL),
                 "real process restores each note's mode before reading long content");
+        require(!(GetWindowLongPtrW(GetDlgItem(scrolling, 10), GWL_STYLE) & (WS_VSCROLL | WS_HSCROLL)),
+                "long scrollable notes restart without visible scroll bars");
         second_launch(FALSE);
         count = note_windows(windows);
         require(count == 3, "explicit creation adds a note after restart");
@@ -149,6 +151,8 @@ static void scrolling_restart_checks(void) {
             if (!SendDlgItemMessageW(windows[i], 10, WM_GETTEXTLENGTH, 0, 0)) created = windows[i];
         require(created && (SendDlgItemMessageW(created, 10, EM_GETOPTIONS, 0, 0) & ECO_AUTOVSCROLL),
                 "new notes inherit the scrolling default in each fresh process");
+        require(!(GetWindowLongPtrW(GetDlgItem(created, 10), GWL_STYLE) & (WS_VSCROLL | WS_HSCROLL)),
+                "the persisted scrolling default creates notes without visible scroll bars");
         SendMessageW(created, WM_CLOSE, 0, 0);
         stop(); scrolling = bounded = created = NULL;
     }

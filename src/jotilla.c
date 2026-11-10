@@ -70,7 +70,7 @@ struct Note {
     size_t text_capacity;
     wchar_t id[80], path[PATH_CAP];
     int color, palette, size, opacity, dpi, hover, pressed;
-    int width, height, wheel_delta;
+    int width, height, wheel_delta, scroll_delta;
     SIZE text_extent;
     int saved_layout[LAYOUT_COUNT];
     unsigned dirty;
@@ -940,6 +940,27 @@ static BOOL remove_todo_marker(Note *note) {
     return TRUE;
 }
 
+static void scroll_text(Note *note, int delta) {
+    UINT lines = 3;
+    int steps;
+    note->scroll_delta += delta;
+    steps = note->scroll_delta / WHEEL_DELTA;
+    note->scroll_delta %= WHEEL_DELTA;
+    if (!steps) return;
+    SystemParametersInfoW(SPI_GETWHEELSCROLLLINES, 0, &lines, 0);
+    /* Rich Edit ignores wheel input without WS_VSCROLL. Send native scroll
+       commands instead, retaining the Windows preference and fractional input. */
+    if (lines == WHEEL_PAGESCROLL) {
+        while (steps) {
+            SendMessageW(note->edit, EM_SCROLL, steps > 0 ? SB_PAGEUP : SB_PAGEDOWN, 0);
+            steps += steps > 0 ? -1 : 1;
+        }
+    } else if (lines) {
+        LONGLONG count = -(LONGLONG)steps * lines;
+        SendMessageW(note->edit, EM_LINESCROLL, 0, (LPARAM)max((LONGLONG)LONG_MIN, min((LONGLONG)LONG_MAX, count)));
+    }
+}
+
 static LRESULT CALLBACK edit_proc(HWND window, UINT message, WPARAM wparam, LPARAM lparam) {
     Note *note = (Note *)GetWindowLongPtrW(GetParent(window), GWLP_USERDATA);
     /* Rich Edit normally moves the caret on right-down. Keep the selection
@@ -964,8 +985,16 @@ static LRESULT CALLBACK edit_proc(HWND window, UINT message, WPARAM wparam, LPAR
         /* An overflow rollback must not undo earlier accepted keystrokes. */
         if (message != WM_KEYDOWN) SendMessageW(window, EM_STOPGROUPTYPING, 0, 0);
     }
-    if (message == WM_MOUSEWHEEL && (GET_KEYSTATE_WPARAM(wparam) & MK_CONTROL))
-        return SendMessageW(note->window, message, wparam, lparam);
+    if (message == WM_MOUSEWHEEL) {
+        if (GET_KEYSTATE_WPARAM(wparam) & MK_CONTROL) {
+            note->scroll_delta = 0;
+            return SendMessageW(note->window, message, wparam, lparam);
+        }
+        if (note->scrolling && note->ready && !note->validating) {
+            note->wheel_delta = 0;
+            scroll_text(note, GET_WHEEL_DELTA_WPARAM(wparam)); return 0;
+        }
+    }
     if (note->ready && !note->validating && (message == WM_UNDO || message == EM_UNDO || message == EM_REDO)) {
         CHARRANGE selection;
         UINT action = message == EM_REDO ? EM_REDO : EM_UNDO;
@@ -1036,6 +1065,13 @@ static LRESULT CALLBACK edit_proc(HWND window, UINT message, WPARAM wparam, LPAR
        characters so Enter/Backspace cannot perform a second operation. */
     if (message == WM_CHAR && note->ready && (wparam == L'\r' || wparam == L'\n' || wparam == L'\b')) return 0;
     if (message == WM_KILLFOCUS && note->ready) save_note(note);
+    if (message == WM_KEYDOWN && note->ready && note->scrolling && wparam >= VK_PRIOR && wparam <= VK_DOWN) {
+        LRESULT result = CallWindowProcW(note->edit_proc, window, message, wparam, lparam);
+        /* A wheel gesture can hide an unchanged caret. Navigation must reveal
+           it even when Home/End does not change the existing selection. */
+        SendMessageW(window, EM_SCROLLCARET, 0, 0);
+        return result;
+    }
     return CallWindowProcW(note->edit_proc, window, message, wparam, lparam);
 }
 
@@ -1319,9 +1355,12 @@ static void apply_scrolling(Note *note, BOOL enabled) {
     POINT origin = {0};
     note->validating = TRUE;
     note->scrolling = enabled;
+    note->scroll_delta = 0;
     SendMessageW(note->edit, EM_SETOPTIONS, enabled ? ECOOP_OR : ECOOP_AND,
                  enabled ? ECO_AUTOVSCROLL : ~(LPARAM)ECO_AUTOVSCROLL);
-    SendMessageW(note->edit, EM_SHOWSCROLLBAR, SB_VERT, enabled);
+    /* Scrolling belongs to the editor; its native bar must not take space
+       from the note. Keep wheel, keyboard and caret scrolling enabled. */
+    SendMessageW(note->edit, EM_SHOWSCROLLBAR, SB_VERT, FALSE);
     if (!enabled) SendMessageW(note->edit, EM_SETSCROLLPOS, 0, (LPARAM)&origin);
     note->validating = validating;
 }
@@ -1493,7 +1532,7 @@ static LRESULT CALLBACK note_proc(HWND window, UINT message, WPARAM wparam, LPAR
         }
         note->brush = CreateSolidBrush(note_color(note));
         note->edit = CreateWindowExW(0, MSFTEDIT_CLASS, L"", WS_CHILD | WS_VISIBLE | ES_MULTILINE | ES_WANTRETURN | ES_NOHIDESEL |
-                                    (note->scrolling ? WS_VSCROLL | ES_AUTOVSCROLL : 0),
+                                    (note->scrolling ? ES_AUTOVSCROLL : 0),
                                     0, 0, 1, 1, window, (HMENU)(INT_PTR)10, instance, NULL);
         if (!note->edit || !note->brush) return -1;
         {

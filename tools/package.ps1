@@ -31,6 +31,7 @@ Ctrl+C/X/V copy, cut and paste text between notes and other apps; Shift+Insert a
 With scrolling off, if pasted text does not fit, a notice asks you to enlarge the note or paste less text.
 The existing text, formatting and selection are preserved.
 Right-click the bar and choose Scrollable text for longer text with vertical scrolling.
+No scroll bar is visible. Use the mouse wheel, Page Up/Down or Ctrl+Home/End.
 Choose Only this note or This note and new notes. Both choices survive restart.
 Existing notes retain their own setting. The default is stored in the current archive.
 The same menu turns scrolling off; enlarge or shorten overflowing notes first.

@@ -8,7 +8,7 @@ Small, native notes with autosave, an archive and a calendar. No extra dependenc
 
 | System | Installer | Portable · no installation |
 |---|---|---|
-| Windows 10/11 · x64 | [Setup (.exe)](https://github.com/GarauGarau/Jotilla/releases/download/v1.9.0/Jotilla-Setup-x64.exe) | [Portable ZIP](https://github.com/GarauGarau/Jotilla/releases/download/v1.9.0/Jotilla-portable-x64.zip) |
+| Windows 10/11 · x64 | [Setup (.exe)](https://github.com/GarauGarau/Jotilla/releases/download/v1.9.1/Jotilla-Setup-x64.exe) | [Portable ZIP](https://github.com/GarauGarau/Jotilla/releases/download/v1.9.1/Jotilla-portable-x64.zip) |
 | macOS 13+ · Apple Silicon / Intel · preview | [Setup (.pkg)](https://github.com/GarauGarau/Jotilla/releases/download/macos-v0.1.3/Jotilla-Setup-universal.pkg) | [Portable ZIP](https://github.com/GarauGarau/Jotilla/releases/download/macos-v0.1.3/Jotilla-portable-universal.zip) |
 
 Run the installer, or extract the portable ZIP and launch Jotilla. For the Mac portable app, select the included `Notes.jotillaarchive` folder when prompted.
@@ -35,7 +35,8 @@ Drag the bar to move; double-click its title to rename. **− / □** folds or e
 Open notes return to their saved positions, sizes and folded state, with their title bars kept reachable if a monitor is disconnected.
 
 On Windows, right-click a note's bar and choose **Scrollable text** to allow longer
-text with vertical scrolling. Apply it to this note, or also make it the default
+text with vertical scrolling and no visible scroll bar. Use the mouse wheel,
+Page Up/Down or Ctrl+Home/End. Apply it to this note, or also make it the default
 for new notes. Both choices survive restart; other existing notes keep their mode.
 
 Click the note's **calendar icon** to assign, change or remove its day. The square calendar button beside **Archive** switches to the year view: circled days open a note, or a compact title list when several share the day. Type a year directly in either calendar. In day lists, **↑ / ↓**, **Page Up / Down**, **Home / End** navigate, **Enter** opens and **Esc** returns. Search also filters calendar notes.

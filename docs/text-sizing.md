@@ -13,7 +13,8 @@ without changing the plain-text file or adding metadata.
 
 With **Scrollable text** enabled in the note-bar menu, text can extend below the
 visible area. Resizing the note or its text keeps the complete document and
-updates native scrolling. Mode changes retain formatting, selection and undo
+updates native scrolling without displaying a scroll bar. The mouse wheel and
+navigation keys move through the text. Mode changes retain formatting, selection and undo
 history; returning to bounded text requires the document to fit the note.
 
 ## Native implementation

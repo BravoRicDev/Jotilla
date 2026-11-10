@@ -15,6 +15,12 @@ static unsigned paste_notices;
 static int inspect_message_box(HWND owner, LPCWSTR message, LPCWSTR title, UINT flags);
 static HRESULT inspect_scroll_options(const TASKDIALOGCONFIG *dialog, int *button, int *radio, BOOL *checked);
 static BOOL fake_cursor;
+static BOOL override_wheel_lines;
+static UINT wheel_lines;
+static BOOL trace_system_parameters(UINT action, UINT parameter, PVOID value, UINT flags) {
+    if (override_wheel_lines && action == SPI_GETWHEELSCROLLLINES) { *(UINT *)value = wheel_lines; return TRUE; }
+    return SystemParametersInfoW(action, parameter, value, flags);
+}
 static POINT test_cursor;
 static BOOL trace_cursor(LPPOINT point) {
     if (!fake_cursor) return GetCursorPos(point);
@@ -51,7 +57,9 @@ static void *trace_realloc(void *memory, size_t size) { ++heap_requests; return 
 #define GetCursorPos trace_cursor
 #define MessageBoxW inspect_message_box
 #define TaskDialogIndirect inspect_scroll_options
+#define SystemParametersInfoW trace_system_parameters
 #include "../src/jotilla.c"
+#undef SystemParametersInfoW
 #undef TaskDialogIndirect
 #undef MessageBoxW
 #undef WritePrivateProfileStringW
