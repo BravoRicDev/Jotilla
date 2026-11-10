@@ -13,6 +13,7 @@ typedef struct {
     char *rtf;
     char *tags;
     guint32 date;
+    guint32 created;
     int x, y, w, h;
     int palette;
     int color;

@@ -290,10 +290,16 @@ fi
     >"${TMP}/app-relaunch.log" 2>&1 &
 APP_PID=$!
 
-if line="$(wait_find 'hello ui test' 5)"; then
-    pass "relaunch restored first line as window title"
+if line="$(wait_find 'Untitled' 5)"; then
+    pass "relaunch created a new note when no notes were open"
 else
-    fail "relaunch did not restore a window titled 'hello ui test'"
+    fail "relaunch did not create a new note after all notes were closed"
+fi
+
+if note_contains 'hello ui test'; then
+    pass "closed note text remains in the archive"
+else
+    fail "closed note text disappeared from the archive"
 fi
 
 "${XUI}" find 'hello ui test' >/dev/null 2>&1 || true

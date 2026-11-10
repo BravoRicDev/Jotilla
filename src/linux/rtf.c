@@ -394,10 +394,16 @@ static void parse_emit_codepage_byte(ParseCtx *p, unsigned char byte) {
     if (p->codepage == 65001) {
         parse_emit_byte(p, byte);
     } else {
-        const char *encoding = p->codepage == 1251 ? "CP1251" : "CP1252";
+        char encoding[16];
         gsize written = 0;
-        char *converted = g_convert((const char *)&byte, 1, "UTF-8", encoding,
-                                    NULL, &written, NULL);
+        char *converted;
+
+        g_snprintf(encoding, sizeof(encoding), "CP%d", p->codepage);
+        converted = g_convert((const char *)&byte, 1, "UTF-8", encoding,
+                              NULL, &written, NULL);
+        if (converted == NULL && p->codepage != 1252)
+            converted = g_convert((const char *)&byte, 1, "UTF-8", "CP1252",
+                                  NULL, &written, NULL);
 
         if (converted != NULL) {
             gsize index;
@@ -704,6 +710,24 @@ static gboolean rtf_parse_subset(const char *rtf, GString **out_text,
                     parse_emit_byte(&p, (unsigned char)'\n');
                 } else if (g_strcmp0(word, "tab") == 0) {
                     parse_emit_byte(&p, (unsigned char)'\t');
+                } else if (g_strcmp0(word, "emdash") == 0) {
+                    parse_emit_unicode(&p, 8212);
+                } else if (g_strcmp0(word, "endash") == 0) {
+                    parse_emit_unicode(&p, 8211);
+                } else if (g_strcmp0(word, "lquote") == 0) {
+                    parse_emit_unicode(&p, 8216);
+                } else if (g_strcmp0(word, "rquote") == 0) {
+                    parse_emit_unicode(&p, 8217);
+                } else if (g_strcmp0(word, "ldblquote") == 0) {
+                    parse_emit_unicode(&p, 8220);
+                } else if (g_strcmp0(word, "rdblquote") == 0) {
+                    parse_emit_unicode(&p, 8221);
+                } else if (g_strcmp0(word, "bullet") == 0) {
+                    parse_emit_unicode(&p, 8226);
+                } else if (g_strcmp0(word, "emspace") == 0) {
+                    parse_emit_unicode(&p, 8195);
+                } else if (g_strcmp0(word, "enspace") == 0) {
+                    parse_emit_unicode(&p, 8194);
                 } else if (g_strcmp0(word, "plain") == 0) {
                     memset(&p.cur, 0, sizeof(p.cur));
                     p.cur.size_half = RTF_DEFAULT_SIZE_HALF;

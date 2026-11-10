@@ -545,6 +545,7 @@ static void test_cross_platform_archive(void) {
     g_assert_true(note->has_title);
     g_assert_true(note->custom_ink);
     g_assert_cmpuint(note->date, ==, 20240115u);
+    g_assert_cmpuint(note->created, ==, 20240102u);
     g_assert_cmpint(store_app_get_int(store, "palette", 0), ==, 7);
     {
         char *config_ini = g_build_filename(config, "notes.ini", NULL);
@@ -639,6 +640,7 @@ static void test_macos_uuid_archive(void) {
     note = g_ptr_array_index(store->notes, 0);
     g_assert_cmpstr(note->id, ==, id);
     g_assert_cmpstr(note->text, ==, "Nota macOS\n");
+    g_assert_cmpuint(note->created, >, 0);
     store_free(store);
 
     g_free(txt);
@@ -666,7 +668,7 @@ static void test_archive_lock_and_blank_notes(void) {
     g_assert_no_error(err);
     g_assert_nonnull(first);
     g_assert_cmpuint(first->notes->len, ==, 0);
-    g_assert_true(g_file_test(blank, G_FILE_TEST_EXISTS));
+    g_assert_false(g_file_test(blank, G_FILE_TEST_EXISTS));
 
     second = store_open(archive, config_b, &err);
     g_assert_null(second);

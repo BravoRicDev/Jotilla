@@ -16,5 +16,7 @@ void archive_window_set_open_callback(GtkWidget *window, ArchiveOpenFunc cb, gpo
 void archive_window_focus_search(GtkWidget *window);
 typedef void (*ArchiveChangeFunc)(const char *path, gboolean move, gpointer data);
 void archive_window_set_change_callback(GtkWidget *window, ArchiveChangeFunc cb, gpointer data);
+typedef void (*ArchiveDeleteFunc)(const char *id, gpointer data);
+void archive_window_set_delete_callback(GtkWidget *window, ArchiveDeleteFunc cb, gpointer data);
 
 #endif

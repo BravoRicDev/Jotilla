@@ -1,6 +1,9 @@
 /* Finestra nota GTK: crea, modifica e salva le note. */
 /* Gestisce stile, menu, scorciatoie e stato della finestra. */
 #include <gtk/gtk.h>
+#if defined(GDK_WINDOWING_WAYLAND)
+#include <gdk/gdkwayland.h>
+#endif
 #include <atk/atk.h>
 #include <gio/gio.h>
 
@@ -165,6 +168,26 @@ static void ensure_tags(GtkTextBuffer *buffer)
         gtk_text_buffer_create_tag(buffer, "underline", "underline", PANGO_UNDERLINE_SINGLE, NULL);
     if (gtk_text_tag_table_lookup(table, "strike") == NULL)
         gtk_text_buffer_create_tag(buffer, "strike", "strikethrough", TRUE, NULL);
+}
+
+/* Incolla sempre testo semplice, come Windows (CF_UNICODETEXT). */
+static void on_paste_clipboard(GtkTextView *view, gpointer data)
+{
+    GtkTextBuffer *buffer = gtk_text_view_get_buffer(view);
+    GtkClipboard *clipboard = gtk_clipboard_get(GDK_SELECTION_CLIPBOARD);
+    gchar *text;
+
+    (void)data;
+    g_signal_stop_emission_by_name(view, "paste-clipboard");
+    if (buffer == NULL)
+        return;
+    text = gtk_clipboard_wait_for_text(clipboard);
+    if (text == NULL)
+        return;
+    gtk_text_buffer_begin_user_action(buffer);
+    gtk_text_buffer_insert_at_cursor(buffer, text, -1);
+    gtk_text_buffer_end_user_action(buffer);
+    g_free(text);
 }
 
 /* Aggiunge/rimuove il bordo rosso di errore salvataggio. */
@@ -829,6 +852,8 @@ static void on_palette_favorite(int palette, gpointer data)
         store_app_set_int(store, "favorite_palette", palette);
         store->session_palette = -1;
     }
+    if (note->palette != palette)
+        note->color = 0;
     note->palette = palette;
     if (note->color < 0 || note->color >= PALETTE_SIZES[palette])
         note->color = 0;
@@ -2031,7 +2056,8 @@ static GtkWidget *build_menu(GtkWidget *window)
             GtkWidget *size_item =
                 gtk_radio_menu_item_new_with_label(group, NOTE_SIZE_NAMES[i]);
             group = gtk_radio_menu_item_get_group(GTK_RADIO_MENU_ITEM(size_item));
-            if (note != NULL && note->size == i)
+            if (note != NULL && note->size == i &&
+                note->w == NOTE_SIZE_W[i] && note->h == NOTE_SIZE_H[i])
                 gtk_check_menu_item_set_active(GTK_CHECK_MENU_ITEM(size_item), TRUE);
             gtk_widget_set_tooltip_text(size_item, "Apply this note size");
             g_object_set_data(G_OBJECT(size_item), "size", GINT_TO_POINTER(i));
@@ -2284,27 +2310,98 @@ static gboolean on_header_press(GtkWidget *widget, GdkEventButton *event, gpoint
     }
 
     if (event->type == GDK_2BUTTON_PRESS && event->button == 1) {
+        g_object_set_data(G_OBJECT(window), "header-drag", GINT_TO_POINTER(0));
         on_edit_title_activate(NULL, window);
         return TRUE;
     }
 
     if (event->type == GDK_BUTTON_PRESS && event->button == 1) {
-        GdkWindow *gdk_window = gtk_widget_get_window(window);
-        if (gdk_window != NULL) {
-            if (event->device != NULL) {
-                gdk_window_begin_move_drag_for_device(gdk_window, event->device,
-                                                      event->button,
-                                                      (gint)event->x_root,
-                                                      (gint)event->y_root,
-                                                      event->time);
-            } else {
-                gdk_window_begin_move_drag(gdk_window, event->button,
-                                           (gint)event->x_root, (gint)event->y_root,
-                                           event->time);
-            }
-            return TRUE;
-        }
+        /* Attende un eventuale movimento prima di iniziare il trascinamento,
+           cosi' il doppio clic sul titolo puo' aprire la rinomina. */
+        g_object_set_data(G_OBJECT(window), "header-drag-x",
+                          GINT_TO_POINTER((gint)event->x_root));
+        g_object_set_data(G_OBJECT(window), "header-drag-y",
+                          GINT_TO_POINTER((gint)event->y_root));
+        g_object_set_data(G_OBJECT(window), "header-drag", GINT_TO_POINTER(1));
+        return TRUE;
     }
+    return FALSE;
+}
+
+static gboolean on_header_motion(GtkWidget *widget, GdkEventMotion *event,
+                                 gpointer data)
+{
+    GtkWidget *window = data;
+    gint start_x, start_y;
+
+    (void)widget;
+    if (!GPOINTER_TO_INT(g_object_get_data(G_OBJECT(window), "header-drag")))
+        return FALSE;
+    start_x = GPOINTER_TO_INT(g_object_get_data(G_OBJECT(window), "header-drag-x"));
+    start_y = GPOINTER_TO_INT(g_object_get_data(G_OBJECT(window), "header-drag-y"));
+    if (ABS((gint)event->x_root - start_x) < 4 &&
+        ABS((gint)event->y_root - start_y) < 4)
+        return FALSE;
+    g_object_set_data(G_OBJECT(window), "header-drag", GINT_TO_POINTER(0));
+#if defined(GDK_WINDOWING_WAYLAND)
+    if (event->device != NULL &&
+        GDK_IS_WAYLAND_DISPLAY(gdk_display_get_default())) {
+        GdkWindow *gdk_window = gtk_widget_get_window(window);
+
+        if (gdk_window != NULL)
+            gdk_window_begin_move_drag_for_device(gdk_window, event->device, 1,
+                                                  (gint)event->x_root,
+                                                  (gint)event->y_root,
+                                                  event->time);
+        return TRUE;
+    }
+#endif
+    {
+        gint window_x = 0, window_y = 0;
+
+        gtk_window_get_position(GTK_WINDOW(window), &window_x, &window_y);
+        g_object_set_data(G_OBJECT(window), "header-move-x",
+                          GINT_TO_POINTER(window_x));
+        g_object_set_data(G_OBJECT(window), "header-move-y",
+                          GINT_TO_POINTER(window_y));
+        g_object_set_data(G_OBJECT(window), "header-start-x",
+                          GINT_TO_POINTER(start_x));
+        g_object_set_data(G_OBJECT(window), "header-start-y",
+                          GINT_TO_POINTER(start_y));
+        g_object_set_data(G_OBJECT(window), "header-moving", GINT_TO_POINTER(1));
+        gtk_window_move(GTK_WINDOW(window),
+                        window_x + (gint)event->x_root - start_x,
+                        window_y + (gint)event->y_root - start_y);
+    }
+    return TRUE;
+}
+
+static gboolean on_header_motion_continue(GtkWidget *widget, GdkEventMotion *event,
+                                          gpointer data)
+{
+    GtkWidget *window = data;
+    gint start_x, start_y, window_x, window_y;
+
+    (void)widget;
+    if (!GPOINTER_TO_INT(g_object_get_data(G_OBJECT(window), "header-moving")))
+        return FALSE;
+    start_x = GPOINTER_TO_INT(g_object_get_data(G_OBJECT(window), "header-start-x"));
+    start_y = GPOINTER_TO_INT(g_object_get_data(G_OBJECT(window), "header-start-y"));
+    window_x = GPOINTER_TO_INT(g_object_get_data(G_OBJECT(window), "header-move-x"));
+    window_y = GPOINTER_TO_INT(g_object_get_data(G_OBJECT(window), "header-move-y"));
+    gtk_window_move(GTK_WINDOW(window),
+                    window_x + (gint)event->x_root - start_x,
+                    window_y + (gint)event->y_root - start_y);
+    return TRUE;
+}
+
+static gboolean on_header_release(GtkWidget *widget, GdkEventButton *event,
+                                  gpointer data)
+{
+    (void)widget;
+    (void)event;
+    g_object_set_data(G_OBJECT(data), "header-drag", GINT_TO_POINTER(0));
+    g_object_set_data(G_OBJECT(data), "header-moving", GINT_TO_POINTER(0));
     return FALSE;
 }
 
@@ -2628,8 +2725,10 @@ static void update_min_size(GtkWidget *window)
 
     geometry.min_width = 160;
     geometry.min_height = note->collapsed ? 32 : 100;
+    geometry.max_width = 4096;
+    geometry.max_height = note->collapsed ? 32 : 4096;
     gtk_window_set_geometry_hints(GTK_WINDOW(window), NULL, &geometry,
-                                  GDK_HINT_MIN_SIZE);
+                                  GDK_HINT_MIN_SIZE | GDK_HINT_MAX_SIZE);
 }
 
 /* Aggiorna lo stato collassato e le dimensioni. */
@@ -2753,6 +2852,7 @@ GtkWidget *note_window_new(Store *store, Note *note)
     GtkWidget *window;
     GtkWidget *outer;
     GtkWidget *header;
+    GtkWidget *header_content;
     GtkWidget *title;
     GtkWidget *scrolled;
     GtkWidget *view;
@@ -2792,9 +2892,13 @@ GtkWidget *note_window_new(Store *store, Note *note)
     outer = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
     gtk_container_add(GTK_CONTAINER(window), outer);
 
-    header = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
-    gtk_style_context_add_class(gtk_widget_get_style_context(header), "jotilla-header");
-    gtk_container_set_border_width(GTK_CONTAINER(header), 0);
+    header_content = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
+    gtk_style_context_add_class(gtk_widget_get_style_context(header_content),
+                                "jotilla-header");
+    gtk_container_set_border_width(GTK_CONTAINER(header_content), 0);
+    header = gtk_event_box_new();
+    gtk_event_box_set_visible_window(GTK_EVENT_BOX(header), FALSE);
+    gtk_container_add(GTK_CONTAINER(header), header_content);
     gtk_box_pack_start(GTK_BOX(outer), header, FALSE, FALSE, 0);
     g_object_set_data(G_OBJECT(window), "header", header);
 
@@ -2806,7 +2910,7 @@ GtkWidget *note_window_new(Store *store, Note *note)
         set_accessible_name(calendar_button, "Assign a date");
         g_signal_connect(calendar_button, "clicked",
                          G_CALLBACK(header_calendar_clicked), window);
-        gtk_box_pack_start(GTK_BOX(header), calendar_button, FALSE, FALSE, 0);
+        gtk_box_pack_start(GTK_BOX(header_content), calendar_button, FALSE, FALSE, 0);
     }
 
     title = gtk_label_new("Untitled");
@@ -2816,7 +2920,7 @@ GtkWidget *note_window_new(Store *store, Note *note)
     gtk_widget_set_hexpand(title, TRUE);
     gtk_widget_set_halign(title, GTK_ALIGN_FILL);
     gtk_style_context_add_class(gtk_widget_get_style_context(title), "jotilla-title");
-    gtk_box_pack_start(GTK_BOX(header), title, TRUE, TRUE, 0);
+    gtk_box_pack_start(GTK_BOX(header_content), title, TRUE, TRUE, 0);
     g_object_set_data(G_OBJECT(window), "title-label", title);
 
     {
@@ -2828,17 +2932,26 @@ GtkWidget *note_window_new(Store *store, Note *note)
         set_accessible_name(minimize, "Collapse");
         g_signal_connect(minimize, "clicked",
                          G_CALLBACK(header_collapse_clicked), window);
-        gtk_box_pack_start(GTK_BOX(header), minimize, FALSE, FALSE, 0);
+        gtk_box_pack_start(GTK_BOX(header_content), minimize, FALSE, FALSE, 0);
 
         gtk_button_set_relief(GTK_BUTTON(close), GTK_RELIEF_NONE);
         gtk_widget_set_tooltip_text(close, "Close (Esc)");
         set_accessible_name(close, "Close");
         g_signal_connect(close, "clicked",
                          G_CALLBACK(header_close_clicked), window);
-        gtk_box_pack_start(GTK_BOX(header), close, FALSE, FALSE, 0);
+        gtk_box_pack_start(GTK_BOX(header_content), close, FALSE, FALSE, 0);
     }
 
+    gtk_widget_add_events(header, GDK_POINTER_MOTION_MASK |
+                                      GDK_BUTTON1_MOTION_MASK |
+                                      GDK_BUTTON_RELEASE_MASK);
     g_signal_connect(header, "button-press-event", G_CALLBACK(on_header_press), window);
+    g_signal_connect(header, "motion-notify-event",
+                     G_CALLBACK(on_header_motion), window);
+    g_signal_connect(header, "motion-notify-event",
+                     G_CALLBACK(on_header_motion_continue), window);
+    g_signal_connect(header, "button-release-event",
+                     G_CALLBACK(on_header_release), window);
     g_signal_connect(header, "button-press-event", G_CALLBACK(on_context_menu), window);
 
     scrolled = gtk_scrolled_window_new(NULL, NULL);
@@ -2860,6 +2973,7 @@ GtkWidget *note_window_new(Store *store, Note *note)
     g_signal_connect(view, "destroy", G_CALLBACK(on_view_destroy), window);
     g_signal_connect(view, "button-press-event", G_CALLBACK(on_view_button_press), window);
     g_signal_connect(view, "button-press-event", G_CALLBACK(on_resize_press), window);
+    g_signal_connect(view, "paste-clipboard", G_CALLBACK(on_paste_clipboard), window);
     g_signal_connect(view, "scroll-event", G_CALLBACK(on_view_scroll), window);
 
     load_note(window);

@@ -61,7 +61,10 @@ typedef struct {
     gpointer open_data;
     ArchiveChangeFunc change_cb;
     gpointer change_data;
+    ArchiveDeleteFunc delete_cb;
+    gpointer delete_data;
     Note *first_note;
+    gint selection_anchor;
     GPtrArray *visible_notes;
     char *tag_filter;
     guint32 date_filter;
@@ -456,7 +459,36 @@ static gboolean on_flow_button_press(GtkWidget *widget, GdkEventButton *event,
         return TRUE;
     }
     if (event->button != 1) return FALSE;
-    if (event->state & (GDK_CONTROL_MASK | GDK_SHIFT_MASK)) return FALSE;
+    {
+        gint index = gtk_flow_box_child_get_index(child);
+
+        if (event->state & GDK_SHIFT_MASK) {
+            if (aw->selection_anchor < 0 || index < 0) {
+                aw->selection_anchor = index;
+                return FALSE;
+            }
+            gint first = MIN(aw->selection_anchor, index);
+            gint last = MAX(aw->selection_anchor, index);
+            gint i;
+
+            gtk_flow_box_unselect_all(GTK_FLOW_BOX(widget));
+            for (i = first; i <= last; ++i) {
+                GtkFlowBoxChild *range =
+                    gtk_flow_box_get_child_at_index(GTK_FLOW_BOX(widget), i);
+
+                if (range != NULL)
+                    gtk_flow_box_select_child(GTK_FLOW_BOX(widget), range);
+            }
+            gtk_widget_grab_focus(GTK_WIDGET(child));
+            aw->selection_anchor = index;
+            return TRUE;
+        }
+        if (event->state & GDK_CONTROL_MASK) {
+            aw->selection_anchor = index;
+            return FALSE;
+        }
+        aw->selection_anchor = index;
+    }
     if (note && aw->open_cb) aw->open_cb(note, aw->open_data);
     return TRUE;
 }
@@ -822,6 +854,8 @@ static void delete_selected_notes(ArchiveWindow *aw) {
     for (i = 0; i < ids->len; ++i) {
         GError *error = NULL;
         const char *id = g_ptr_array_index(ids, i);
+        if (aw->delete_cb != NULL)
+            aw->delete_cb(id, aw->delete_data);
         if (!store_delete(aw->store, id, &error)) {
             ++failures;
             if (error) g_error_free(error);
@@ -979,7 +1013,7 @@ static void on_filter_changed(GtkComboBox *combo, gpointer data) {
 static gint compare_uint_keys(gconstpointer a, gconstpointer b) {
     guint left = *(const guint *)a;
     guint right = *(const guint *)b;
-    return left < right ? -1 : left > right ? 1 : 0;
+    return left > right ? -1 : left < right ? 1 : 0;
 }
 
 /* Comparatore per nomi di tag. */
@@ -1118,10 +1152,10 @@ static void populate_date_tree(ArchiveWindow *aw) {
         for (i = 0; i < aw->store->notes->len; ++i) {
             Note *note = g_ptr_array_index(aw->store->notes, i);
 
-            if (!note || !note->date || !date_valid(note->date)) continue;
-            count_key(years, note->date / 10000u);
-            count_key(months, note->date / 100u);
-            count_key(days, note->date);
+            if (!note || !note->created || !date_valid(note->created)) continue;
+            count_key(years, note->created / 10000u);
+            count_key(months, note->created / 100u);
+            count_key(days, note->created);
         }
     }
 
@@ -1399,6 +1433,7 @@ static void repopulate_list(ArchiveWindow *aw) {
 
     clear_flowbox(aw->flow);
     aw->first_note = NULL;
+    aw->selection_anchor = -1;
     if (!aw->visible_notes)
         aw->visible_notes = g_ptr_array_new();
     else
@@ -1413,7 +1448,7 @@ static void repopulate_list(ArchiveWindow *aw) {
             Note *note = g_ptr_array_index(results, i);
 
             if (!note) continue;
-            if (!note_matches_date(aw, note->date)) continue;
+            if (!note_matches_date(aw, note->created)) continue;
             g_ptr_array_add(aw->visible_notes, note);
             ++total;
             if (shown < ARCHIVE_RESULT_LIMIT) {
@@ -1428,8 +1463,13 @@ static void repopulate_list(ArchiveWindow *aw) {
 
     subtitle = g_string_new(NULL);
     if (error) {
-        g_string_append(subtitle, "Search failed");
+        g_string_append_printf(subtitle, "Search failed: %s", error->message);
         g_error_free(error);
+    } else if (total == 0) {
+        g_string_append(subtitle, (query && *query) || (aw->tag_filter && *aw->tag_filter) ||
+                                      (aw->date_filter && aw->date_kind > 0)
+                                  ? "No matching notes"
+                                  : "No notes");
     } else {
         g_string_append_printf(subtitle, "Showing %u of %u note%s",
                                shown, total, total == 1 ? "" : "s");
@@ -1707,6 +1747,17 @@ static void calendar_select_date(ArchiveWindow *aw, guint32 date,
     if (refresh) update_calendar(aw);
 }
 
+/* Sposta il fuoco senza aprire il giorno (come le frecce di Windows). */
+static void calendar_focus_date(ArchiveWindow *aw, guint32 date) {
+    if (!date_valid(date)) return;
+    aw->cal_focus = date;
+    if (date / 10000u != aw->cal_year) {
+        aw->cal_year = date / 10000u;
+        calendar_sync_year_entry(aw);
+    }
+    gtk_widget_queue_draw(aw->calendar);
+}
+
 /* Cambia anno mantenendo il giorno del mese quando possibile. */
 static void calendar_set_year(ArchiveWindow *aw, guint year) {
     guint32 focus;
@@ -1749,19 +1800,6 @@ static void calendar_commit_year(ArchiveWindow *aw) {
     calendar_set_year(aw, (guint)value);
 }
 
-/* Apre la prima nota visibile di una data, se presente. */
-static void open_day_first_note(ArchiveWindow *aw, guint32 date) {
-    guint i;
-
-    if (!aw->visible_notes) return;
-    for (i = 0; i < aw->visible_notes->len; ++i) {
-        Note *note = g_ptr_array_index(aw->visible_notes, i);
-
-        if (!note || note->date != date) continue;
-        if (aw->open_cb) aw->open_cb(note, aw->open_data);
-        return;
-    }
-}
 
 /* Sposta una data di N mesi, saturando il giorno. */
 static guint32 calendar_shift_month(guint32 date, gint delta) {
@@ -1831,8 +1869,12 @@ static gboolean on_calendar_key_press(GtkWidget *widget, GdkEventKey *event,
     }
     case GDK_KEY_Return:
     case GDK_KEY_KP_Enter:
-        if (!aw->cal_selected) calendar_select_date(aw, base, TRUE);
-        open_day_first_note(aw, aw->cal_selected ? aw->cal_selected : base);
+    case GDK_KEY_space:
+        if (date_valid(base) &&
+            g_hash_table_lookup(aw->day_counts, GUINT_TO_POINTER(base)))
+            calendar_select_date(aw, base, TRUE);
+        else
+            calendar_focus_date(aw, base);
         return TRUE;
     case GDK_KEY_Escape:
         aw->cal_selected = 0;
@@ -1844,7 +1886,7 @@ static gboolean on_calendar_key_press(GtkWidget *widget, GdkEventKey *event,
         break;
     }
     if (!move) return FALSE;
-    if (date_valid(date)) calendar_select_date(aw, date, TRUE);
+    if (date_valid(date)) calendar_focus_date(aw, date);
     return TRUE;
 }
 
@@ -1860,7 +1902,11 @@ static gboolean on_calendar_button_press(GtkWidget *widget, GdkEventButton *even
     width = gtk_widget_get_allocated_width(widget);
     height = gtk_widget_get_allocated_height(widget);
     date = calendar_date_at(aw, width, height, (gint)event->x, (gint)event->y);
-    if (date) calendar_select_date(aw, date, TRUE);
+    if (date) {
+        calendar_focus_date(aw, date);
+        if (g_hash_table_lookup(aw->day_counts, GUINT_TO_POINTER(date)))
+            calendar_select_date(aw, date, TRUE);
+    }
     return TRUE;
 }
 
@@ -1929,8 +1975,10 @@ static void on_calendar_today_clicked(GtkButton *button, gpointer data) {
     (void)button;
     if (!date_valid(today)) return;
     aw->cal_today = today;
+    aw->cal_selected = 0;
     calendar_set_year(aw, today / 10000u);
-    calendar_select_date(aw, today, TRUE);
+    aw->cal_focus = today;
+    gtk_widget_queue_draw(aw->calendar);
     gtk_widget_grab_focus(aw->calendar);
 }
 
@@ -2260,6 +2308,16 @@ static void archive_state_free(gpointer data) {
     g_free(aw);
 }
 
+/* Imposta il callback invocato prima di eliminare una nota. */
+void archive_window_set_delete_callback(GtkWidget *window, ArchiveDeleteFunc cb,
+                                        gpointer data) {
+    ArchiveWindow *aw = get_state(window);
+
+    if (aw == NULL) return;
+    aw->delete_cb = cb;
+    aw->delete_data = data;
+}
+
 /* Crea e inizializza la finestra archivio. */
 GtkWidget *archive_window_new(Store *store) {
     ArchiveWindow *aw;
@@ -2306,6 +2364,7 @@ GtkWidget *archive_window_new(Store *store) {
                         ? aw->cal_today
                         : aw->cal_year * 10000u + 101u;
     aw->day_counts = g_hash_table_new(g_direct_hash, g_direct_equal);
+    aw->selection_anchor = -1;
 
     header = gtk_header_bar_new();
     gtk_header_bar_set_title(GTK_HEADER_BAR(header), "Archive");

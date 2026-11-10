@@ -7,6 +7,8 @@
 
 /* Normalizza una stringa di tag. */
 char *tags_normalize(const char *input);
+/* Confronto ordinale (come Windows CompareStringOrdinal / macOS compare). */
+gint tags_compare(const char *left, const char *right);
 /* Verifica la presenza di un tag. */
 gboolean tags_contains(const char *tags, const char *name);
 /* Suddivide i tag in array. */

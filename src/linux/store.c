@@ -1,6 +1,7 @@
 /* Persistenza note su disco: archivio testo/RTF e metadati INI. */
 /* Fornisce apertura, salvataggio, cancellazione e ricerca. */
 #include "jotilla.h"
+#include "date.h"
 #include "palette.h"
 #include "tags.h"
 
@@ -10,6 +11,7 @@
 #include <sys/file.h>
 #include <unistd.h>
 
+#include <gio/gio.h>
 #include <glib/gstdio.h>
 
 #define NOTE_READ_MAX (64u * 1024u * 1024u)
@@ -398,8 +400,6 @@ static char *read_archive_path(const char *path)
 static gboolean write_archive_path(Store *store, const char *path,
                                    GError **err)
 {
-    if (store->portable)
-        return TRUE;
     return write_atomic(store->archive_path_file, path, strlen(path), err);
 }
 
@@ -494,6 +494,50 @@ static char *read_file(const char *path, gboolean strip_bom)
     return contents;
 }
 
+/* Data di creazione dall'id Windows/macOS o, per gli UUID, dal file. */
+static guint32 created_from_id(const char *id)
+{
+    unsigned year = 0, month = 0, day = 0;
+    guint32 date;
+
+    if (g_ascii_strncasecmp(id, "note-", 5) != 0 &&
+        g_ascii_strncasecmp(id, "nota-", 5) != 0)
+        return 0;
+    if (sscanf(id + 5, "%4u-%2u-%2u", &year, &month, &day) != 3)
+        return 0;
+    date = year * 10000u + month * 100u + day;
+    return date_valid(date) ? date : 0;
+}
+
+static guint32 created_from_file(const char *path)
+{
+    GFile *file = g_file_new_for_path(path);
+    GFileInfo *info = g_file_query_info(
+        file, G_FILE_ATTRIBUTE_TIME_CREATED "," G_FILE_ATTRIBUTE_TIME_MODIFIED,
+        G_FILE_QUERY_INFO_NONE, NULL, NULL);
+    guint64 stamp = 0;
+    guint32 date = 0;
+
+    if (info != NULL) {
+        stamp = g_file_info_get_attribute_uint64(info, G_FILE_ATTRIBUTE_TIME_CREATED);
+        if (stamp == 0)
+            stamp = g_file_info_get_attribute_uint64(info, G_FILE_ATTRIBUTE_TIME_MODIFIED);
+        g_object_unref(info);
+    }
+    g_object_unref(file);
+    if (stamp != 0) {
+        GDateTime *time = g_date_time_new_from_unix_local((gint64)stamp);
+
+        if (time != NULL) {
+            date = (guint32)(g_date_time_get_year(time) * 10000 +
+                             g_date_time_get_month(time) * 100 +
+                             g_date_time_get_day_of_month(time));
+            g_date_time_unref(time);
+        }
+    }
+    return date;
+}
+
 /* Converte CRLF e CR in LF, come fanno Windows e macOS durante la lettura. */
 static void normalize_newlines(char *text)
 {
@@ -533,9 +577,8 @@ static gboolean text_is_blank(const char *text)
 
     if (!text)
         return TRUE;
-    for (cursor = text; *cursor; ++cursor) {
-        if (*cursor != ' ' && *cursor != '\t' && *cursor != '\r' &&
-            *cursor != '\n')
+    for (cursor = text; *cursor; cursor = g_utf8_next_char(cursor)) {
+        if (!g_unichar_isspace(g_utf8_get_char(cursor)))
             return FALSE;
     }
     return TRUE;
@@ -624,7 +667,10 @@ static gint note_id_compare(gconstpointer a, gconstpointer b)
     const Note *left = *(const Note * const *)a;
     const Note *right = *(const Note * const *)b;
 
-    return g_strcmp0(left->id, right->id);
+    /* Windows/macOS mostrano prima le note piu' recenti. */
+    if (left->created != right->created)
+        return left->created < right->created ? 1 : -1;
+    return g_strcmp0(right->id, left->id);
 }
 
 /* Confronta tag con collazione UTF-8. */
@@ -633,7 +679,7 @@ static gint tag_compare(gconstpointer a, gconstpointer b)
     const char *left = *(const char * const *)a;
     const char *right = *(const char * const *)b;
 
-    return g_utf8_collate(left, right);
+    return tags_compare(left, right);
 }
 
 /* Salva metadati di tutte le note in notes.ini (UTF-16LE con BOM). */
@@ -788,7 +834,7 @@ Store *store_open(const char *archive_dir, const char *config_dir, GError **err)
     store->archive_path_file = g_build_filename(store->config_dir, "archive.path", NULL);
     store->notes = g_ptr_array_new_with_free_func(note_free);
 
-    if (!explicit_dir && !store->portable) {
+    if (!explicit_dir) {
         configured = read_archive_path(store->archive_path_file);
         if (!configured) {
             /* Migrazione dal layout Linux precedente: [app] archive.path. */
@@ -890,6 +936,7 @@ Store *store_open(const char *archive_dir, const char *config_dir, GError **err)
         char *text;
         char *rtf_path;
         char *rtf;
+        guint32 created;
         Note *note;
 
         if (name_length < 5 || g_ascii_strcasecmp(name + name_length - 4, ".txt") != 0)
@@ -900,6 +947,7 @@ Store *store_open(const char *archive_dir, const char *config_dir, GError **err)
             g_free(id);
             continue;
         }
+        created = created_from_id(id);
 
         path = g_build_filename(store->archive_dir, name, NULL);
         if (!g_file_test(path, G_FILE_TEST_IS_REGULAR)) {
@@ -909,6 +957,8 @@ Store *store_open(const char *archive_dir, const char *config_dir, GError **err)
         }
 
         text = read_file(path, TRUE);
+        if (created == 0)
+            created = created_from_file(path);
         g_free(path);
         if (!text) {
             g_free(id);
@@ -934,6 +984,7 @@ Store *store_open(const char *archive_dir, const char *config_dir, GError **err)
 
         g_free(note->text);
         note->text = text;
+        note->created = created;
 
         g_free(note->tags);
         note->tags = g_strdup(ini_value(ini, id, "tags") ? ini_value(ini, id, "tags") : "");
@@ -949,6 +1000,22 @@ Store *store_open(const char *archive_dir, const char *config_dir, GError **err)
         note->collapsed = ini_bool(ini, id, "collapsed", FALSE);
         note->has_title = ini_bool(ini, id, "has_title", FALSE);
         note->custom_ink = ini_bool(ini, id, "custom_ink", FALSE);
+        if (note->palette < 0 || note->palette >= PALETTE_COUNT)
+            note->palette = 0;
+        if (note->color < 0 || note->color >= PALETTE_SIZES[note->palette])
+            note->color = 0;
+        if (note->size < 0 || note->size > 4)
+            note->size = 1;
+        if (note->opacity < 60 || note->opacity > 100)
+            note->opacity = 100;
+        if (note->w < 160)
+            note->w = 300;
+        if (note->w > 4096)
+            note->w = 4096;
+        if (note->h < 100)
+            note->h = 240;
+        if (note->h > 4096)
+            note->h = 4096;
         if (note->has_title && note->text && note->text[0] == '#') {
             char *body = note->text;
             size_t end = strcspn(body, "\n");
@@ -984,12 +1051,13 @@ Store *store_open(const char *archive_dir, const char *config_dir, GError **err)
         {
             gint date = ini_int(ini, id, "calendar_date", 0);
 
-            note->date = date > 0 ? (guint32)date : 0;
+            note->date = date > 0 && date_valid((unsigned)date) ? (guint32)date : 0;
         }
 
-        /* Le note vuote restano su disco ma non vengono mostrate, come su macOS. */
+        /* Windows elimina i file delle note vuote al caricamento. */
         if (text_is_blank(note->text) &&
             (note->title == NULL || text_is_blank(note->title))) {
+            (void)remove_note_files(store, id, NULL);
             note_free(note);
             g_free(id);
             continue;
@@ -1132,6 +1200,16 @@ Note *store_new(Store *store, const char *text)
     }
     g_free(note->text);
     note->text = g_strdup(text ? text : "");
+    {
+        GDateTime *today = g_date_time_new_now_local();
+
+        if (today != NULL) {
+            note->created = (guint32)(g_date_time_get_year(today) * 10000 +
+                                      g_date_time_get_month(today) * 100 +
+                                      g_date_time_get_day_of_month(today));
+            g_date_time_unref(today);
+        }
+    }
 
     {
         int palette = palette_clamp(store_app_get_int(store, "palette", 0));
@@ -1166,7 +1244,11 @@ Note *store_new(Store *store, const char *text)
     position = store->notes->len;
     for (guint i = 0; i < store->notes->len; ++i) {
         Note *existing = g_ptr_array_index(store->notes, i);
-        if (g_strcmp0(existing->id, id) > 0) {
+        gboolean after = existing->created != note->created
+                             ? existing->created < note->created
+                             : g_strcmp0(existing->id, note->id) < 0;
+
+        if (after) {
             position = i;
             break;
         }
@@ -1647,6 +1729,9 @@ gboolean store_set_tags(Store *store, Note *note, const char *raw)
 void store_set_date(Store *store, Note *note, guint32 date)
 {
     if (!store || !note)
+        return;
+    if (text_is_blank(note->text) &&
+        (note->title == NULL || text_is_blank(note->title)))
         return;
     note->date = date;
     (void)store_save(store, note, NULL);

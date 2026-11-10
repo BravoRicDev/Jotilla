@@ -28,11 +28,25 @@ static gboolean tag_too_long(const char *name) {
     return units >= TAG_UNITS_MAX;
 }
 
-/* Comparatore per ordinamento alfabetico Unicode. */
+/* Confronto ordinale dei code point, come le controparti Windows/macOS. */
+gint tags_compare(const char *left, const char *right) {
+    const char *a = left ? left : "";
+    const char *b = right ? right : "";
+
+    while (*a && *b) {
+        gunichar ca = g_utf8_get_char(a);
+        gunichar cb = g_utf8_get_char(b);
+
+        if (ca != cb) return ca < cb ? -1 : 1;
+        a = g_utf8_next_char(a);
+        b = g_utf8_next_char(b);
+    }
+    return (*a != 0) - (*b != 0);
+}
+
+/* Comparatore per ordinamento dei tag. */
 static gint tag_compare(gconstpointer a, gconstpointer b) {
-    const char *left = *(const char *const *)a;
-    const char *right = *(const char *const *)b;
-    return g_utf8_collate(left, right);
+    return tags_compare(*(const char *const *)a, *(const char *const *)b);
 }
 
 /* Normalizza in NFC e poi applica il case folding Unicode. */

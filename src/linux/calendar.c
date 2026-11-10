@@ -25,6 +25,8 @@ typedef struct {
     gpointer data;
 } CalendarPicker;
 
+static void calendar_apply_year(CalendarPicker *picker);
+
 /* Nomi inglesi dei mesi usati come etichette nella vista annuale. */
 static const char *const month_names[YEAR_MONTHS] = {
     "January", "February", "March", "April", "May", "June",
@@ -84,6 +86,21 @@ static void calendar_set_year_spin(CalendarPicker *picker, guint year) {
                               (gdouble)year);
     if (picker->year_spin_handler != 0)
         g_signal_handler_unblock(picker->year_spin, picker->year_spin_handler);
+}
+
+/* Porta il selettore alla data odierna senza chiudere il dialogo. */
+static void on_today_clicked(GtkButton *button, gpointer data) {
+    CalendarPicker *picker = data;
+    guint32 today = calendar_today();
+
+    (void)button;
+    if (!date_valid(today)) return;
+    picker->selected = today;
+    picker->year = today / 10000u;
+    calendar_set_year_spin(picker, picker->year);
+    if (picker->single_calendar != NULL)
+        calendar_set_date(GTK_CALENDAR(picker->single_calendar), today);
+    calendar_apply_year(picker);
 }
 
 /* Aggiorna tutti i mesi della vista annuale sull'anno e sulla data scelti. */
@@ -332,6 +349,13 @@ GtkWidget *calendar_picker_new(GtkWindow *parent, guint32 current,
     header = gtk_header_bar_new();
     gtk_header_bar_set_title(GTK_HEADER_BAR(header), "Choose date");
     gtk_header_bar_set_show_close_button(GTK_HEADER_BAR(header), TRUE);
+    {
+        GtkWidget *today = gtk_button_new_with_label("Today");
+
+        gtk_widget_set_tooltip_text(today, "Go to today");
+        g_signal_connect(today, "clicked", G_CALLBACK(on_today_clicked), picker);
+        gtk_header_bar_pack_end(GTK_HEADER_BAR(header), today);
+    }
     picker->year_toggle = gtk_toggle_button_new_with_label("Year");
     gtk_widget_set_tooltip_text(picker->year_toggle, "Show the whole year");
     if (picker->year < DATE_MIN_YEAR)

@@ -166,6 +166,65 @@ static int click_button(Window win, int x, int y, unsigned int button)
     return 0;
 }
 
+static int cmd_drag(int argc, char **argv)
+{
+    Window win;
+    int x1, y1, x2, y2;
+
+    if (argc != 7) {
+        fprintf(stderr, "usage: xui drag <winid> <x1> <y1> <x2> <y2>\n");
+        return 2;
+    }
+    if (parse_window(argv[2], &win) != 0) {
+        fprintf(stderr, "invalid window id: %s\n", argv[2]);
+        return 2;
+    }
+    x1 = atoi(argv[3]);
+    y1 = atoi(argv[4]);
+    x2 = atoi(argv[5]);
+    y2 = atoi(argv[6]);
+    XRaiseWindow(display, win);
+    XSetInputFocus(display, win, RevertToParent, CurrentTime);
+    XSync(display, False);
+    usleep(30000);
+    XTestFakeMotionEvent(display, DefaultScreen(display), x1, y1, 0);
+    XTestFakeButtonEvent(display, 1, True, 0);
+    XSync(display, False);
+    usleep(30000);
+    XTestFakeMotionEvent(display, DefaultScreen(display), (x1 + x2) / 2,
+                         (y1 + y2) / 2, 0);
+    XSync(display, False);
+    usleep(30000);
+    XTestFakeMotionEvent(display, DefaultScreen(display), x2, y2, 0);
+    XSync(display, False);
+    usleep(30000);
+    XTestFakeButtonEvent(display, 1, False, 0);
+    XSync(display, False);
+    usleep(30000);
+    return 0;
+}
+
+static int cmd_dclick(int argc, char **argv)
+{
+    Window win;
+    int x;
+    int y;
+
+    if (argc != 5) {
+        fprintf(stderr, "usage: xui dclick <winid> <x> <y>\n");
+        return 2;
+    }
+    if (parse_window(argv[2], &win) != 0) {
+        fprintf(stderr, "invalid window id: %s\n", argv[2]);
+        return 2;
+    }
+    x = atoi(argv[3]);
+    y = atoi(argv[4]);
+    (void)click_button(win, x, y, 1);
+    usleep(40000);
+    return click_button(win, x, y, 1);
+}
+
 static int cmd_click(int argc, char **argv, unsigned int button)
 {
     Window win;
@@ -421,6 +480,10 @@ int main(int argc, char **argv)
         rc = cmd_click(argc, argv, 1);
     else if (strcmp(argv[1], "rclick") == 0)
         rc = cmd_click(argc, argv, 3);
+    else if (strcmp(argv[1], "dclick") == 0)
+        rc = cmd_dclick(argc, argv);
+    else if (strcmp(argv[1], "drag") == 0)
+        rc = cmd_drag(argc, argv);
     else if (strcmp(argv[1], "type") == 0)
         rc = cmd_type(argc, argv);
     else if (strcmp(argv[1], "key") == 0)

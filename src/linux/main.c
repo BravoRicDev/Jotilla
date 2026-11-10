@@ -124,6 +124,25 @@ static void on_hotkey_new_note(gpointer data)
     open_note(ctx, note);
 }
 
+/* Chiude una finestra nota prima che l'archivio ne elimini i file. */
+static void on_archive_delete(const char *id, gpointer data)
+{    AppCtx *ctx = data;
+    guint i;
+
+    if (ctx == NULL || ctx->note_windows == NULL || id == NULL)
+        return;
+    for (i = 0; i < ctx->note_windows->len; ++i) {
+        GtkWidget *window = g_ptr_array_index(ctx->note_windows, i);
+        Note *note = window != NULL ? note_window_get_note(window) : NULL;
+
+        if (note != NULL && g_strcmp0(note->id, id) == 0) {
+            g_object_set_data(G_OBJECT(window), "deleted", GINT_TO_POINTER(1));
+            gtk_widget_destroy(window);
+            break;
+        }
+    }
+}
+
 /* Apre una nota selezionata dall'archivio. */
 static void on_archive_open(Note *note, gpointer data)
 {    open_note(data, note);
@@ -323,6 +342,7 @@ static void on_archive_change(const char *path, gboolean move, gpointer data)
 
     ctx->archive = archive_window_new(ctx->store);
     archive_window_set_open_callback(ctx->archive, on_archive_open, ctx);
+    archive_window_set_delete_callback(ctx->archive, on_archive_delete, ctx);
     if (archive_window_set_change_callback != NULL)
         archive_window_set_change_callback(ctx->archive, on_archive_change, ctx);
     g_signal_connect(ctx->archive, "destroy",
@@ -331,10 +351,18 @@ static void on_archive_change(const char *path, gboolean move, gpointer data)
     gtk_widget_show_all(ctx->archive);
     gtk_window_present(GTK_WINDOW(ctx->archive));
 
-    if (ctx->store->notes->len == 0)
+    if (ctx->store->notes->len == 0) {
         on_new_note(ctx);
-    else
-        open_note(ctx, g_ptr_array_index(ctx->store->notes, 0));
+    } else {
+        guint i;
+
+        for (i = 0; i < ctx->store->notes->len; ++i) {
+            Note *note = g_ptr_array_index(ctx->store->notes, i);
+
+            if (note->open)
+                open_note(ctx, note);
+        }
+    }
 }
 
 /* Mostra o crea la finestra archivio. */
@@ -343,6 +371,7 @@ static void on_show_archive(gpointer data)
     if (ctx->archive == NULL) {
         ctx->archive = archive_window_new(ctx->store);
         archive_window_set_open_callback(ctx->archive, on_archive_open, ctx);
+    archive_window_set_delete_callback(ctx->archive, on_archive_delete, ctx);
         if (archive_window_set_change_callback != NULL)
             archive_window_set_change_callback(ctx->archive, on_archive_change,
                                                ctx);
@@ -361,9 +390,12 @@ static gboolean maybe_quit_idle(gpointer data)
     if (ctx == NULL)
         return G_SOURCE_REMOVE;
 
-    if (ctx->window_count <= 0)
+    if (ctx->window_count <= 0) {
+        /* Come Windows/macOS resta nel tray/menu bar quando e' disponibile. */
+        if (ctx->tray_icon != NULL && gtk_status_icon_is_embedded(ctx->tray_icon))
+            return G_SOURCE_REMOVE;
         gtk_main_quit();
-
+    }
     return G_SOURCE_REMOVE;
 }
 
@@ -874,8 +906,12 @@ int main(int argc, char **argv)
                     break;
                 }
             }
-            if (!any)
-                open_note(&ctx, g_ptr_array_index(ctx.store->notes, 0));
+            if (!any) {
+                Note *note = store_new(ctx.store, "");
+
+                if (note != NULL)
+                    open_note(&ctx, note);
+            }
         }
     }
 
