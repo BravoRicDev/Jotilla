@@ -467,6 +467,23 @@ static void open_note(AppCtx *ctx, Note *note)
     if (ctx == NULL || note == NULL)
         return;
 
+    /* Riusa la finestra esistente: due finestre sulla stessa nota
+       condividerebbero il Note e diventerebbero use-after-free. */
+    if (ctx->note_windows != NULL) {
+        guint i;
+
+        for (i = 0; i < ctx->note_windows->len; ++i) {
+            GtkWidget *existing = g_ptr_array_index(ctx->note_windows, i);
+            Note *current = existing != NULL ? note_window_get_note(existing) : NULL;
+
+            if (current == note ||
+                (current != NULL && g_strcmp0(current->id, note->id) == 0)) {
+                gtk_window_present(GTK_WINDOW(existing));
+                return;
+            }
+        }
+    }
+
     note->open = TRUE;
     if (!store_save(ctx->store, note, &err)) {
         if (err != NULL) {

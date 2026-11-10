@@ -102,8 +102,11 @@ static gboolean on_save_timeout(gpointer data)
 /* Programma un salvataggio ritardato (debounce). */
 static void schedule_save(GtkWidget *window)
 {
-    guint id = GPOINTER_TO_UINT(g_object_get_data(G_OBJECT(window), "save-timeout"));
+    guint id;
 
+    if (GPOINTER_TO_INT(g_object_get_data(G_OBJECT(window), "destroyed")))
+        return;
+    id = GPOINTER_TO_UINT(g_object_get_data(G_OBJECT(window), "save-timeout"));
     if (id != 0)
         g_source_remove(id);
     id = g_timeout_add(400, on_save_timeout, window); /* debounce 400 ms */
@@ -113,6 +116,8 @@ static void schedule_save(GtkWidget *window)
 /* Segna la nota come modificata e programma il salvataggio. */
 static void touch(GtkWidget *window)
 {
+    if (GPOINTER_TO_INT(g_object_get_data(G_OBJECT(window), "destroyed")))
+        return;
     g_object_set_data(G_OBJECT(window), "dirty", GINT_TO_POINTER(1));
     schedule_save(window);
 }
@@ -209,6 +214,8 @@ static gboolean save_now(GtkWidget *window)
     GtkTextView *view = window_view(window);
     gboolean saved = TRUE;
 
+    if (GPOINTER_TO_INT(g_object_get_data(G_OBJECT(window), "destroyed")))
+        return TRUE;
     if (store == NULL || note == NULL)
         return TRUE;
 
@@ -1814,6 +1821,7 @@ static gboolean delete_empty_note(GtkWidget *window)
         g_object_set_data(G_OBJECT(window), "deleted", GINT_TO_POINTER(0));
         return FALSE;
     }
+    g_object_set_data(G_OBJECT(window), "note", NULL);
     return TRUE;
 }
 
@@ -2135,6 +2143,9 @@ static void on_buffer_changed(GtkTextBuffer *buffer, gpointer data)
 
     if (GPOINTER_TO_INT(g_object_get_data(G_OBJECT(window), "loading")))
         return;
+    if (GPOINTER_TO_INT(g_object_get_data(G_OBJECT(window), "destroyed")) ||
+        GPOINTER_TO_INT(g_object_get_data(G_OBJECT(window), "deleted")))
+        return;
 
     update_title(window);
     touch(window);
@@ -2148,7 +2159,9 @@ static gboolean on_configure(GtkWidget *widget, GdkEventConfigure *event, gpoint
 
     (void)data;
 
-    if (note == NULL)
+    if (note == NULL ||
+        GPOINTER_TO_INT(g_object_get_data(G_OBJECT(window), "destroyed")) ||
+        GPOINTER_TO_INT(g_object_get_data(G_OBJECT(window), "deleted")))
         return FALSE;
 
     /* Su Wayland non salvare le coordinate */
@@ -2206,6 +2219,9 @@ static void on_destroy(GtkWidget *widget, gpointer data)
             save_now(window);
         }
     }
+
+    /* Da qui in poi nessun callback di buffer/configure deve pianificare salvataggi. */
+    g_object_set_data(G_OBJECT(window), "destroyed", GINT_TO_POINTER(1));
 
     /* Rimuove l'eventuale retry programmato da un salvataggio fallito. */
     remove_timeout(window);
@@ -2838,7 +2854,8 @@ static gboolean on_focus_out(GtkWidget *widget, GdkEventFocus *event, gpointer d
 
     if (GPOINTER_TO_INT(g_object_get_data(G_OBJECT(window), "loading")))
         return FALSE;
-    if (GPOINTER_TO_INT(g_object_get_data(G_OBJECT(window), "deleted")))
+    if (GPOINTER_TO_INT(g_object_get_data(G_OBJECT(window), "deleted")) ||
+        GPOINTER_TO_INT(g_object_get_data(G_OBJECT(window), "destroyed")))
         return FALSE;
 
     save_now(window);

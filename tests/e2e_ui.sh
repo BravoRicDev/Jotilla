@@ -204,6 +204,18 @@ if line="$(wait_find 'Archive' 5)"; then
     read -r _ AWIN AX AY AW AH ATITLE <<<"${line}"
     pass "ctrl+e opened archive window (win=${AWIN})"
 
+    # Riaprire una nota gia' aperta deve riusare la finestra esistente.
+    "${XUI}" key "${AWIN}" Down || true
+    sleep 0.5
+    "${XUI}" key "${AWIN}" Return || true
+    sleep 1.5
+    reopen_count="$("${XUI}" find 'hello ui test' | wc -l | tr -d ' ')"
+    if [ "${reopen_count}" -eq 1 ]; then
+        pass "reopening an open note reused its window"
+    else
+        fail "reopening an open note created ${reopen_count} windows"
+    fi
+
     # No window manager: close the archive through its client-side header
     # button so it does not keep the process alive during the close test.
     "${XUI}" click "${AWIN}" $((AX + AW - 16)) $((AY + 20)) || true
