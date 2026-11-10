@@ -57,18 +57,17 @@ metadata, so they remain readable and portable.
 - Undo/redo
 - Palette picker with 80+ palettes (3 built-in plus the 80 popular palettes)
   and a favourite palette
-- Note sizes (Small, Medium, Large, Extra large, Square), opacity control and
-  a word-wrap toggle
+- Note sizes (Small, Medium, Large, Extra large, Square) and opacity control
 - Autosave (400 ms debounce) and save-on-quit
 - Archive tile view with search-match highlighting, multi-select delete,
-  date/tag tree filters and calendar filtering
-- Calendar annual (year) view
+  date/tag tree filters, calendar filtering, and open/move archive location
+- Calendar annual (year) view and year navigation
 - Tag normalisation, filtering and autocomplete
 - System tray and global hotkey on X11 (see *Platform limitations*)
 - Optional autostart via an XDG autostart desktop entry
 - Portable mode (`portable.flag`) and single-instance behaviour
   (`GApplication`/D-Bus)
-- Always-on-top and sticky notes
+- Notes are always-on-top by default (X11 keep-above; compositor-controlled on Wayland)
 - File-based storage with no database and no bundled runtime
 
 ## Using notes
