@@ -25,6 +25,11 @@ with `Jotilla.exe` while keeping `portable.flag`, `archive.path` and the archive
 pointer. Creating a note from the tray keeps the usual staggered position.
 Minimizing the explorer hides it in the tray; double-click the tray icon to return.
 
+**Ctrl + C / X / V** copy, cut and paste text, including between Jotilla and other
+apps. **Shift + Insert** also pastes. If the pasted text exceeds the note's visible
+space, an information dialog explains how to proceed: enlarge the note or paste
+less text. The existing text, formatting and selection are preserved.
+
 ## Notes and portable data
 
 Notes initially save in `%LOCALAPPDATA%\Jotilla\notes`, or in the `notes` folder
@@ -51,6 +56,10 @@ build.cmd analyze
 
 Package downloads with `tools/package.ps1`.
 See [performance measurements](performance.md).
+
+Run `build\tests.exe --clipboard-only` for the clipboard and paste-warning checks.
+This optional test replaces the system clipboard contents; CI runs it separately
+from the default suite.
 
 ## Update an existing checkout
 

@@ -8,7 +8,7 @@ Small, native notes with autosave, an archive and a calendar. No extra dependenc
 
 | System | Installer | Portable · no installation |
 |---|---|---|
-| Windows 10/11 · x64 | [Setup (.exe)](https://github.com/GarauGarau/Jotilla/releases/download/v1.8.3/Jotilla-Setup-x64.exe) | [Portable ZIP](https://github.com/GarauGarau/Jotilla/releases/download/v1.8.3/Jotilla-portable-x64.zip) |
+| Windows 10/11 · x64 | [Setup (.exe)](https://github.com/GarauGarau/Jotilla/releases/download/v1.8.4/Jotilla-Setup-x64.exe) | [Portable ZIP](https://github.com/GarauGarau/Jotilla/releases/download/v1.8.4/Jotilla-portable-x64.zip) |
 | macOS 13+ · Apple Silicon / Intel · preview | [Setup (.pkg)](https://github.com/GarauGarau/Jotilla/releases/download/macos-v0.1.3/Jotilla-Setup-universal.pkg) | [Portable ZIP](https://github.com/GarauGarau/Jotilla/releases/download/macos-v0.1.3/Jotilla-portable-universal.zip) |
 
 Run the installer, or extract the portable ZIP and launch Jotilla. For the Mac portable app, select the included `Notes.jotillaarchive` folder when prompted.

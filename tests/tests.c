@@ -11,6 +11,8 @@
 static unsigned metadata_writes, metric_queries, graphic_creations, heap_requests;
 /* Physical input checks are opt-in so ordinary runs do not type on the user's desktop. */
 static BOOL interactive_tests;
+static unsigned paste_notices;
+static int inspect_message_box(HWND owner, LPCWSTR message, LPCWSTR title, UINT flags);
 static BOOL fake_cursor;
 static POINT test_cursor;
 static BOOL trace_cursor(LPPOINT point) {
@@ -46,7 +48,9 @@ static void *trace_realloc(void *memory, size_t size) { ++heap_requests; return 
 #define calloc trace_calloc
 #define realloc trace_realloc
 #define GetCursorPos trace_cursor
+#define MessageBoxW inspect_message_box
 #include "../src/jotilla.c"
+#undef MessageBoxW
 #undef WritePrivateProfileStringW
 #undef WritePrivateProfileSectionW
 #undef GetTextMetricsW
@@ -62,6 +66,17 @@ static void require(BOOL condition, const char *message) {
         fprintf(stderr, "FAIL: %s (Windows error %lu)\n", message, GetLastError());
         exit(1);
     }
+}
+
+static int inspect_message_box(HWND owner, LPCWSTR message, LPCWSTR title, UINT flags) {
+    Note *note = (Note *)GetWindowLongPtrW(owner, GWLP_USERDATA);
+    require(note && note->edit && !note->validating && editor_matches_text(note) && text_fits(note),
+            "paste warning appears only after the native editor has restored the accepted text");
+    require(!wcscmp(title, L"Jotilla") && flags == (MB_OK | MB_ICONINFORMATION) &&
+            wcsstr(message, L"Enlarge the note or paste less text") != NULL,
+            "paste warning explains how to make the content fit");
+    ++paste_notices;
+    return IDOK;
 }
 
 static int note_count(void) {
@@ -1819,6 +1834,7 @@ static void location_checks(void) {
 #include "text_size_checks.c"
 #include "calendar_checks.c"
 #include "session_checks.c"
+#include "clipboard_checks.c"
 
 int main(int argc, char **argv) {
     wchar_t temporary[PATH_CAP], root[PATH_CAP], id[80], path[PATH_CAP], text[256], pattern[PATH_CAP];
@@ -1857,6 +1873,8 @@ int main(int argc, char **argv) {
     controller = CreateWindowExW(WS_EX_TOOLWINDOW, APP_CLASS, L"Jotilla test", WS_OVERLAPPED,
                                  0, 0, 0, 0, NULL, NULL, instance, NULL);
     require(controller != NULL, "create hotkey controller");
+    /* Explicit mode: these checks replace the system clipboard contents. */
+    if (argc==2 && !strcmp(argv[1],"--clipboard-only")) { clipboard_checks(); goto cleanup; }
     if (argc==2 && !strcmp(argv[1],"--calendar-only")) { calendar_checks(); shortcut_checks(); goto cleanup; }
     if (argc==2 && !strcmp(argv[1],"--archive-only")) {
         require(new_note()!=NULL,"create archive test owner");

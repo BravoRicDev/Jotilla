@@ -80,6 +80,7 @@ struct Note {
     CHARRANGE palette_selection, wheel_selection;
     BOOL custom_ink;
     BOOL collapsed, ready, tags_dirty, save_failed, validating, layout_saved, persisted, tracking;
+    BOOL edit_overflow;
 };
 static const SIZE NOTE_SIZES[] = {{240,180}, {NOTE_WIDTH,NOTE_HEIGHT}, {420,340}, {540,440}, {300,300}};
 static const wchar_t *SIZE_NAMES[] = {L"Small", L"Medium", L"Large", L"Extra large", L"Square"};
@@ -948,7 +949,7 @@ static LRESULT CALLBACK edit_proc(HWND window, UINT message, WPARAM wparam, LPAR
     }
     if (note->ready && !note->validating && (message == WM_CHAR || message == WM_KEYDOWN ||
         message == WM_PASTE || message == WM_CUT || message == WM_CLEAR || message == WM_UNDO ||
-        message == EM_REPLACESEL || message == WM_SETTEXT))
+        message == EM_PASTESPECIAL || message == EM_REPLACESEL || message == WM_SETTEXT))
     {
         SendMessageW(window, EM_GETSEL, (WPARAM)&note->selection_start, (LPARAM)&note->selection_end);
         /* An overflow rollback must not undo earlier accepted keystrokes. */
@@ -997,7 +998,24 @@ static LRESULT CALLBACK edit_proc(HWND window, UINT message, WPARAM wparam, LPAR
          wparam == L'+' || wparam == L'-' || wparam == L'=' || wparam == 31 || wparam == 29 ||
          (wparam == 6 && GetKeyState(VK_SHIFT) < 0) ||
          (wparam == 24 && GetKeyState(VK_SHIFT) < 0))) return 0;
-    if (message == WM_PASTE) return SendMessageW(window, EM_PASTESPECIAL, CF_UNICODETEXT, 0);
+    if (message == WM_PASTE) { message = EM_PASTESPECIAL; wparam = CF_UNICODETEXT; lparam = 0; }
+    if (note->ready && !note->validating &&
+        (message == EM_PASTESPECIAL ||
+         (message == WM_KEYDOWN && GetKeyState(VK_MENU) >= 0 &&
+          ((wparam == 'V' && GetKeyState(VK_CONTROL) < 0) ||
+           (wparam == VK_INSERT && GetKeyState(VK_SHIFT) < 0 && GetKeyState(VK_CONTROL) >= 0))) ||
+         (message == WM_CHAR && wparam == 22 && GetKeyState(VK_CONTROL) < 0 && GetKeyState(VK_MENU) >= 0))) {
+        LRESULT result;
+        /* Native keyboard paste need not send WM_PASTE to the subclass.
+           Report only after EN_CHANGE has rolled back and the editor returns. */
+        note->edit_overflow = FALSE;
+        result = CallWindowProcW(note->edit_proc, window, message, wparam, lparam);
+        if (note->edit_overflow)
+            MessageBoxW(note->window,
+                L"The pasted text does not fit in this note.\n\nEnlarge the note or paste less text. Your existing text has been kept.",
+                L"Jotilla", MB_OK | MB_ICONINFORMATION);
+        return result;
+    }
     if (message == WM_LBUTTONDOWN && note->ready && click_todo(note, lparam)) return 0;
     if (message == WM_KEYDOWN && wparam == VK_BACK && note->ready && remove_todo_marker(note)) return 0;
     if (message == WM_KEYDOWN && wparam == VK_RETURN && note->ready) {
@@ -1487,7 +1505,9 @@ static LRESULT CALLBACK note_proc(HWND window, UINT message, WPARAM wparam, LPAR
     case WM_COMMAND:
         if (!lparam) { note_command(note, LOWORD(wparam)); return 0; }
         if (HIWORD(wparam) == EN_CHANGE && note->ready && !note->validating) {
-            if (!text_fits(note) || !remember_text(note)) {
+            BOOL fits = text_fits(note);
+            if (!fits || !remember_text(note)) {
+                note->edit_overflow = !fits;
                 note->validating = TRUE;
                 if (!SendMessageW(note->edit, EM_UNDO, 0, 0))
                     SetWindowTextW(note->edit, note->accepted_text);

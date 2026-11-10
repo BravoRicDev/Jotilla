@@ -27,6 +27,9 @@ The star applies a favorite to this note and new notes, including after restart.
 Select text before right-clicking to change only its text color.
 #Title + Shift+Enter makes a title; Enter keeps it as text.
 Ctrl+E opens the note explorer; Ctrl+Z/Ctrl+Y undo/redo text and formatting.
+Ctrl+C/X/V copy, cut and paste text between notes and other apps; Shift+Insert also pastes.
+If pasted text does not fit, a notice asks you to enlarge the note or paste less text.
+The existing text, formatting and selection are preserved.
 The calendar icon assigns one day to a note; click it again to change or remove the day.
 The square button beside Archive opens the calendar. Click a circled day to open its notes.
 Type a year directly in either calendar. Arrow/Page/Home/End keys navigate day lists; Enter opens and Esc returns.
