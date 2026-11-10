@@ -861,9 +861,33 @@ static void insert_plain_fallback(const char *rtf, GtkTextBuffer *buffer) {
     g_string_free(plain, TRUE);
 }
 
-/* Carica RTF in buffer GTK. */
-void rtf_to_buffer(const char *rtf, GtkTextBuffer *buffer) {
+/* Estrae il testo semplice da un RTF valido, senza applicare formattazione. */
+char *rtf_plain_text(const char *rtf) {
     GString *text = NULL;
+    GArray *spans = NULL;
+    GArray *colors = NULL;
+    char *result = NULL;
+
+    if (rtf == NULL || rtf[0] == '\0')
+        return NULL;
+    if (!rtf_parse_subset(rtf, &text, &spans, &colors))
+        goto done;
+    if (text != NULL && g_utf8_validate(text->str, (gssize)text->len, NULL)) {
+        result = g_string_free(text, FALSE);
+        text = NULL;
+    }
+done:
+    if (text != NULL)
+        g_string_free(text, TRUE);
+    if (spans != NULL)
+        g_array_free(spans, TRUE);
+    if (colors != NULL)
+        g_array_free(colors, TRUE);
+    return result;
+}
+
+/* Carica RTF in buffer GTK. */
+void rtf_to_buffer(const char *rtf, GtkTextBuffer *buffer) {    GString *text = NULL;
     GArray *spans = NULL;
     GArray *colors = NULL;
     gboolean ok;

@@ -5,13 +5,403 @@
 #include "tags.h"
 
 #include <errno.h>
+#include <fcntl.h>
 #include <string.h>
+#include <sys/file.h>
+#include <unistd.h>
 
 #include <glib/gstdio.h>
 
 #define NOTE_READ_MAX (64u * 1024u * 1024u)
 #define NOTE_TEXT_MAX (16u * 1024u * 1024u)
 #define QUERY_TERMS_MAX 16u
+
+static gboolean write_atomic(const char *path, const char *data, gsize length,
+                             GError **err);
+
+/* Modello INI minimale e senza escape, compatibile byte per byte con i file
+   notes.ini UTF-16LE scritti da Windows e macOS. GKeyFile non va usato qui:
+   interpreta le barre rovesciate e non preserva i valori grezzi. */
+typedef struct {
+    char *section;
+    char *key;
+    char *value;
+    char *raw;
+} IniEntry;
+
+typedef struct {
+    GPtrArray *entries;
+} Ini;
+
+static void ini_entry_free(gpointer data)
+{
+    IniEntry *entry = data;
+
+    if (!entry)
+        return;
+    g_free(entry->section);
+    g_free(entry->key);
+    g_free(entry->value);
+    g_free(entry->raw);
+    g_free(entry);
+}
+
+static Ini *ini_new(void)
+{
+    Ini *ini = g_new0(Ini, 1);
+
+    ini->entries = g_ptr_array_new_with_free_func(ini_entry_free);
+    return ini;
+}
+
+static void ini_free(Ini *ini)
+{
+    if (!ini)
+        return;
+    g_ptr_array_free(ini->entries, TRUE);
+    g_free(ini);
+}
+
+static gboolean ini_same(const char *left, const char *right)
+{
+    return g_ascii_strcasecmp(left ? left : "", right ? right : "") == 0;
+}
+
+static char *trim_copy(const char *start, gsize length)
+{
+    while (length && (*start == ' ' || *start == '\t' || *start == '\r'))
+        ++start, --length;
+    while (length && (start[length - 1] == ' ' || start[length - 1] == '\t' ||
+                      start[length - 1] == '\r'))
+        --length;
+    return g_strndup(start, length);
+}
+
+static Ini *ini_parse(const char *text)
+{
+    Ini *ini = ini_new();
+    const char *cursor = text ? text : "";
+    char *current_section = NULL;
+
+    while (*cursor) {
+        const char *end = strchr(cursor, '\n');
+        gsize length = end ? (gsize)(end - cursor) : strlen(cursor);
+        const char *first;
+        IniEntry *entry;
+        char *line;
+
+        if (length && cursor[length - 1] == '\r')
+            --length;
+        line = g_strndup(cursor, length);
+        first = line;
+        while (*first == ' ' || *first == '\t')
+            ++first;
+        entry = g_new0(IniEntry, 1);
+        if (!*first || *first == ';' || *first == '#') {
+            entry->raw = g_strdup(line);
+        } else if (*first == '[') {
+            const char *close = strchr(first, ']');
+
+            if (close) {
+                g_free(current_section);
+                current_section = trim_copy(first + 1, (gsize)(close - first - 1));
+                entry->section = g_strdup(current_section);
+            } else {
+                entry->raw = g_strdup(line);
+            }
+        } else {
+            const char *equal = strchr(first, '=');
+
+            if (equal) {
+                entry->section = g_strdup(current_section ? current_section : "");
+                entry->key = trim_copy(first, (gsize)(equal - first));
+                entry->value = trim_copy(equal + 1, strlen(equal + 1));
+            } else {
+                entry->raw = g_strdup(line);
+            }
+        }
+        g_ptr_array_add(ini->entries, entry);
+        g_free(line);
+        if (!end)
+            break;
+        cursor = end + 1;
+    }
+    g_free(current_section);
+    return ini;
+}
+
+static const char *ini_value(Ini *ini, const char *section, const char *key)
+{
+    guint i;
+
+    if (!ini)
+        return NULL;
+    for (i = 0; i < ini->entries->len; ++i) {
+        IniEntry *entry = g_ptr_array_index(ini->entries, i);
+
+        if (entry->key && ini_same(entry->section, section) &&
+            ini_same(entry->key, key))
+            return entry->value;
+    }
+    return NULL;
+}
+
+static void ini_set(Ini *ini, const char *section, const char *key,
+                    const char *value)
+{
+    gssize insert_at = -1;
+    gboolean have_section = FALSE;
+    IniEntry *entry;
+    guint i;
+
+    for (i = 0; i < ini->entries->len; ++i) {
+        entry = g_ptr_array_index(ini->entries, i);
+        if (entry->key && ini_same(entry->section, section) &&
+            ini_same(entry->key, key)) {
+            g_free(entry->value);
+            entry->value = g_strdup(value ? value : "");
+            return;
+        }
+        if (entry->section && ini_same(entry->section, section)) {
+            have_section = TRUE;
+            insert_at = (gssize)i + 1;
+        }
+    }
+
+    entry = g_new0(IniEntry, 1);
+    entry->section = g_strdup(section);
+    entry->key = g_strdup(key);
+    entry->value = g_strdup(value ? value : "");
+    if (have_section) {
+        g_ptr_array_insert(ini->entries, (guint)insert_at, entry);
+        return;
+    }
+    if (ini->entries->len) {
+        IniEntry *last = g_ptr_array_index(ini->entries, ini->entries->len - 1);
+
+        if (!(last->raw && last->raw[0] == '\0')) {
+            IniEntry *blank = g_new0(IniEntry, 1);
+
+            blank->raw = g_strdup("");
+            g_ptr_array_add(ini->entries, blank);
+        }
+    }
+    {
+        IniEntry *header = g_new0(IniEntry, 1);
+
+        header->section = g_strdup(section);
+        g_ptr_array_add(ini->entries, header);
+    }
+    g_ptr_array_add(ini->entries, entry);
+}
+
+static void ini_remove_key(Ini *ini, const char *section, const char *key)
+{
+    gint i;
+
+    if (!ini)
+        return;
+    for (i = (gint)ini->entries->len - 1; i >= 0; --i) {
+        IniEntry *entry = g_ptr_array_index(ini->entries, (guint)i);
+
+        if (entry->key && ini_same(entry->section, section) &&
+            ini_same(entry->key, key))
+            g_ptr_array_remove_index(ini->entries, (guint)i);
+    }
+}
+
+static void ini_remove_section(Ini *ini, const char *section)
+{
+    gint i;
+
+    if (!ini)
+        return;
+    for (i = (gint)ini->entries->len - 1; i >= 0; --i) {
+        IniEntry *entry = g_ptr_array_index(ini->entries, (guint)i);
+
+        if (entry->section && ini_same(entry->section, section))
+            g_ptr_array_remove_index(ini->entries, (guint)i);
+    }
+}
+
+static char *ini_serialize(Ini *ini)
+{
+    GString *text = g_string_new(NULL);
+    guint i;
+
+    for (i = 0; i < ini->entries->len; ++i) {
+        IniEntry *entry = g_ptr_array_index(ini->entries, i);
+
+        if (entry->key) {
+            g_string_append(text, entry->key);
+            g_string_append_c(text, '=');
+            g_string_append(text, entry->value ? entry->value : "");
+            g_string_append_c(text, '\n');
+        } else if (entry->section) {
+            g_string_append_c(text, '[');
+            g_string_append(text, entry->section);
+            g_string_append(text, "]\n");
+        } else if (entry->raw) {
+            g_string_append(text, entry->raw);
+            g_string_append_c(text, '\n');
+        } else {
+            g_string_append_c(text, '\n');
+        }
+    }
+    return g_string_free(text, FALSE);
+}
+
+/* Converte i byte INI (UTF-16LE/BE con BOM, UTF-8 con BOM o CP1252 legacy)
+   nella rappresentazione UTF-8 usata internamente. */
+static char *decode_ini(const char *data, gsize length, gsize *out_length)
+{
+    if (length >= 2 && (guchar)data[0] == 0xff && (guchar)data[1] == 0xfe)
+        return g_convert(data + 2, (gssize)(length - 2), "UTF-8", "UTF-16LE",
+                         NULL, out_length, NULL);
+    if (length >= 2 && (guchar)data[0] == 0xfe && (guchar)data[1] == 0xff)
+        return g_convert(data + 2, (gssize)(length - 2), "UTF-8", "UTF-16BE",
+                         NULL, out_length, NULL);
+    if (length >= 3 && (guchar)data[0] == 0xef && (guchar)data[1] == 0xbb &&
+        (guchar)data[2] == 0xbf) {
+        *out_length = length - 3;
+        return g_strndup(data + 3, length - 3);
+    }
+    if (g_utf8_validate(data, (gssize)length, NULL)) {
+        *out_length = length;
+        return g_strndup(data, length);
+    }
+    return g_convert(data, (gssize)length, "UTF-8", "CP1252", NULL, out_length,
+                     NULL);
+}
+
+static Ini *ini_load_file(const char *path)
+{
+    char *data = NULL;
+    gsize length = 0;
+    Ini *ini;
+    GStatBuf info;
+
+    if (!path || g_stat(path, &info) != 0 || info.st_size < 0 ||
+        (guint64)info.st_size > NOTE_READ_MAX)
+        return ini_new();
+    if (!g_file_get_contents(path, &data, &length, NULL))
+        return ini_new();
+    {
+        gsize text_length = 0;
+        char *text = decode_ini(data, length, &text_length);
+
+        ini = text ? ini_parse(text) : ini_new();
+        g_free(text);
+    }
+    g_free(data);
+    return ini;
+}
+
+static gboolean ini_write_file(Store *store, Ini *ini, GError **err)
+{
+    char *utf8 = ini_serialize(ini);
+    gsize utf16_length = 0;
+    char *utf16 = g_convert(utf8, (gssize)strlen(utf8), "UTF-16LE", "UTF-8",
+                            NULL, &utf16_length, err);
+    GString *bytes;
+    gboolean ok;
+
+    g_free(utf8);
+    if (!utf16)
+        return FALSE;
+    bytes = g_string_sized_new(utf16_length + 2);
+    g_string_append_c(bytes, (char)0xff);
+    g_string_append_c(bytes, (char)0xfe);
+    g_string_append_len(bytes, utf16, (gssize)utf16_length);
+    ok = write_atomic(store->notes_ini, bytes->str, bytes->len, err);
+    g_string_free(bytes, TRUE);
+    g_free(utf16);
+    return ok;
+}
+
+static gint ini_int(Ini *ini, const char *section, const char *key,
+                    gint fallback)
+{
+    const char *value = ini_value(ini, section, key);
+    char *end = NULL;
+    gint64 parsed;
+
+    if (!value || !*value)
+        return fallback;
+    parsed = g_ascii_strtoll(value, &end, 10);
+    if (end == value)
+        return fallback;
+    if (parsed < G_MININT)
+        return G_MININT;
+    if (parsed > G_MAXINT)
+        return G_MAXINT;
+    return (gint)parsed;
+}
+
+static gboolean ini_bool(Ini *ini, const char *section, const char *key,
+                         gboolean fallback)
+{
+    const char *value = ini_value(ini, section, key);
+
+    if (!value || !*value)
+        return fallback;
+    if (!g_ascii_strcasecmp(value, "1") || !g_ascii_strcasecmp(value, "true") ||
+        !g_ascii_strcasecmp(value, "yes") || !g_ascii_strcasecmp(value, "on"))
+        return TRUE;
+    if (!g_ascii_strcasecmp(value, "0") ||
+        !g_ascii_strcasecmp(value, "false") ||
+        !g_ascii_strcasecmp(value, "no") || !g_ascii_strcasecmp(value, "off"))
+        return FALSE;
+    return fallback;
+}
+
+static void ini_set_int(Ini *ini, const char *section, const char *key,
+                        gint value)
+{
+    char *text = g_strdup_printf("%d", value);
+
+    ini_set(ini, section, key, text);
+    g_free(text);
+}
+
+static void ini_set_bool(Ini *ini, const char *section, const char *key,
+                         gboolean value)
+{
+    ini_set(ini, section, key, value ? "1" : "0");
+}
+
+/* Il percorso dell'archivio e' locale alla macchina, non fa parte
+   dell'archivio sincronizzato: vive accanto alla configurazione. */
+static char *read_archive_path(const char *path)
+{
+    char *data = NULL;
+    gsize length = 0;
+    char *result;
+
+    if (!path || !g_file_get_contents(path, &data, &length, NULL))
+        return NULL;
+    if (length >= 3 && (guchar)data[0] == 0xef && (guchar)data[1] == 0xbb &&
+        (guchar)data[2] == 0xbf) {
+        result = g_strndup(data + 3, length - 3);
+    } else {
+        result = g_strndup(data, length);
+    }
+    g_free(data);
+    g_strstrip(result);
+    if (!*result) {
+        g_free(result);
+        return NULL;
+    }
+    return result;
+}
+
+static gboolean write_archive_path(Store *store, const char *path,
+                                   GError **err)
+{
+    if (store->portable)
+        return TRUE;
+    return write_atomic(store->archive_path_file, path, strlen(path), err);
+}
 
 /* Contatore globale per il suffisso degli id delle note. */
 static guint note_id_counter = 0;
@@ -95,9 +485,46 @@ static char *read_file(const char *path, gboolean strip_bom)
         (guchar)contents[2] == 0xbf) {
         char *stripped = g_strndup(contents + 3, length - 3);
         g_free(contents);
-        return stripped;
+        contents = stripped;
+    }
+    if (!g_utf8_validate(contents, -1, NULL)) {
+        g_free(contents);
+        return NULL;
     }
     return contents;
+}
+
+/* Converte CRLF e CR in LF, come fanno Windows e macOS durante la lettura. */
+static void normalize_newlines(char *text)
+{
+    char *read = text;
+    char *write = text;
+
+    while (*read) {
+        if (*read == '\r') {
+            *write++ = '\n';
+            ++read;
+            if (*read == '\n')
+                ++read;
+        } else {
+            *write++ = *read++;
+        }
+    }
+    *write = '\0';
+}
+
+static gboolean text_is_blank(const char *text)
+{
+    const char *cursor;
+
+    if (!text)
+        return TRUE;
+    for (cursor = text; *cursor; ++cursor) {
+        if (*cursor != ' ' && *cursor != '\t' && *cursor != '\r' &&
+            *cursor != '\n')
+            return FALSE;
+    }
+    return TRUE;
 }
 
 /* Normalizza Unicode, esegue il case folding e rimuove i segni combinanti. */
@@ -156,57 +583,28 @@ static Note *note_alloc(const char *id)
     return note;
 }
 
-/* Legge intero da keyfile con fallback. */
-static gint key_int(GKeyFile *keyfile, const char *group, const char *key, gint fallback)
-{
-    GError *error = NULL;
-    gint value;
-
-    if (!g_key_file_has_key(keyfile, group, key, NULL))
-        return fallback;
-    value = g_key_file_get_integer(keyfile, group, key, &error);
-    if (error) {
-        g_clear_error(&error);
-        return fallback;
-    }
-    return value;
-}
-
-/* Legge booleano da keyfile con fallback. */
-static gboolean key_bool(GKeyFile *keyfile, const char *group, const char *key, gboolean fallback)
-{
-    GError *error = NULL;
-    gboolean value;
-
-    if (!g_key_file_has_key(keyfile, group, key, NULL))
-        return fallback;
-    value = g_key_file_get_boolean(keyfile, group, key, &error);
-    if (error) {
-        g_clear_error(&error);
-        return fallback;
-    }
-    return value;
-}
-
-/* Legge stringa da keyfile con fallback. */
-static char *key_string(GKeyFile *keyfile, const char *group, const char *key, const char *fallback)
-{
-    GError *error = NULL;
-    char *value;
-
-    if (!g_key_file_has_key(keyfile, group, key, NULL))
-        return g_strdup(fallback);
-    value = g_key_file_get_string(keyfile, group, key, &error);
-    if (error) {
-        g_clear_error(&error);
-        return g_strdup(fallback);
-    }
-    if (!value)
-        return g_strdup(fallback);
-    return value;
-}
-
 /* Confronta note per id. */
+/* Accetta gli id Windows (note-/nota-) e gli UUID creati da macOS. */
+static gboolean note_id_supported(const char *id)
+{
+    size_t length = strlen(id);
+    size_t i;
+
+    if (g_ascii_strncasecmp(id, "note-", 5) == 0 ||
+        g_ascii_strncasecmp(id, "nota-", 5) == 0)
+        return length > 5;
+    if (length != 36 || id[8] != '-' || id[13] != '-' || id[18] != '-' ||
+        id[23] != '-')
+        return FALSE;
+    for (i = 0; i < length; ++i) {
+        if (id[i] == '-')
+            continue;
+        if (!g_ascii_isxdigit(id[i]))
+            return FALSE;
+    }
+    return TRUE;
+}
+
 static gint note_id_compare(gconstpointer a, gconstpointer b)
 {
     const Note *left = *(const Note * const *)a;
@@ -224,96 +622,51 @@ static gint tag_compare(gconstpointer a, gconstpointer b)
     return g_utf8_collate(left, right);
 }
 
-/* Salva metadati di tutte le note in notes.ini. */
+/* Salva metadati di tutte le note in notes.ini (UTF-16LE con BOM). */
 static gboolean save_ini(Store *store, GError **err)
 {
-    GKeyFile *keyfile = g_key_file_new();
-    GError *local = NULL;
-    char *data;
-    gsize length = 0;
+    Ini *ini = ini_load_file(store->notes_ini);
     gboolean ok;
     guint i;
 
-    /* Rilegge il file per conservare [app] e chiavi non gestite. */
-    if (g_file_test(store->notes_ini, G_FILE_TEST_IS_REGULAR) &&
-        !g_key_file_load_from_file(keyfile, store->notes_ini,
-                                   G_KEY_FILE_KEEP_COMMENTS | G_KEY_FILE_KEEP_TRANSLATIONS,
-                                   &local)) {
-        g_clear_error(&local);
-        g_key_file_free(keyfile);
-        keyfile = g_key_file_new();
-    }
-
+    ini_remove_key(ini, "app", "archive.path");
     for (i = 0; i < store->notes->len; ++i) {
         Note *note = g_ptr_array_index(store->notes, i);
 
-        g_key_file_set_integer(keyfile, note->id, "x", note->x);
-        g_key_file_set_integer(keyfile, note->id, "y", note->y);
-        g_key_file_set_integer(keyfile, note->id, "w", note->w);
-        g_key_file_set_integer(keyfile, note->id, "h", note->h);
-        g_key_file_set_integer(keyfile, note->id, "color", note->color);
-        g_key_file_set_integer(keyfile, note->id, "palette", note->palette);
-        g_key_file_set_integer(keyfile, note->id, "size", note->size);
-        g_key_file_set_integer(keyfile, note->id, "opacity", note->opacity);
-        g_key_file_set_boolean(keyfile, note->id, "open", note->open);
-        g_key_file_set_boolean(keyfile, note->id, "collapsed", note->collapsed);
-        g_key_file_set_boolean(keyfile, note->id, "has_title", note->has_title);
-        g_key_file_set_boolean(keyfile, note->id, "custom_ink", note->custom_ink);
-        g_key_file_set_string(keyfile, note->id, "tags", note->tags ? note->tags : "");
-        g_key_file_set_integer(keyfile, note->id, "calendar_date", (gint)note->date);
+        ini_set_int(ini, note->id, "x", note->x);
+        ini_set_int(ini, note->id, "y", note->y);
+        ini_set_int(ini, note->id, "width", note->w);
+        ini_set_int(ini, note->id, "height", note->h);
+        ini_set_int(ini, note->id, "color", note->color);
+        ini_set_int(ini, note->id, "palette", note->palette);
+        ini_set_int(ini, note->id, "size", note->size);
+        ini_set_int(ini, note->id, "opacity", note->opacity);
+        ini_set_bool(ini, note->id, "open", note->open);
+        ini_set_bool(ini, note->id, "collapsed", note->collapsed);
+        ini_set_bool(ini, note->id, "has_title", note->has_title);
+        ini_set_bool(ini, note->id, "custom_ink", note->custom_ink);
+        ini_set(ini, note->id, "tags", note->tags ? note->tags : "");
+        ini_set_int(ini, note->id, "calendar_date", (gint)note->date);
+        ini_remove_key(ini, note->id, "w");
+        ini_remove_key(ini, note->id, "h");
     }
-
-    data = g_key_file_to_data(keyfile, &length, &local);
-    if (!data) {
-        if (local) {
-            g_propagate_error(err, local);
-            g_key_file_free(keyfile);
-            return FALSE;
-        }
-        data = g_strdup("");
-        length = 0;
-    }
-
-    ok = write_atomic(store->notes_ini, data, length, err);
-    g_free(data);
-    g_key_file_free(keyfile);
+    ok = ini_write_file(store, ini, err);
+    ini_free(ini);
     return ok;
 }
 
 /* Rimuove gruppo INI di una nota. */
 static gboolean remove_ini_group(Store *store, const char *id, GError **err)
 {
-    GKeyFile *keyfile;
-    GError *local = NULL;
-    char *data;
-    gsize length = 0;
+    Ini *ini;
     gboolean ok;
 
     if (!g_file_test(store->notes_ini, G_FILE_TEST_EXISTS))
         return TRUE;
-
-    keyfile = g_key_file_new();
-    if (!g_key_file_load_from_file(keyfile, store->notes_ini, G_KEY_FILE_NONE, &local)) {
-        g_clear_error(&local);
-        g_key_file_free(keyfile);
-        return save_ini(store, err);
-    }
-
-    g_key_file_remove_group(keyfile, id, NULL);
-    data = g_key_file_to_data(keyfile, &length, &local);
-    if (!data) {
-        if (local) {
-            g_propagate_error(err, local);
-            g_key_file_free(keyfile);
-            return FALSE;
-        }
-        data = g_strdup("");
-        length = 0;
-    }
-
-    ok = write_atomic(store->notes_ini, data, length, err);
-    g_free(data);
-    g_key_file_free(keyfile);
+    ini = ini_load_file(store->notes_ini);
+    ini_remove_section(ini, id);
+    ok = ini_write_file(store, ini, err);
+    ini_free(ini);
     return ok;
 }
 
@@ -398,68 +751,120 @@ char *store_default_config_dir(void)
 Store *store_open(const char *archive_dir, const char *config_dir, GError **err)
 {
     Store *store;
-    GKeyFile *keyfile;
-    GError *ini_error = NULL;
+    Ini *ini;
     GDir *directory;
     const char *name;
+    gboolean explicit_dir = archive_dir != NULL && *archive_dir != '\0';
+    char *configured = NULL;
 
     store = g_try_new0(Store, 1);
     if (!store) {
         g_set_error_literal(err, G_FILE_ERROR, G_FILE_ERROR_NOMEM, "Not enough memory");
         return NULL;
     }
-
+    store->lock_fd = -1;
     store->config_dir = config_dir ? g_strdup(config_dir) : store_default_config_dir();
-    store->notes_ini = g_build_filename(store->config_dir, "notes.ini", NULL);
+    store->portable = portable_base_dir() != NULL;
+    store->archive_path_file = g_build_filename(store->config_dir, "archive.path", NULL);
     store->notes = g_ptr_array_new_with_free_func(note_free);
 
-    keyfile = g_key_file_new();
-    if (g_file_test(store->notes_ini, G_FILE_TEST_IS_REGULAR) &&
-        !g_key_file_load_from_file(keyfile, store->notes_ini, G_KEY_FILE_NONE, &ini_error)) {
-        /* Un INI malformato non deve impedire l'apertura dell'archivio. */
-        g_clear_error(&ini_error);
-        g_key_file_free(keyfile);
-        keyfile = g_key_file_new();
-    }
+    if (!explicit_dir && !store->portable) {
+        configured = read_archive_path(store->archive_path_file);
+        if (!configured) {
+            /* Migrazione dal layout Linux precedente: [app] archive.path. */
+            char *legacy = g_build_filename(store->config_dir, "notes.ini", NULL);
 
-    /* Usa [app] archive.path solo quando non e' stata indicata una directory. */
-    if (archive_dir) {
-        store->archive_dir = g_strdup(archive_dir);
-    } else {
-        char *configured = key_string(keyfile, "app", "archive.path", NULL);
-        if (configured)
-            g_strstrip(configured);
-        if (configured && *configured) {
-            store->archive_dir = configured;
-        } else {
-            g_free(configured);
-            store->archive_dir = store_default_archive_dir();
+            if (g_file_test(legacy, G_FILE_TEST_IS_REGULAR)) {
+                Ini *old = ini_load_file(legacy);
+                const char *value = ini_value(old, "app", "archive.path");
+
+                if (value && *value)
+                    configured = g_strdup(value);
+                ini_free(old);
+            }
+            g_free(legacy);
         }
     }
 
-    if (g_mkdir_with_parents(store->archive_dir, 0700) != 0) {
-        int error_code = errno;
-        set_file_error(err, error_code, "Failed to create directory", store->archive_dir);
-        g_key_file_free(keyfile);
-        store_free(store);
-        return NULL;
+    if (explicit_dir) {
+        store->archive_dir = g_strdup(archive_dir);
+    } else if (configured) {
+        if (!g_file_test(configured, G_FILE_TEST_IS_DIR)) {
+            g_set_error(err, G_FILE_ERROR, G_FILE_ERROR_NOENT,
+                        "The notes archive is unavailable: %s", configured);
+            g_free(configured);
+            store_free(store);
+            return NULL;
+        }
+        store->archive_dir = g_strdup(configured);
+    } else {
+        store->archive_dir = store_default_archive_dir();
     }
+    g_free(configured);
+
     if (g_mkdir_with_parents(store->config_dir, 0700) != 0) {
         int error_code = errno;
         set_file_error(err, error_code, "Failed to create directory", store->config_dir);
-        g_key_file_free(keyfile);
+        store_free(store);
+        return NULL;
+    }
+    if (g_mkdir_with_parents(store->archive_dir, 0700) != 0) {
+        int error_code = errno;
+        set_file_error(err, error_code, "Failed to create directory", store->archive_dir);
         store_free(store);
         return NULL;
     }
 
+    /* Blocco compatibile con il file .jotila.lock di macOS. */
+    {
+        char *lock_path = g_build_filename(store->archive_dir, ".jotila.lock", NULL);
+        int fd = open(lock_path, O_RDWR | O_CREAT, 0600);
+        int error_code = errno;
+
+        g_free(lock_path);
+        if (fd < 0) {
+            set_file_error(err, error_code, "Failed to open archive lock", store->archive_dir);
+            store_free(store);
+            return NULL;
+        }
+        if (flock(fd, LOCK_EX | LOCK_NB) != 0) {
+            error_code = errno;
+            close(fd);
+            set_file_error(err, error_code, "The archive is already open", store->archive_dir);
+            store_free(store);
+            return NULL;
+        }
+        store->lock_fd = fd;
+    }
+
+    store->notes_ini = g_build_filename(store->archive_dir, "notes.ini", NULL);
+
+    /* I metadati vivono dentro l'archivio, come su Windows e macOS. Migra il
+       vecchio notes.ini locale alla prima apertura. */
+    if (!g_file_test(store->notes_ini, G_FILE_TEST_EXISTS)) {
+        char *legacy = g_build_filename(store->config_dir, "notes.ini", NULL);
+
+        if (g_file_test(legacy, G_FILE_TEST_IS_REGULAR)) {
+            Ini *old = ini_load_file(legacy);
+
+            ini_remove_key(old, "app", "archive.path");
+            (void)ini_write_file(store, old, NULL);
+            ini_free(old);
+        }
+        g_free(legacy);
+    }
+
+    ini = ini_load_file(store->notes_ini);
+
     directory = g_dir_open(store->archive_dir, 0, err);
     if (!directory) {
-        g_key_file_free(keyfile);
+        ini_free(ini);
         store_free(store);
         return NULL;
     }
 
     while ((name = g_dir_read_name(directory)) != NULL) {
+        size_t name_length = strlen(name);
         char *path;
         char *id;
         char *text;
@@ -467,34 +872,103 @@ Store *store_open(const char *archive_dir, const char *config_dir, GError **err)
         char *rtf;
         Note *note;
 
-        if (!g_str_has_prefix(name, "note-") || !g_str_has_suffix(name, ".txt"))
+        if (name_length < 5 || g_ascii_strcasecmp(name + name_length - 4, ".txt") != 0)
             continue;
+
+        id = g_strndup(name, name_length - 4);
+        if (strpbrk(id, "[]\r\n") || !note_id_supported(id)) {
+            g_free(id);
+            continue;
+        }
 
         path = g_build_filename(store->archive_dir, name, NULL);
         if (!g_file_test(path, G_FILE_TEST_IS_REGULAR)) {
             g_free(path);
+            g_free(id);
             continue;
         }
 
         text = read_file(path, TRUE);
         g_free(path);
-        if (!text)
+        if (!text) {
+            g_free(id);
             continue;
+        }
+        normalize_newlines(text);
 
-        id = g_strndup(name, strlen(name) - 4);
         note = note_alloc(id);
         if (!note) {
             g_free(id);
             g_free(text);
             g_set_error_literal(err, G_FILE_ERROR, G_FILE_ERROR_NOMEM, "Not enough memory");
             g_dir_close(directory);
-            g_key_file_free(keyfile);
+            ini_free(ini);
             store_free(store);
             return NULL;
         }
 
         g_free(note->text);
         note->text = text;
+
+        g_free(note->tags);
+        note->tags = g_strdup(ini_value(ini, id, "tags") ? ini_value(ini, id, "tags") : "");
+        note->x = ini_int(ini, id, "x", 100);
+        note->y = ini_int(ini, id, "y", 100);
+        note->w = ini_int(ini, id, "width", ini_int(ini, id, "w", 300));
+        note->h = ini_int(ini, id, "height", ini_int(ini, id, "h", 240));
+        note->color = ini_int(ini, id, "color", 0);
+        note->palette = ini_int(ini, id, "palette", 0);
+        note->size = ini_int(ini, id, "size", 1);
+        note->opacity = ini_int(ini, id, "opacity", 100);
+        note->open = ini_bool(ini, id, "open", TRUE);
+        note->collapsed = ini_bool(ini, id, "collapsed", FALSE);
+        note->has_title = ini_bool(ini, id, "has_title", FALSE);
+        note->custom_ink = ini_bool(ini, id, "custom_ink", FALSE);
+        if (note->has_title && note->text && note->text[0] == '#') {
+            char *body = note->text;
+            size_t end = strcspn(body, "\n");
+            size_t after = end;
+            size_t start = 1, finish = end;
+            char *title;
+
+            while (start < finish && (body[start] == ' ' || body[start] == '\t'))
+                ++start;
+            while (finish > start && (body[finish - 1] == ' ' || body[finish - 1] == '\t'))
+                --finish;
+            title = g_strndup(body + start, finish - start);
+            if (body[after] == '\n')
+                ++after;
+            g_free(note->title);
+            note->title = title;
+            {
+                char *new_text = g_strdup(body + after);
+
+                g_free(note->text);
+                note->text = new_text ? new_text : g_strdup("");
+            }
+            if (!*note->title) {
+                g_free(note->title);
+                note->title = NULL;
+                note->has_title = FALSE;
+            }
+        } else {
+            g_free(note->title);
+            note->title = NULL;
+            note->has_title = FALSE;
+        }
+        {
+            gint date = ini_int(ini, id, "calendar_date", 0);
+
+            note->date = date > 0 ? (guint32)date : 0;
+        }
+
+        /* Le note vuote restano su disco ma non vengono mostrate, come su macOS. */
+        if (text_is_blank(note->text) &&
+            (note->title == NULL || text_is_blank(note->title))) {
+            note_free(note);
+            g_free(id);
+            continue;
+        }
 
         rtf_path = note_file_path(store, id, "rtf");
         rtf = read_file(rtf_path, FALSE);
@@ -504,57 +978,12 @@ Store *store_open(const char *archive_dir, const char *config_dir, GError **err)
             note->rtf = rtf;
         }
 
-        g_free(note->tags);
-        note->tags = key_string(keyfile, id, "tags", "");
-        if (!note->tags)
-            note->tags = g_strdup("");
-        note->x = key_int(keyfile, id, "x", 100);
-        note->y = key_int(keyfile, id, "y", 100);
-        note->w = key_int(keyfile, id, "w", 300);
-        note->h = key_int(keyfile, id, "h", 240);
-        note->color = key_int(keyfile, id, "color", 0);
-        note->palette = key_int(keyfile, id, "palette", 0);
-        note->size = key_int(keyfile, id, "size", 1);
-        note->opacity = key_int(keyfile, id, "opacity", 100);
-        note->open = key_bool(keyfile, id, "open", TRUE);
-        note->collapsed = key_bool(keyfile, id, "collapsed", FALSE);
-        note->has_title = key_bool(keyfile, id, "has_title", FALSE);
-        note->custom_ink = key_bool(keyfile, id, "custom_ink", FALSE);
-        if (note->has_title && note->text && note->text[0] == '#') {
-            char *body = note->text;
-            size_t end = strcspn(body, "\r\n");
-            size_t after = end;
-            char *title;
-            size_t start = 1, finish = end;
-            /* trim spaces around the title */
-            while (start < finish && (body[start] == ' ' || body[start] == '\t')) ++start;
-            while (finish > start && (body[finish - 1] == ' ' || body[finish - 1] == '\t')) --finish;
-            title = g_strndup(body + start, finish - start);
-            if (body[after] == '\r') ++after;
-            if (body[after] == '\n') ++after;
-            g_free(note->title);
-            note->title = title;
-            {
-                char *new_text = g_strdup(body + after);
-                g_free(note->text);
-                note->text = new_text ? new_text : g_strdup("");
-            }
-        } else {
-            g_free(note->title);
-            note->title = NULL;
-            note->has_title = FALSE;
-        }
-        {
-            gint date = key_int(keyfile, id, "calendar_date", 0);
-            note->date = date > 0 ? (guint32)date : 0;
-        }
-
         g_ptr_array_add(store->notes, note);
         g_free(id);
     }
 
     g_dir_close(directory);
-    g_key_file_free(keyfile);
+    ini_free(ini);
     g_ptr_array_sort(store->notes, note_id_compare);
     return store;
 }
@@ -566,9 +995,14 @@ void store_free(Store *store)
         return;
     if (store->notes)
         g_ptr_array_free(store->notes, TRUE);
+    if (store->lock_fd >= 0) {
+        (void)flock(store->lock_fd, LOCK_UN);
+        close(store->lock_fd);
+    }
     g_free(store->archive_dir);
     g_free(store->config_dir);
     g_free(store->notes_ini);
+    g_free(store->archive_path_file);
     g_free(store);
 }
 
@@ -728,6 +1162,31 @@ Note *store_get(Store *store, const char *id)
 }
 
 /* Salva nota su disco e metadati. */
+/* Serializza il corpo in UTF-8 con CRLF, come Windows e macOS. */
+static char *encode_txt(const Note *note)
+{
+    GString *content = g_string_new(NULL);
+    const char *cursor;
+
+    if (note->has_title && note->title) {
+        g_string_append_c(content, '#');
+        g_string_append(content, note->title);
+        g_string_append(content, "\r\n");
+    }
+    for (cursor = note->text ? note->text : ""; *cursor; ++cursor) {
+        if (*cursor == '\r') {
+            g_string_append(content, "\r\n");
+            if (cursor[1] == '\n')
+                ++cursor;
+        } else if (*cursor == '\n') {
+            g_string_append(content, "\r\n");
+        } else {
+            g_string_append_c(content, *cursor);
+        }
+    }
+    return g_string_free(content, FALSE);
+}
+
 gboolean store_save(Store *store, Note *note, GError **err)
 {
     char *path;
@@ -738,28 +1197,14 @@ gboolean store_save(Store *store, Note *note, GError **err)
         return FALSE;
     }
 
-    if (note->text && strlen(note->text) > NOTE_TEXT_MAX) {
+    if (note->text && g_utf8_strlen(note->text, -1) > (glong)NOTE_TEXT_MAX) {
         g_set_error_literal(err, G_FILE_ERROR, G_FILE_ERROR_INVAL,
                             "Note text exceeds 16 MB");
         return FALSE;
     }
 
-    path = note_file_path(store, note->id, "txt");
-    if (note->has_title && note->title) {
-        GString *content = g_string_new("#");
-        g_string_append(content, note->title);
-        g_string_append(content, "\n");
-        if (note->text)
-            g_string_append(content, note->text);
-        ok = write_atomic(path, content->str, content->len, err);
-        g_string_free(content, TRUE);
-    } else {
-        ok = write_atomic(path, note->text ? note->text : "", note->text ? strlen(note->text) : 0, err);
-    }
-    g_free(path);
-    if (!ok)
-        return FALSE;
-
+    /* RTF prima del TXT: se la coppia viene interrotta, il lettore scarta
+       l'RTF non coerente e usa il TXT autorevole. */
     if (note->rtf) {
         path = note_file_path(store, note->id, "rtf");
         ok = write_atomic(path, note->rtf, strlen(note->rtf), err);
@@ -767,6 +1212,17 @@ gboolean store_save(Store *store, Note *note, GError **err)
         if (!ok)
             return FALSE;
     }
+
+    {
+        char *content = encode_txt(note);
+
+        path = note_file_path(store, note->id, "txt");
+        ok = write_atomic(path, content, strlen(content), err);
+        g_free(content);
+        g_free(path);
+    }
+    if (!ok)
+        return FALSE;
 
     return save_ini(store, err);
 }
@@ -831,9 +1287,12 @@ static gboolean query_parse(const char *query, GPtrArray *terms, GError **err)
             ++cursor;
         if (!*cursor)
             break;
-        /* Oltre i 16 termini il resto della query viene ignorato. */
-        if (terms->len >= QUERY_TERMS_MAX)
-            break;
+        /* Oltre i 16 termini la query e' invalida, come su Windows e macOS. */
+        if (terms->len >= QUERY_TERMS_MAX) {
+            g_set_error_literal(err, G_FILE_ERROR, G_FILE_ERROR_INVAL,
+                                "Too many search terms");
+            return FALSE;
+        }
 
         term = g_try_new0(SearchTerm, 1);
         if (!term) {
@@ -856,13 +1315,23 @@ static gboolean query_parse(const char *query, GPtrArray *terms, GError **err)
 
         value = g_string_new(NULL);
         if (*cursor == '"') {
+            gboolean closed_quote = FALSE;
+
             ++cursor;
             while (*cursor && *cursor != '"') {
                 g_string_append_c(value, *cursor);
                 ++cursor;
             }
-            if (*cursor == '"')
+            if (*cursor == '"') {
                 ++cursor;
+                closed_quote = TRUE;
+            }
+            if (!closed_quote) {
+                g_string_free(value, TRUE);
+                search_term_free(term);
+                g_set_error_literal(err, G_FILE_ERROR, G_FILE_ERROR_INVAL, "Unclosed quote");
+                return FALSE;
+            }
         } else {
             while (*cursor && !g_ascii_isspace(*cursor)) {
                 g_string_append_c(value, *cursor);
@@ -881,7 +1350,7 @@ static gboolean query_parse(const char *query, GPtrArray *terms, GError **err)
         if (term->is_tag) {
             char *normalized = tags_normalize(raw);
             g_free(raw);
-            if (!normalized || !*normalized) {
+            if (!normalized || !*normalized || strchr(normalized, ';')) {
                 g_free(normalized);
                 search_term_free(term);
                 g_set_error_literal(err, G_FILE_ERROR, G_FILE_ERROR_INVAL, "Invalid tag in search");
@@ -1085,85 +1554,42 @@ char *store_tag_counts(Store *store)
 /* Legge un intero dalla sezione [app] di notes.ini. */
 int store_app_get_int(Store *store, const char *key, int fallback)
 {
-    GKeyFile *keyfile;
-    GError *error = NULL;
-    int value = fallback;
+    Ini *ini;
+    gint value;
 
     if (!store || !key)
         return fallback;
-    if (!g_file_test(store->notes_ini, G_FILE_TEST_IS_REGULAR))
-        return fallback;
-
-    keyfile = g_key_file_new();
-    if (g_key_file_load_from_file(keyfile, store->notes_ini,
-                                  G_KEY_FILE_KEEP_COMMENTS | G_KEY_FILE_KEEP_TRANSLATIONS,
-                                  &error))
-        value = key_int(keyfile, "app", key, fallback);
-    g_clear_error(&error);
-    g_key_file_free(keyfile);
+    ini = ini_load_file(store->notes_ini);
+    value = ini_int(ini, "app", key, fallback);
+    ini_free(ini);
     return value;
 }
 
 /* Scrive un intero nella sezione [app], conservando le altre chiavi. */
 void store_app_set_int(Store *store, const char *key, int value)
 {
-    GKeyFile *keyfile;
-    GError *error = NULL;
-    char *data;
-    gsize length = 0;
+    Ini *ini;
 
     if (!store || !key)
         return;
-
-    keyfile = g_key_file_new();
-    if (g_file_test(store->notes_ini, G_FILE_TEST_IS_REGULAR) &&
-        !g_key_file_load_from_file(keyfile, store->notes_ini,
-                                   G_KEY_FILE_KEEP_COMMENTS | G_KEY_FILE_KEEP_TRANSLATIONS,
-                                   &error)) {
-        g_clear_error(&error);
-        g_key_file_free(keyfile);
-        keyfile = g_key_file_new();
-    }
-
-    g_key_file_set_integer(keyfile, "app", key, value);
-    data = g_key_file_to_data(keyfile, &length, &error);
-    if (data) {
-        (void)write_atomic(store->notes_ini, data, length, NULL);
-        g_free(data);
-    }
-    g_clear_error(&error);
-    g_key_file_free(keyfile);
+    ini = ini_load_file(store->notes_ini);
+    ini_set_int(ini, "app", key, value);
+    (void)ini_write_file(store, ini, NULL);
+    ini_free(ini);
 }
 
-/* Imposta il percorso archivio nella sezione [app], conservando le altre chiavi. */
+/* Il percorso dell'archivio resta nella configurazione locale della macchina. */
 void store_set_archive_path(Store *store, const char *path)
 {
-    GKeyFile *keyfile;
-    GError *error = NULL;
-    char *data;
-    gsize length = 0;
+    Ini *ini;
 
     if (!store || !path)
         return;
-
-    keyfile = g_key_file_new();
-    if (g_file_test(store->notes_ini, G_FILE_TEST_IS_REGULAR) &&
-        !g_key_file_load_from_file(keyfile, store->notes_ini,
-                                   G_KEY_FILE_KEEP_COMMENTS | G_KEY_FILE_KEEP_TRANSLATIONS,
-                                   &error)) {
-        g_clear_error(&error);
-        g_key_file_free(keyfile);
-        keyfile = g_key_file_new();
-    }
-
-    g_key_file_set_string(keyfile, "app", "archive.path", path);
-    data = g_key_file_to_data(keyfile, &length, &error);
-    if (data) {
-        (void)write_atomic(store->notes_ini, data, length, NULL);
-        g_free(data);
-    }
-    g_clear_error(&error);
-    g_key_file_free(keyfile);
+    (void)write_archive_path(store, path, NULL);
+    ini = ini_load_file(store->notes_ini);
+    ini_remove_key(ini, "app", "archive.path");
+    (void)ini_write_file(store, ini, NULL);
+    ini_free(ini);
 }
 
 /* Imposta tag normalizzati e salva. */

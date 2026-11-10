@@ -889,6 +889,33 @@ static void show_palette_picker_mode(GtkWidget *window, GdkEventButton *event,
     gtk_popover_popup(GTK_POPOVER(popover));
 }
 
+/* L'RTF e' valido solo se il suo testo coincide con il TXT autorevole. */
+static gboolean rtf_matches_text(const char *rtf, const char *text)
+{
+    char *plain = rtf_plain_text(rtf);
+    char *read;
+    char *write;
+    gboolean same;
+
+    if (plain == NULL)
+        return FALSE;
+    read = write = plain;
+    while (*read) {
+        if (*read == '\r') {
+            *write++ = '\n';
+            ++read;
+            if (*read == '\n')
+                ++read;
+        } else {
+            *write++ = *read++;
+        }
+    }
+    *write = '\0';
+    same = g_strcmp0(plain, text ? text : "") == 0;
+    g_free(plain);
+    return same;
+}
+
 /* Carica il testo/RTF della nota nella view. */
 static void load_note(GtkWidget *window)
 {
@@ -904,6 +931,12 @@ static void load_note(GtkWidget *window)
         return;
 
     ensure_tags(buffer);
+
+    if (note->rtf != NULL && note->rtf[0] != '\0' &&
+        !rtf_matches_text(note->rtf, note->text)) {
+        g_free(note->rtf);
+        note->rtf = NULL;
+    }
 
     g_object_set_data(G_OBJECT(window), "loading", GINT_TO_POINTER(1));
     if (note->rtf != NULL && note->rtf[0] != '\0')

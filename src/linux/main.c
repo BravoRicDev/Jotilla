@@ -95,7 +95,7 @@ static void on_archive_open(Note *note, gpointer data)
 {    open_note(data, note);
 }
 
-/* Sposta i file delle note (note-*.txt/note-*.rtf) tra due directory. */
+/* Sposta i file delle note e i metadati tra due directory. */
 static gboolean move_note_files(const char *from_dir, const char *to_dir,
                                 GError **err)
 {    static const char *extensions[] = { ".txt", ".rtf" };
@@ -110,13 +110,15 @@ static gboolean move_note_files(const char *from_dir, const char *to_dir,
     while (ok && (name = g_dir_read_name(dir)) != NULL) {
         char *src;
         char *dst;
-        gboolean matches = FALSE;
+        gboolean matches = g_ascii_strcasecmp(name, "notes.ini") == 0;
         guint i;
 
-        if (!g_str_has_prefix(name, "note-"))
-            continue;
         for (i = 0; i < G_N_ELEMENTS(extensions); ++i) {
-            if (g_str_has_suffix(name, extensions[i])) {
+            size_t length = strlen(name);
+
+            if (length >= strlen(extensions[i]) &&
+                g_ascii_strcasecmp(name + length - strlen(extensions[i]),
+                                   extensions[i]) == 0) {
                 matches = TRUE;
                 break;
             }
@@ -155,6 +157,26 @@ static gboolean move_note_files(const char *from_dir, const char *to_dir,
     return ok;
 }
 
+/* True se la directory non esiste o e' vuota (il lock file non conta). */
+static gboolean archive_dir_empty(const char *path)
+{
+    GDir *dir;
+    const char *name;
+    gboolean empty = TRUE;
+
+    dir = g_dir_open(path, 0, NULL);
+    if (dir == NULL)
+        return TRUE;
+    while ((name = g_dir_read_name(dir)) != NULL) {
+        if (g_strcmp0(name, ".jotila.lock") != 0) {
+            empty = FALSE;
+            break;
+        }
+    }
+    g_dir_close(dir);
+    return empty;
+}
+
 /* Riapre store e archivio quando cambia il percorso dell'archivio. */
 static void on_archive_change(const char *path, gboolean move, gpointer data)
 {    AppCtx *ctx = data;
@@ -165,6 +187,12 @@ static void on_archive_change(const char *path, gboolean move, gpointer data)
         return;
 
     if (move) {
+        if (ctx->store != NULL && ctx->store->archive_dir != NULL &&
+            g_strcmp0(ctx->store->archive_dir, path) != 0 &&
+            g_file_test(path, G_FILE_TEST_IS_DIR) && !archive_dir_empty(path)) {
+            g_warning("Move requires an empty destination: '%s'", path);
+            return;
+        }
         /* Salva e chiude le note esistenti prima di spostare i file. */
         if (ctx->note_windows != NULL) {
             while (ctx->note_windows->len > 0) {

@@ -377,8 +377,8 @@ static void test_archive_path_persistence(void) {
     char *archive_b;
     char *config_dir;
     char *ini_path;
+    char *path_file;
     char *stored;
-    GKeyFile *keyfile;
     Store *store;
     Store *reopened;
 
@@ -397,23 +397,39 @@ static void test_archive_path_persistence(void) {
     g_assert_no_error(err);
     g_assert_nonnull(store);
 
-    /* Un'altra chiave [app] non deve essere persa dal cambio percorso. */
+    /* I metadati [app] restano nell'archivio, il percorso e' locale. */
     store_app_set_int(store, "keep_me", 321);
     store_set_archive_path(store, archive_b);
 
-    ini_path = g_build_filename(config_dir, "notes.ini", NULL);
-    keyfile = g_key_file_new();
-    g_assert_true(g_key_file_load_from_file(keyfile, ini_path, G_KEY_FILE_NONE, &err));
-    g_assert_no_error(err);
-
-    stored = g_key_file_get_string(keyfile, "app", "archive.path", &err);
+    path_file = g_build_filename(config_dir, "archive.path", NULL);
+    stored = NULL;
+    g_assert_true(g_file_get_contents(path_file, &stored, NULL, &err));
     g_assert_no_error(err);
     g_assert_cmpstr(stored, ==, archive_b);
-    g_assert_cmpint(g_key_file_get_integer(keyfile, "app", "keep_me", &err), ==, 321);
-    g_assert_no_error(err);
-
     g_free(stored);
-    g_key_file_free(keyfile);
+    g_free(path_file);
+
+    /* notes.ini dell'archivio A e' UTF-16LE e conserva keep_me. */
+    ini_path = g_build_filename(archive_a, "notes.ini", NULL);
+    {
+        char *data = NULL;
+        char *utf8;
+        gsize length = 0;
+        gsize converted = 0;
+
+        g_assert_true(g_file_get_contents(ini_path, &data, &length, &err));
+        g_assert_no_error(err);
+        g_assert_cmpuint(length, >=, 2);
+        g_assert_cmpint((guchar)data[0], ==, 0xff);
+        g_assert_cmpint((guchar)data[1], ==, 0xfe);
+        utf8 = g_convert(data + 2, (gssize)(length - 2), "UTF-8", "UTF-16LE",
+                         NULL, &converted, &err);
+        g_assert_no_error(err);
+        g_assert_nonnull(utf8);
+        g_assert_nonnull(strstr(utf8, "keep_me=321"));
+        g_free(utf8);
+        g_free(data);
+    }
     g_free(ini_path);
     store_free(store);
 
@@ -422,13 +438,277 @@ static void test_archive_path_persistence(void) {
     g_assert_no_error(err);
     g_assert_nonnull(reopened);
     g_assert_cmpstr(store_archive_dir(reopened), ==, archive_b);
-    g_assert_cmpint(store_app_get_int(reopened, "keep_me", 0), ==, 321);
+    g_assert_cmpint(store_app_get_int(reopened, "keep_me", 0), ==, 0);
+    store_app_set_int(reopened, "keep_me", 654);
+    store_free(reopened);
+
+    reopened = store_open(NULL, config_dir, &err);
+    g_assert_no_error(err);
+    g_assert_nonnull(reopened);
+    g_assert_cmpint(store_app_get_int(reopened, "keep_me", 0), ==, 654);
     store_free(reopened);
 
     remove_tree(base);
     g_free(archive_a);
     g_free(archive_b);
     g_free(config_dir);
+    g_free(base);
+}
+
+static void write_utf16le(const char *path, const char *utf8) {
+    GError *err = NULL;
+    gsize length = 0;
+    char *utf16 = g_convert(utf8, -1, "UTF-16LE", "UTF-8", NULL, &length, &err);
+    GString *bytes;
+
+    g_assert_no_error(err);
+    g_assert_nonnull(utf16);
+    bytes = g_string_sized_new(length + 2);
+    g_string_append_c(bytes, (char)0xff);
+    g_string_append_c(bytes, (char)0xfe);
+    g_string_append_len(bytes, utf16, (gssize)length);
+    g_assert_true(g_file_set_contents(path, bytes->str, (gssize)bytes->len, &err));
+    g_assert_no_error(err);
+    g_string_free(bytes, TRUE);
+    g_free(utf16);
+}
+
+static char *read_utf16le(const char *path) {
+    GError *err = NULL;
+    char *data = NULL;
+    char *utf8;
+    gsize length = 0;
+    gsize converted = 0;
+
+    g_assert_true(g_file_get_contents(path, &data, &length, &err));
+    g_assert_no_error(err);
+    g_assert_cmpuint(length, >=, 2);
+    g_assert_cmpint((guchar)data[0], ==, 0xff);
+    g_assert_cmpint((guchar)data[1], ==, 0xfe);
+    utf8 = g_convert(data + 2, (gssize)(length - 2), "UTF-8", "UTF-16LE",
+                     NULL, &converted, &err);
+    g_assert_no_error(err);
+    g_assert_nonnull(utf8);
+    g_free(data);
+    return utf8;
+}
+
+static void test_cross_platform_archive(void) {
+    const char *id = "note-2024-01-02_03-04-05-006-001";
+    GError *err = NULL;
+    char *archive = g_dir_make_tmp("jotilla-test-cross-XXXXXX", &err);
+    char *config = g_dir_make_tmp("jotilla-test-cross-cfg-XXXXXX", &err);
+    char *txt;
+    char *ini;
+    char *raw;
+    char *metadata;
+    Store *store;
+    Note *note;
+
+    g_assert_no_error(err);
+    g_assert_nonnull(archive);
+    g_assert_nonnull(config);
+
+    txt = g_build_filename(archive, "note-2024-01-02_03-04-05-006-001.txt", NULL);
+    ini = g_build_filename(archive, "notes.ini", NULL);
+    g_assert_true(g_file_set_contents(txt, "#Caffè\r\nRiga uno\r\nRiga due\r\n", -1, &err));
+    g_assert_no_error(err);
+    write_utf16le(ini,
+        "future=keep\n"
+        "[note-2024-01-02_03-04-05-006-001]\n"
+        "x=10\ny=20\nwidth=321\nheight=210\ncolor=2\npalette=5\nsize=3\n"
+        "opacity=70\nopen=1\ncollapsed=0\nhas_title=1\ncustom_ink=1\n"
+        "tags=café;work\ncalendar_date=20240115\n"
+        "[app]\npalette=7\n");
+
+    store = store_open(archive, config, &err);
+    g_assert_no_error(err);
+    g_assert_nonnull(store);
+    g_assert_cmpuint(store->notes->len, ==, 1);
+    note = g_ptr_array_index(store->notes, 0);
+    g_assert_cmpstr(note->id, ==, id);
+    g_assert_cmpstr(note->title, ==, "Caffè");
+    g_assert_cmpstr(note->text, ==, "Riga uno\nRiga due\n");
+    g_assert_cmpstr(note->tags, ==, "café;work");
+    g_assert_cmpint(note->x, ==, 10);
+    g_assert_cmpint(note->y, ==, 20);
+    g_assert_cmpint(note->w, ==, 321);
+    g_assert_cmpint(note->h, ==, 210);
+    g_assert_cmpint(note->palette, ==, 5);
+    g_assert_cmpint(note->color, ==, 2);
+    g_assert_cmpint(note->size, ==, 3);
+    g_assert_cmpint(note->opacity, ==, 70);
+    g_assert_true(note->open);
+    g_assert_false(note->collapsed);
+    g_assert_true(note->has_title);
+    g_assert_true(note->custom_ink);
+    g_assert_cmpuint(note->date, ==, 20240115u);
+    g_assert_cmpint(store_app_get_int(store, "palette", 0), ==, 7);
+    {
+        char *config_ini = g_build_filename(config, "notes.ini", NULL);
+
+        g_assert_false(g_file_test(config_ini, G_FILE_TEST_EXISTS));
+        g_free(config_ini);
+    }
+
+    g_assert_true(store_save(store, note, &err));
+    g_assert_no_error(err);
+    metadata = read_utf16le(ini);
+    g_assert_nonnull(strstr(metadata, "width=321"));
+    g_assert_nonnull(strstr(metadata, "height=210"));
+    g_assert_nonnull(strstr(metadata, "open=1"));
+    g_assert_nonnull(strstr(metadata, "has_title=1"));
+    g_assert_nonnull(strstr(metadata, "future=keep"));
+    g_assert_null(strstr(metadata, "w=321"));
+    g_assert_null(strstr(metadata, "open=true"));
+    g_assert_null(strstr(metadata, "archive.path"));
+    g_free(metadata);
+    raw = NULL;
+    g_assert_true(g_file_get_contents(txt, &raw, NULL, &err));
+    g_assert_no_error(err);
+    g_assert_cmpstr(raw, ==, "#Caffè\r\nRiga uno\r\nRiga due\r\n");
+    g_free(raw);
+
+    store_free(store);
+    g_free(txt);
+    g_free(ini);
+    remove_tree(archive);
+    remove_tree(config);
+    g_free(archive);
+    g_free(config);
+}
+
+static void test_cp1252_metadata(void) {
+    static const unsigned char ini_bytes[] =
+        "[note-cp]\nwidth=200\nheight=150\ntags=caf\xe9\nopen=1\n";
+    GError *err = NULL;
+    char *archive = g_dir_make_tmp("jotilla-test-cp1252-XXXXXX", &err);
+    char *config = g_dir_make_tmp("jotilla-test-cp1252-cfg-XXXXXX", &err);
+    char *txt;
+    char *ini;
+    Store *store;
+    Note *note;
+
+    g_assert_no_error(err);
+    txt = g_build_filename(archive, "note-cp.txt", NULL);
+    ini = g_build_filename(archive, "notes.ini", NULL);
+    g_assert_true(g_file_set_contents(txt, "corpo\n", -1, &err));
+    g_assert_true(g_file_set_contents(ini, (const char *)ini_bytes,
+                                      sizeof(ini_bytes) - 1, &err));
+    g_assert_no_error(err);
+
+    store = store_open(archive, config, &err);
+    g_assert_no_error(err);
+    g_assert_nonnull(store);
+    g_assert_cmpuint(store->notes->len, ==, 1);
+    note = g_ptr_array_index(store->notes, 0);
+    g_assert_cmpstr(note->tags, ==, "café");
+    g_assert_cmpint(note->w, ==, 200);
+    g_assert_cmpint(note->h, ==, 150);
+    g_assert_true(note->open);
+    store_free(store);
+
+    g_free(txt);
+    g_free(ini);
+    remove_tree(archive);
+    remove_tree(config);
+    g_free(archive);
+    g_free(config);
+}
+
+static void test_macos_uuid_archive(void) {
+    const char *id = "123e4567-e89b-12d3-a456-426614174000";
+    GError *err = NULL;
+    char *archive = g_dir_make_tmp("jotilla-test-uuid-XXXXXX", &err);
+    char *config = g_dir_make_tmp("jotilla-test-uuid-cfg-XXXXXX", &err);
+    char *txt = g_build_filename(archive,
+        "123e4567-e89b-12d3-a456-426614174000.txt", NULL);
+    Store *store;
+    Note *note;
+
+    g_assert_no_error(err);
+    g_assert_true(g_file_set_contents(txt, "Nota macOS\r\n", -1, &err));
+    g_assert_no_error(err);
+
+    store = store_open(archive, config, &err);
+    g_assert_no_error(err);
+    g_assert_nonnull(store);
+    g_assert_cmpuint(store->notes->len, ==, 1);
+    note = g_ptr_array_index(store->notes, 0);
+    g_assert_cmpstr(note->id, ==, id);
+    g_assert_cmpstr(note->text, ==, "Nota macOS\n");
+    store_free(store);
+
+    g_free(txt);
+    remove_tree(archive);
+    remove_tree(config);
+    g_free(archive);
+    g_free(config);
+}
+
+static void test_archive_lock_and_blank_notes(void) {
+    GError *err = NULL;
+    char *archive = g_dir_make_tmp("jotilla-test-lock-XXXXXX", &err);
+    char *config_a = g_dir_make_tmp("jotilla-test-lock-a-XXXXXX", &err);
+    char *config_b = g_dir_make_tmp("jotilla-test-lock-b-XXXXXX", &err);
+    char *blank;
+    Store *first;
+    Store *second;
+
+    g_assert_no_error(err);
+    blank = g_build_filename(archive, "note-blank.txt", NULL);
+    g_assert_true(g_file_set_contents(blank, " \r\n\t", -1, &err));
+    g_assert_no_error(err);
+
+    first = store_open(archive, config_a, &err);
+    g_assert_no_error(err);
+    g_assert_nonnull(first);
+    g_assert_cmpuint(first->notes->len, ==, 0);
+    g_assert_true(g_file_test(blank, G_FILE_TEST_EXISTS));
+
+    second = store_open(archive, config_b, &err);
+    g_assert_null(second);
+    g_assert_nonnull(err);
+    g_clear_error(&err);
+
+    store_free(first);
+    second = store_open(archive, config_b, &err);
+    g_assert_no_error(err);
+    g_assert_nonnull(second);
+    store_free(second);
+
+    g_free(blank);
+    remove_tree(archive);
+    remove_tree(config_a);
+    remove_tree(config_b);
+    g_free(archive);
+    g_free(config_a);
+    g_free(config_b);
+}
+
+static void test_unavailable_archive_path(void) {
+    GError *err = NULL;
+    char *base = g_dir_make_tmp("jotilla-test-missing-XXXXXX", &err);
+    char *config = g_build_filename(base, "config", NULL);
+    char *missing = g_build_filename(base, "missing", NULL);
+    char *path_file = g_build_filename(config, "archive.path", NULL);
+    Store *store;
+
+    g_assert_no_error(err);
+    g_assert_cmpint(g_mkdir_with_parents(config, 0700), ==, 0);
+    g_assert_true(g_file_set_contents(path_file, missing, -1, &err));
+    g_assert_no_error(err);
+
+    store = store_open(NULL, config, &err);
+    g_assert_null(store);
+    g_assert_nonnull(err);
+    g_clear_error(&err);
+    g_assert_false(g_file_test(missing, G_FILE_TEST_IS_DIR));
+
+    remove_tree(base);
+    g_free(config);
+    g_free(missing);
+    g_free(path_file);
     g_free(base);
 }
 
@@ -443,6 +723,11 @@ int main(int argc, char **argv) {
     g_test_add_func("/core/app_int_persistence", test_app_int_persistence);
     g_test_add_func("/core/note_id_format", test_note_id_format);
     g_test_add_func("/core/archive_path_persistence", test_archive_path_persistence);
+    g_test_add_func("/core/cross_platform_archive", test_cross_platform_archive);
+    g_test_add_func("/core/cp1252_metadata", test_cp1252_metadata);
+    g_test_add_func("/core/macos_uuid_archive", test_macos_uuid_archive);
+    g_test_add_func("/core/archive_lock_blank_notes", test_archive_lock_and_blank_notes);
+    g_test_add_func("/core/unavailable_archive_path", test_unavailable_archive_path);
 
     return g_test_run();
 }

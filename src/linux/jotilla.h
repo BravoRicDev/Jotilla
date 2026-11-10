@@ -28,6 +28,9 @@ typedef struct {
     char *archive_dir;
     char *config_dir;
     char *notes_ini;
+    char *archive_path_file;
+    int lock_fd;
+    gboolean portable;
     GPtrArray *notes;
 } Store;
 

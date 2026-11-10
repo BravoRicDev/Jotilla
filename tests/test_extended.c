@@ -571,7 +571,6 @@ static void test_search_term_limit(void) {
     GString *full;
     GString *partial;
     GString *query;
-    GString *bad_query;
     GPtrArray *results;
     Store *store;
     Note *note;
@@ -600,9 +599,21 @@ static void test_search_term_limit(void) {
     note = store_new(store, partial->str);
     g_assert_nonnull(note);
 
-    /* La query con 20 termini non deve andare in crash; il parser ne usa 16. */
+    /* La query con 20 termini e' invalida, come su Windows e macOS. */
     query = g_string_new(NULL);
     for (i = 1; i <= 20; ++i) {
+        if (i > 1)
+            g_string_append_c(query, ' ');
+        g_string_append_printf(query, "t%02u", i);
+    }
+    results = store_search(store, query->str, NULL, &err);
+    g_assert_nonnull(err);
+    g_assert_null(results);
+    g_clear_error(&err);
+
+    /* Sedici termini restano validi e trovano entrambe le note. */
+    g_string_truncate(query, 0);
+    for (i = 1; i <= 16; ++i) {
         if (i > 1)
             g_string_append_c(query, ' ');
         g_string_append_printf(query, "t%02u", i);
@@ -613,17 +624,16 @@ static void test_search_term_limit(void) {
     g_assert_cmpuint(results->len, ==, 2);
     g_ptr_array_free(results, TRUE);
 
-    /* Termine assente nei primi 16: la nota non deve risultare. */
-    bad_query = g_string_new("absent");
-    for (i = 1; i <= 19; ++i)
-        g_string_append_printf(bad_query, " t%02u", i);
-    results = store_search(store, bad_query->str, NULL, &err);
-    g_assert_no_error(err);
-    g_assert_nonnull(results);
-    g_assert_cmpuint(results->len, ==, 0);
-    g_ptr_array_free(results, TRUE);
+    results = store_search(store, "\"unclosed", NULL, &err);
+    g_assert_nonnull(err);
+    g_assert_null(results);
+    g_clear_error(&err);
 
-    g_string_free(bad_query, TRUE);
+    results = store_search(store, "#bad;tag", NULL, &err);
+    g_assert_nonnull(err);
+    g_assert_null(results);
+    g_clear_error(&err);
+
     g_string_free(query, TRUE);
     g_string_free(partial, TRUE);
     g_string_free(full, TRUE);
