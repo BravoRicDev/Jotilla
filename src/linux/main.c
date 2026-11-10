@@ -4,6 +4,7 @@
 #include <glib-unix.h>
 #include <cairo.h>
 #include <signal.h>
+#include <errno.h>
 #include <string.h>
 #include "jotilla.h"
 #include "note_window.h"
@@ -97,14 +98,102 @@ static void on_archive_open(Note *note, gpointer data)
 {    open_note(data, note);
 }
 
+/* Sposta i file delle note (note-*.txt/note-*.rtf) tra due directory. */
+static gboolean move_note_files(const char *from_dir, const char *to_dir,
+                                GError **err)
+{    static const char *extensions[] = { ".txt", ".rtf" };
+    GDir *dir;
+    const char *name;
+    gboolean ok = TRUE;
+
+    dir = g_dir_open(from_dir, 0, err);
+    if (dir == NULL)
+        return FALSE;
+
+    while (ok && (name = g_dir_read_name(dir)) != NULL) {
+        char *src;
+        char *dst;
+        gboolean matches = FALSE;
+        guint i;
+
+        if (!g_str_has_prefix(name, "note-"))
+            continue;
+        for (i = 0; i < G_N_ELEMENTS(extensions); ++i) {
+            if (g_str_has_suffix(name, extensions[i])) {
+                matches = TRUE;
+                break;
+            }
+        }
+        if (!matches)
+            continue;
+
+        src = g_build_filename(from_dir, name, NULL);
+        dst = g_build_filename(to_dir, name, NULL);
+
+        if (g_rename(src, dst) != 0) {
+            /* Fallback per rename tra filesystem diversi. */
+            char *contents = NULL;
+            gsize length = 0;
+
+            if (!g_file_get_contents(src, &contents, &length, err)) {
+                ok = FALSE;
+            } else if (!g_file_set_contents(dst, contents, (gssize)length,
+                                            err)) {
+                g_free(contents);
+                ok = FALSE;
+            } else {
+                g_free(contents);
+                if (g_remove(src) != 0 && errno != ENOENT) {
+                    g_set_error(err, G_FILE_ERROR,
+                                g_file_error_from_errno(errno),
+                                "Failed to remove '%s'", src);
+                    ok = FALSE;
+                }
+            }
+        }
+        g_free(src);
+        g_free(dst);
+    }
+    g_dir_close(dir);
+    return ok;
+}
+
 /* Riapre store e archivio quando cambia il percorso dell'archivio. */
-static void on_archive_change(const char *path, gpointer data)
+static void on_archive_change(const char *path, gboolean move, gpointer data)
 {    AppCtx *ctx = data;
     GError *err = NULL;
     Store *new_store;
 
     if (ctx == NULL || path == NULL || *path == '\0')
         return;
+
+    if (move) {
+        /* Salva e chiude le note esistenti prima di spostare i file. */
+        if (ctx->note_windows != NULL) {
+            while (ctx->note_windows->len > 0) {
+                GtkWidget *window = g_ptr_array_index(
+                    ctx->note_windows, ctx->note_windows->len - 1);
+                if (note_window_save != NULL)
+                    note_window_save(window);
+                gtk_widget_destroy(window);
+            }
+        }
+
+        if (g_mkdir_with_parents(path, 0700) != 0) {
+            g_warning("Could not create archive directory '%s'", path);
+            return;
+        }
+
+        if (ctx->store != NULL && ctx->store->archive_dir != NULL &&
+            g_strcmp0(ctx->store->archive_dir, path) != 0) {
+            if (!move_note_files(ctx->store->archive_dir, path, &err)) {
+                g_warning("Could not move notes to '%s': %s", path,
+                          err != NULL ? err->message : "unknown error");
+                g_clear_error(&err);
+                return;
+            }
+        }
+    }
 
     new_store = store_open(path, ctx->config_dir, &err);
     if (new_store == NULL) {

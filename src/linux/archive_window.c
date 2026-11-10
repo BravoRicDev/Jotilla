@@ -1574,6 +1574,7 @@ static gboolean on_window_key_press(GtkWidget *widget, GdkEventKey *event,
 static void on_open_folder(GtkButton *button, gpointer data) {
     ArchiveWindow *aw = data;
     GtkWidget *dialog;
+    char *path = NULL;
 
     (void)button;
     dialog = gtk_file_chooser_dialog_new(
@@ -1584,12 +1585,36 @@ static void on_open_folder(GtkButton *button, gpointer data) {
     if (aw->store && aw->store->archive_dir)
         gtk_file_chooser_set_current_folder(GTK_FILE_CHOOSER(dialog),
                                             aw->store->archive_dir);
-    if (gtk_dialog_run(GTK_DIALOG(dialog)) == GTK_RESPONSE_ACCEPT) {
-        char *path = gtk_file_chooser_get_filename(GTK_FILE_CHOOSER(dialog));
-        if (path && aw->change_cb) aw->change_cb(path, aw->change_data);
-        g_free(path);
-    }
+    if (gtk_dialog_run(GTK_DIALOG(dialog)) == GTK_RESPONSE_ACCEPT)
+        path = gtk_file_chooser_get_filename(GTK_FILE_CHOOSER(dialog));
     gtk_widget_destroy(dialog);
+
+    if (!path) return;
+
+    dialog = gtk_message_dialog_new(
+        GTK_WINDOW(aw->window),
+        GTK_DIALOG_MODAL | GTK_DIALOG_DESTROY_WITH_PARENT,
+        GTK_MESSAGE_QUESTION, GTK_BUTTONS_NONE,
+        "Switch archive folder?");
+    gtk_message_dialog_format_secondary_text(
+        GTK_MESSAGE_DIALOG(dialog),
+        "Move the existing notes into the new folder, or just open it?");
+    gtk_dialog_add_button(GTK_DIALOG(dialog), "_Cancel", GTK_RESPONSE_CANCEL);
+    gtk_dialog_add_button(GTK_DIALOG(dialog), "_Open here", GTK_RESPONSE_NO);
+    gtk_dialog_add_button(GTK_DIALOG(dialog), "Move notes here",
+                          GTK_RESPONSE_YES);
+    {
+        gint response = gtk_dialog_run(GTK_DIALOG(dialog));
+
+        gtk_widget_destroy(dialog);
+        dialog = NULL;
+        if (response == GTK_RESPONSE_YES || response == GTK_RESPONSE_NO) {
+            gboolean move = response == GTK_RESPONSE_YES;
+
+            if (aw->change_cb) aw->change_cb(path, move, aw->change_data);
+        }
+    }
+    g_free(path);
 }
 
 /* Abilita o disabilita l'avvio automatico da menu. */
