@@ -13,6 +13,7 @@
 #include "platform.h"
 #include "calendar.h"
 #include "date.h"
+#include "tags.h"
 
 /* La funzione puo' essere assente in build parziali dell'archivio. */
 extern void archive_window_focus_search(GtkWidget *window) __attribute__((weak));
@@ -57,7 +58,9 @@ typedef struct {
 } UndoSnapshot;
 
 /* Salva il contenuto e lo stato della finestra. */
-static void save_now(GtkWidget *window);
+static gboolean save_now(GtkWidget *window);
+/* Alterna lo stato collassato. */
+static void header_collapse_clicked(GtkButton *button, gpointer data);
 /* Applica un colore di testo alla selezione. */
 static void apply_foreground(GtkWidget *window, const char *hex);
 /* Registra lo stato corrente nella pila undo. */
@@ -175,14 +178,15 @@ static void set_save_error(GtkWidget *window, gboolean failed)
 }
 
 /* Salva il contenuto e lo stato della finestra. */
-static void save_now(GtkWidget *window)
+static gboolean save_now(GtkWidget *window)
 {
     Store *store = window_store(window);
     Note *note = window_note(window);
     GtkTextView *view = window_view(window);
+    gboolean saved = TRUE;
 
     if (store == NULL || note == NULL)
-        return;
+        return TRUE;
 
     if (view != NULL) {
         GtkTextBuffer *buffer = gtk_text_view_get_buffer(view);
@@ -221,7 +225,7 @@ static void save_now(GtkWidget *window)
 
     {
         GError *err = NULL;
-        gboolean saved = store_save(store, note, &err);
+        saved = store_save(store, note, &err);
 
         if (!saved) {
             if (err != NULL) {
@@ -252,6 +256,7 @@ static void save_now(GtkWidget *window)
         if (hook != NULL && hook->fn != NULL)
             hook->fn(note, hook->data);
     }
+    return saved;
 }
 
 /* Libera una istantanea. */
@@ -1360,6 +1365,188 @@ static gboolean todo_enter_linux(GtkWidget *window)
     return TRUE;
 }
 
+typedef struct {
+    char *name;
+    int count;
+} TagRow;
+
+/* Libera una riga del modello di completamento. */
+static void tag_row_free(gpointer data)
+{
+    TagRow *row = data;
+
+    if (row == NULL)
+        return;
+    g_free(row->name);
+    g_free(row);
+}
+
+/* Ordina per utilizzi decrescenti, poi per nome. */
+static gint tag_row_compare(gconstpointer a, gconstpointer b)
+{
+    const TagRow *left = *(const TagRow *const *)a;
+    const TagRow *right = *(const TagRow *const *)b;
+
+    if (left->count != right->count)
+        return left->count > right->count ? -1 : 1;
+    return g_utf8_collate(left->name, right->name);
+}
+
+/* Costruisce l'elenco dei tag ordinato per utilizzi, con fallback al catalogo. */
+static GPtrArray *tag_completion_rows(Store *store)
+{
+    GPtrArray *rows = g_ptr_array_new_with_free_func(tag_row_free);
+    char *counts = store_tag_counts(store);
+    char **lines;
+    guint i;
+    gboolean have_counts = FALSE;
+
+    if (counts != NULL && counts[0] != '\0') {
+        lines = g_strsplit(counts, "\n", -1);
+        for (i = 0; lines[i] != NULL; ++i) {
+            char *tab = strchr(lines[i], '\t');
+            char *name;
+            TagRow *row;
+
+            if (tab == NULL)
+                continue;
+            name = g_strndup(lines[i], (gsize)(tab - lines[i]));
+            g_strstrip(name);
+            if (name[0] == '\0') {
+                g_free(name);
+                continue;
+            }
+            row = g_new0(TagRow, 1);
+            row->name = name;
+            row->count = (int)g_ascii_strtoll(tab + 1, NULL, 10);
+            g_ptr_array_add(rows, row);
+            have_counts = TRUE;
+        }
+        g_strfreev(lines);
+    }
+    g_free(counts);
+
+    if (!have_counts) {
+        char *catalog = store_tags_catalog(store);
+        lines = g_strsplit(catalog != NULL ? catalog : "", "\n", -1);
+        for (i = 0; lines[i] != NULL; ++i) {
+            char *name = g_strstrip(lines[i]);
+            TagRow *row;
+
+            if (name[0] == '\0' || g_strcmp0(name, "All tags") == 0)
+                continue;
+            row = g_new0(TagRow, 1);
+            row->name = g_strdup(name);
+            g_ptr_array_add(rows, row);
+        }
+        g_strfreev(lines);
+        g_free(catalog);
+    }
+
+    g_ptr_array_sort(rows, tag_row_compare);
+    return rows;
+}
+
+/* Inizio del token corrente dopo l'ultimo ';' (spazi iniziali esclusi). */
+static const char *tag_token_start(const char *text)
+{
+    const char *start = text != NULL ? text : "";
+    const char *semi = strrchr(start, ';');
+
+    if (semi != NULL)
+        start = semi + 1;
+    while (*start == ' ' || *start == '\t')
+        ++start;
+    return start;
+}
+
+/* Estrae prefisso e tag gia' assegnati prima del token corrente. */
+static void tag_completion_parts(const char *text, char **token, char **assigned)
+{
+    const char *base = text != NULL ? text : "";
+    const char *semi = strrchr(base, ';');
+    const char *start = semi != NULL ? semi + 1 : base;
+
+    while (*start == ' ' || *start == '\t')
+        ++start;
+    if (*start == '#')
+        ++start;
+
+    *token = g_strstrip(g_strdup(start));
+    if (semi != NULL) {
+        char *before = g_strndup(base, (gsize)(semi - base));
+        *assigned = tags_normalize(before);
+        g_free(before);
+    } else {
+        *assigned = g_strdup("");
+    }
+}
+
+/* Confronta il token corrente con un tag del modello. */
+static gboolean on_tag_completion_match(GtkEntryCompletion *completion,
+                                        const gchar *key, GtkTreeIter *iter,
+                                        gpointer data)
+{
+    GtkTreeModel *model = gtk_entry_completion_get_model(completion);
+    char *name = NULL;
+    char *token = NULL;
+    char *assigned = NULL;
+    gboolean matched = FALSE;
+
+    (void)data;
+
+    if (model == NULL)
+        return FALSE;
+
+    gtk_tree_model_get(model, iter, 0, &name, -1);
+    tag_completion_parts(key, &token, &assigned);
+
+    if (name != NULL && token != NULL && !tags_contains(assigned, name)) {
+        char *folded_name = g_utf8_casefold(name, -1);
+        char *folded_token = g_utf8_casefold(token, -1);
+
+        if (folded_name != NULL && folded_token != NULL &&
+            g_str_has_prefix(folded_name, folded_token))
+            matched = TRUE;
+        g_free(folded_name);
+        g_free(folded_token);
+    }
+
+    g_free(name);
+    g_free(token);
+    g_free(assigned);
+    return matched;
+}
+
+/* Sostituisce solo il token corrente e posiziona il cursore in fondo. */
+static gboolean on_tag_completion_selected(GtkEntryCompletion *completion,
+                                           GtkTreeModel *model, GtkTreeIter *iter,
+                                           gpointer data)
+{
+    GtkWidget *entry = data;
+    const char *text = gtk_entry_get_text(GTK_ENTRY(entry));
+    const char *start = tag_token_start(text);
+    char *name = NULL;
+    char *head;
+    char *combined;
+
+    (void)completion;
+
+    gtk_tree_model_get(model, iter, 0, &name, -1);
+    if (name == NULL)
+        return FALSE;
+
+    head = g_strndup(text, (gsize)(start - text));
+    combined = g_strconcat(head, name, "; ", NULL);
+    gtk_entry_set_text(GTK_ENTRY(entry), combined);
+    gtk_editable_set_position(GTK_EDITABLE(entry), -1);
+
+    g_free(combined);
+    g_free(head);
+    g_free(name);
+    return TRUE;
+}
+
 /* Dialogo per modificare i tag della nota. */
 static void on_tags_activate(GtkMenuItem *item, gpointer data)
 {
@@ -1392,36 +1579,30 @@ static void on_tags_activate(GtkMenuItem *item, gpointer data)
     gtk_box_pack_start(GTK_BOX(content), entry, TRUE, TRUE, 0);
 
     {
-        char *catalog = store_tags_catalog(store);
+        GPtrArray *rows = tag_completion_rows(store);
         GtkEntryCompletion *completion = gtk_entry_completion_new();
         GtkListStore *model = gtk_list_store_new(1, G_TYPE_STRING);
+        guint i;
 
-        if (catalog != NULL) {
-            char **lines = g_strsplit(catalog, "\n", -1);
-            guint i = 0;
+        for (i = 0; i < rows->len; ++i) {
+            TagRow *row = g_ptr_array_index(rows, i);
+            GtkTreeIter iter;
 
-            if (lines[0] != NULL &&
-                g_strcmp0(g_strstrip(lines[0]), "All tags") == 0)
-                i = 1;
-
-            for (; lines[i] != NULL; ++i) {
-                char *name = g_strstrip(lines[i]);
-                GtkTreeIter iter;
-
-                if (name[0] == '\0')
-                    continue;
-                gtk_list_store_append(model, &iter);
-                gtk_list_store_set(model, &iter, 0, name, -1);
-            }
-            g_strfreev(lines);
+            gtk_list_store_append(model, &iter);
+            gtk_list_store_set(model, &iter, 0, row->name, -1);
         }
 
         gtk_entry_completion_set_model(completion, GTK_TREE_MODEL(model));
         gtk_entry_completion_set_text_column(completion, 0);
+        gtk_entry_completion_set_minimum_key_length(completion, 0);
+        gtk_entry_completion_set_match_func(completion, on_tag_completion_match,
+                                            NULL, NULL);
+        g_signal_connect(completion, "match-selected",
+                         G_CALLBACK(on_tag_completion_selected), entry);
         gtk_entry_set_completion(GTK_ENTRY(entry), completion);
         g_object_unref(model);
         g_object_unref(completion);
-        g_free(catalog);
+        g_ptr_array_free(rows, TRUE);
     }
 
     gtk_widget_show_all(dialog);
@@ -1661,6 +1842,98 @@ static void on_browse_notes(GtkMenuItem *item, gpointer data)
     invoke_archive(data);
 }
 
+/* Gestore menu: assegna un giorno alla nota. */
+static void on_assign_day_activate(GtkMenuItem *item, gpointer data)
+{
+    (void)item;
+    on_calendar_activate(NULL, data);
+}
+
+/* Gestore menu: piega o espande la nota. */
+static void on_fold_activate(GtkMenuItem *item, gpointer data)
+{
+    (void)item;
+    header_collapse_clicked(NULL, data);
+}
+
+/* Gestore menu: salva subito la nota. */
+static void on_save_now_activate(GtkMenuItem *item, gpointer data)
+{
+    (void)item;
+    save_now(data);
+}
+
+/* Mostra un errore di esportazione. */
+static void report_export_error(GtkWidget *window, const char *message)
+{
+    GtkWidget *dialog = gtk_message_dialog_new(
+        GTK_WINDOW(window),
+        GTK_DIALOG_MODAL | GTK_DIALOG_DESTROY_WITH_PARENT,
+        GTK_MESSAGE_ERROR, GTK_BUTTONS_CLOSE,
+        "Could not export the RTF copy");
+    gtk_message_dialog_format_secondary_text(GTK_MESSAGE_DIALOG(dialog), "%s",
+                                             message != NULL ? message : "Unknown error.");
+    gtk_dialog_run(GTK_DIALOG(dialog));
+    gtk_widget_destroy(dialog);
+}
+
+/* Gestore menu: esporta una copia RTF del buffer corrente. */
+static void on_export_rtf_activate(GtkMenuItem *item, gpointer data)
+{
+    GtkWidget *window = data;
+    GtkTextView *view = window_view(window);
+    GtkTextBuffer *buffer;
+    GtkWidget *dialog;
+    GtkFileFilter *filter;
+    char *rtf;
+    char *filename = NULL;
+
+    (void)item;
+
+    if (view == NULL)
+        return;
+
+    buffer = gtk_text_view_get_buffer(view);
+    if (buffer == NULL)
+        return;
+
+    rtf = rtf_from_buffer(buffer);
+    if (rtf == NULL) {
+        report_export_error(window, "The note could not be converted to RTF.");
+        return;
+    }
+
+    dialog = gtk_file_chooser_dialog_new(
+        "Export an RTF copy", GTK_WINDOW(window), GTK_FILE_CHOOSER_ACTION_SAVE,
+        "_Cancel", GTK_RESPONSE_CANCEL,
+        "_Save", GTK_RESPONSE_ACCEPT, NULL);
+    gtk_file_chooser_set_do_overwrite_confirmation(GTK_FILE_CHOOSER(dialog), TRUE);
+    gtk_file_chooser_set_current_name(GTK_FILE_CHOOSER(dialog), "Note copy.rtf");
+
+    filter = gtk_file_filter_new();
+    gtk_file_filter_set_name(filter, "RTF files (*.rtf)");
+    gtk_file_filter_add_pattern(filter, "*.rtf");
+    gtk_file_chooser_add_filter(GTK_FILE_CHOOSER(dialog), filter);
+    gtk_file_chooser_set_filter(GTK_FILE_CHOOSER(dialog), filter);
+
+    if (gtk_dialog_run(GTK_DIALOG(dialog)) == GTK_RESPONSE_ACCEPT)
+        filename = gtk_file_chooser_get_filename(GTK_FILE_CHOOSER(dialog));
+    gtk_widget_destroy(dialog);
+
+    if (filename != NULL) {
+        GError *err = NULL;
+
+        if (!g_file_set_contents(filename, rtf, -1, &err)) {
+            report_export_error(window, err != NULL ? err->message : NULL);
+            if (err != NULL)
+                g_error_free(err);
+        }
+        g_free(filename);
+    }
+
+    g_free(rtf);
+}
+
 /* Crea una voce di menu con tooltip. */
 static GtkWidget *tip_item(const char *label, const char *tip)
 {
@@ -1760,6 +2033,24 @@ static GtkWidget *build_menu(GtkWidget *window)
     g_signal_connect(item, "activate", G_CALLBACK(on_tags_activate), window);
     gtk_menu_shell_append(GTK_MENU_SHELL(menu), item);
 
+    gtk_menu_shell_append(GTK_MENU_SHELL(menu), gtk_separator_menu_item_new());
+
+    item = tip_item("Assign day…", "Assign a date to the note");
+    g_signal_connect(item, "activate", G_CALLBACK(on_assign_day_activate), window);
+    gtk_menu_shell_append(GTK_MENU_SHELL(menu), item);
+
+    item = tip_item("Fold / expand", "Collapse or expand the note");
+    g_signal_connect(item, "activate", G_CALLBACK(on_fold_activate), window);
+    gtk_menu_shell_append(GTK_MENU_SHELL(menu), item);
+
+    item = tip_item("Save now", "Save the note now (Ctrl+S)");
+    g_signal_connect(item, "activate", G_CALLBACK(on_save_now_activate), window);
+    gtk_menu_shell_append(GTK_MENU_SHELL(menu), item);
+
+    item = tip_item("Export an RTF copy…", "Export the note as an RTF file");
+    g_signal_connect(item, "activate", G_CALLBACK(on_export_rtf_activate), window);
+    gtk_menu_shell_append(GTK_MENU_SHELL(menu), item);
+
     gtk_widget_show_all(menu);
     return menu;
 }
@@ -1813,8 +2104,16 @@ static gboolean on_delete(GtkWidget *widget, GdkEvent *event, gpointer data)
     (void)data;
 
     if (!GPOINTER_TO_INT(g_object_get_data(G_OBJECT(window), "deleted"))) {
-        if (!delete_empty_note(window))
-            save_now(window);
+        if (!delete_empty_note(window) && !save_now(window)) {
+            GtkWidget *dialog = gtk_message_dialog_new(
+                GTK_WINDOW(window), GTK_DIALOG_MODAL | GTK_DIALOG_DESTROY_WITH_PARENT,
+                GTK_MESSAGE_ERROR, GTK_BUTTONS_CLOSE,
+                "This note could not be saved. Check that the archive is writable. "
+                "The note will stay open.");
+            gtk_dialog_run(GTK_DIALOG(dialog));
+            gtk_widget_destroy(dialog);
+            return TRUE;
+        }
     }
     return FALSE;
 }
@@ -2215,6 +2514,21 @@ static gboolean on_key_press(GtkWidget *widget, GdkEventKey *event, gpointer dat
     return FALSE;
 }
 
+/* Imposta la dimensione minima consentita in base allo stato collassato. */
+static void update_min_size(GtkWidget *window)
+{
+    Note *note = window_note(window);
+    GdkGeometry geometry = { 0 };
+
+    if (note == NULL)
+        return;
+
+    geometry.min_width = 160;
+    geometry.min_height = note->collapsed ? 32 : 100;
+    gtk_window_set_geometry_hints(GTK_WINDOW(window), NULL, &geometry,
+                                  GDK_HINT_MIN_SIZE);
+}
+
 /* Aggiorna lo stato collassato e le dimensioni. */
 static void update_collapsed(GtkWidget *window, gboolean collapsed)
 {
@@ -2226,9 +2540,13 @@ static void update_collapsed(GtkWidget *window, gboolean collapsed)
         return;
 
     width = note->w > 0 ? note->w : 280;
+    if (width < 160)
+        width = 160;
     if (note->h < 100)
         note->h = 260;
+    note->w = width;
     note->collapsed = collapsed;
+    update_min_size(window);
     /* Nasconde il contenuto e ridimensiona la finestra */
     gtk_widget_set_visible(scrolled, !collapsed);
     if (collapsed)
@@ -2264,7 +2582,16 @@ static void header_close_clicked(GtkButton *button, gpointer data)
 
     (void)button;
 
-    save_now(window);
+    if (!save_now(window)) {
+        GtkWidget *dialog = gtk_message_dialog_new(
+            GTK_WINDOW(window), GTK_DIALOG_MODAL | GTK_DIALOG_DESTROY_WITH_PARENT,
+            GTK_MESSAGE_ERROR, GTK_BUTTONS_CLOSE,
+            "This note could not be saved. Check that the archive is writable. "
+            "The note will stay open.");
+        gtk_dialog_run(GTK_DIALOG(dialog));
+        gtk_widget_destroy(dialog);
+        return;
+    }
     gtk_widget_destroy(window);
 }
 
@@ -2294,6 +2621,23 @@ static void set_accessible_name(GtkWidget *widget, const char *name)
 
     if (accessible != NULL)
         atk_object_set_name(accessible, name);
+}
+
+/* Salva quando la finestra perde il focus, come su Windows/macOS. */
+static gboolean on_focus_out(GtkWidget *widget, GdkEventFocus *event, gpointer data)
+{
+    GtkWidget *window = widget;
+
+    (void)event;
+    (void)data;
+
+    if (GPOINTER_TO_INT(g_object_get_data(G_OBJECT(window), "loading")))
+        return FALSE;
+    if (GPOINTER_TO_INT(g_object_get_data(G_OBJECT(window), "deleted")))
+        return FALSE;
+
+    save_now(window);
+    return FALSE;
 }
 
 /* Crea e inizializza una nuova finestra nota. */
@@ -2329,12 +2673,15 @@ GtkWidget *note_window_new(Store *store, Note *note)
     gtk_window_set_keep_above(GTK_WINDOW(window), TRUE);
     gtk_window_set_skip_taskbar_hint(GTK_WINDOW(window), TRUE);
     gtk_window_set_skip_pager_hint(GTK_WINDOW(window), TRUE);
+    if (note->w > 0 && note->w < 160)
+        note->w = 160;
     gtk_window_set_default_size(GTK_WINDOW(window),
                                 note->w > 0 ? note->w : 280,
                                 (note->collapsed || note->h < 100) ? 260 :
                                 (note->h > 0 ? note->h : 260));
     gtk_window_move(GTK_WINDOW(window), note->x, note->y);
     gtk_window_set_title(GTK_WINDOW(window), "Jotilla");
+    update_min_size(window);
 
     outer = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
     gtk_container_add(GTK_CONTAINER(window), outer);
@@ -2421,6 +2768,7 @@ GtkWidget *note_window_new(Store *store, Note *note)
     g_signal_connect(buffer, "changed", G_CALLBACK(on_buffer_changed), window);
     g_signal_connect(window, "configure-event", G_CALLBACK(on_configure), NULL);
     g_signal_connect(window, "key-press-event", G_CALLBACK(on_key_press), NULL);
+    g_signal_connect(window, "focus-out-event", G_CALLBACK(on_focus_out), NULL);
     g_signal_connect(window, "delete-event", G_CALLBACK(on_delete), NULL);
     g_signal_connect(window, "destroy", G_CALLBACK(on_destroy), NULL);
 

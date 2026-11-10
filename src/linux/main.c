@@ -130,7 +130,7 @@ static gboolean move_note_files(const char *from_dir, const char *to_dir,
         dst = g_build_filename(to_dir, name, NULL);
 
         if (g_rename(src, dst) != 0) {
-            /* Fallback per rename tra filesystem diversi. */
+            /* Fallback per rename tra filesystem diversi, con verifica byte. */
             char *contents = NULL;
             gsize length = 0;
 
@@ -141,8 +141,21 @@ static gboolean move_note_files(const char *from_dir, const char *to_dir,
                 g_free(contents);
                 ok = FALSE;
             } else {
+                char *check = NULL;
+                gsize check_length = 0;
+                gboolean same = g_file_get_contents(dst, &check,
+                                                    &check_length, NULL) &&
+                                check_length == length &&
+                                memcmp(check, contents, length) == 0;
+
+                g_free(check);
                 g_free(contents);
-                if (g_remove(src) != 0 && errno != ENOENT) {
+                if (!same) {
+                    (void)g_remove(dst);
+                    g_set_error(err, G_FILE_ERROR, G_FILE_ERROR_IO,
+                                "The copied file '%s' did not verify", dst);
+                    ok = FALSE;
+                } else if (g_remove(src) != 0 && errno != ENOENT) {
                     g_set_error(err, G_FILE_ERROR,
                                 g_file_error_from_errno(errno),
                                 "Failed to remove '%s'", src);
@@ -187,6 +200,27 @@ static void on_archive_change(const char *path, gboolean move, gpointer data)
         return;
 
     if (move) {
+        char *old_path = ctx->store != NULL && ctx->store->archive_dir != NULL
+                             ? g_canonicalize_filename(ctx->store->archive_dir, NULL)
+                             : NULL;
+        char *new_path = g_canonicalize_filename(path, NULL);
+        size_t old_length = old_path != NULL ? strlen(old_path) : 0;
+        size_t new_length = strlen(new_path);
+        gboolean nested = old_path != NULL &&
+            ((g_str_has_prefix(new_path, old_path) && new_path[old_length] == '/') ||
+             (g_str_has_prefix(old_path, new_path) && old_path[new_length] == '/'));
+
+        if (old_path != NULL && g_strcmp0(old_path, new_path) == 0) {
+            g_free(old_path);
+            g_free(new_path);
+            return;
+        }
+        g_free(old_path);
+        g_free(new_path);
+        if (nested) {
+            g_warning("The destination cannot contain or be inside the current archive: '%s'", path);
+            return;
+        }
         if (ctx->store != NULL && ctx->store->archive_dir != NULL &&
             g_strcmp0(ctx->store->archive_dir, path) != 0 &&
             g_file_test(path, G_FILE_TEST_IS_DIR) && !archive_dir_empty(path)) {

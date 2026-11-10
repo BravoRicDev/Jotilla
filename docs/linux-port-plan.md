@@ -9,8 +9,8 @@ The Linux implementation is in place and builds/tests on this machine.
 - **Toolkit:** GTK3 3.24 (GTK4 development headers were not installed in the build environment; GTK3 is available system-wide). The architecture keeps GTK code isolated so a GTK4 migration can be done later.
 - **Build:** CMake + Ninja; targets `jotilla`, `test_core`, `test_rtf`, `test_extended`, `window_probe`, `xui`.
 - **Implemented:**
-  - XDG storage: `$XDG_DATA_HOME/jotilla/notes`, `$XDG_CONFIG_HOME/jotilla/notes.ini`.
-  - File-compatible notes: UTF-8 `.txt`, `.rtf` companion, INI metadata (`notes.ini`).
+  - XDG storage: `$XDG_DATA_HOME/jotilla/notes` (with `notes.ini` inside the archive), machine-local `$XDG_CONFIG_HOME/jotilla/archive.path`.
+  - File-compatible notes: UTF-8 `.txt` with CRLF, `.rtf` companion, Windows/macOS-compatible UTF-16LE `notes.ini`.
   - Note windows: 1 px paper border, same-colour title bar with calendar icon, title, collapse (`—`) and close (`×`); right-click menu for all actions; autosave (400 ms debounce) and save-on-quit; title promotion (first line, or Shift+Enter); checklist markers (`☐`/`☑`) with paragraph strikethrough and single undo.
   - Formatting: bold, italic, underline, strikethrough and text colour; undo/redo; word-wrap toggle; five note sizes (Small, Medium, Large, Extra large, Square); opacity control.
   - Palette picker: 83 palettes (3 built-in + 80 popular) with previous/next navigation and a persisted favourite palette.
@@ -98,8 +98,8 @@ tags.c/.h
 
 ### 2.5 Storage format
 - Note files: `note-YYYY-MM-DD_HH-MM-SS-mmm-ccc.txt` (UTF-8) + `.rtf` (companion) + `.ini` (per-note metadata: tags, calendar_date).
-- `notes.ini` (archive-level): per-note sections with layout keys (`x`, `y`, `color`, `has_title`, `collapsed`, `open`, `palette`, `size`, `opacity`, `width`, `height`, `custom_ink`), `tags`, `calendar_date`.
-- Archive path resolved via `portable.flag` (portable) or `%LOCALAPPDATA%` (installed); `archive.path` config.
+- `notes.ini` inside the archive: per-note sections with layout keys (`x`, `y`, `color`, `has_title`, `collapsed`, `open`, `palette`, `size`, `opacity`, `width`, `height`, `custom_ink`), `tags`, `calendar_date`; UTF-16LE with BOM, CRLF, unknown keys preserved.
+- Archive path resolved via `portable.flag` (portable) or XDG defaults; the chosen path is stored in the machine-local `archive.path` file, never in the synced archive.
 - Limits: text 16 MB (`TEXT_LIMIT`), tag name 63 chars, 24 tags max, 2 KB tags string, excerpt 1200 chars.
 
 ### 2.6 Module responsibilities

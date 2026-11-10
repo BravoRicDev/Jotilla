@@ -16,6 +16,10 @@
 #define ARCHIVE_CARD_WIDTH 220
 #define ARCHIVE_CARD_HEIGHT 170
 #define ARCHIVE_HIGHLIGHT "#e4c46d"
+#define CAL_PAD 8
+#define CAL_TITLE_H 20
+#define CAL_WEEK_H 16
+#define CAL_GRID_TOP (CAL_TITLE_H + CAL_WEEK_H + 4)
 
 enum {
     DATE_COL_LABEL,
@@ -41,6 +45,9 @@ typedef struct {
     GtkWidget *flow;
     GtkWidget *flow_scroll;
     GtkWidget *calendar;
+    GtkWidget *calendar_year;
+    GtkWidget *calendar_prev;
+    GtkWidget *calendar_next;
     GtkWidget *calendar_list;
     GtkWidget *calendar_label;
     GtkWidget *sidebar_stack;
@@ -53,6 +60,7 @@ typedef struct {
     ArchiveChangeFunc change_cb;
     gpointer change_data;
     Note *first_note;
+    GPtrArray *visible_notes;
     char *tag_filter;
     guint32 date_filter;
     gint date_kind;
@@ -61,6 +69,14 @@ typedef struct {
     gdouble flow_scroll_x;
     gdouble flow_scroll_y;
     guint flow_scroll_restore_id;
+    GHashTable *day_counts;
+    guint32 cal_year;
+    guint32 cal_selected;
+    guint32 cal_focus;
+    guint32 cal_today;
+    guint32 cal_hover;
+    gboolean cal_updating;
+    guint search_timeout_id;
 } ArchiveWindow;
 
 /* Ricarica la lista con filtri e ricerca. */
@@ -84,6 +100,8 @@ static void populate_sidebar(ArchiveWindow *aw);
 static void sync_tag_tree(ArchiveWindow *aw);
 /* Pulisce ricerca e filtri. */
 static void clear_search_filters(ArchiveWindow *aw);
+/* Aggiorna titolo finestra e header in base a vista e filtri. */
+static void update_window_title(ArchiveWindow *aw);
 
 /* Restituisce lo stato della finestra archivio. */
 static ArchiveWindow *get_state(GtkWidget *window) {
@@ -853,6 +871,7 @@ static void on_calendar_clicked(GtkButton *button, gpointer data) {
         gtk_stack_set_visible_child_name(GTK_STACK(aw->stack), "calendar");
         update_calendar(aw);
     }
+    update_window_title(aw);
 }
 
 /* Alterna albero date/tag nella sidebar. */
@@ -911,10 +930,30 @@ static void on_tags_clicked(GtkButton *button, gpointer data) {
     g_string_free(text, TRUE);
 }
 
-/* Ripoppola la lista dopo la ricerca. */
+/* Annulla il timer di debounce della ricerca. */
+static void cancel_search_timeout(ArchiveWindow *aw) {
+    if (aw->search_timeout_id) {
+        g_source_remove(aw->search_timeout_id);
+        aw->search_timeout_id = 0;
+    }
+}
+
+/* Esegue la ricerca rimandata dal debounce. */
+static gboolean search_debounce_cb(gpointer data) {
+    ArchiveWindow *aw = data;
+
+    aw->search_timeout_id = 0;
+    repopulate_list(aw);
+    return G_SOURCE_REMOVE;
+}
+
+/* Ripoppola la lista dopo la ricerca, con debounce di 150 ms. */
 static void on_search_changed(GtkSearchEntry *entry, gpointer data) {
+    ArchiveWindow *aw = data;
+
     (void)entry;
-    repopulate_list(data);
+    cancel_search_timeout(aw);
+    aw->search_timeout_id = g_timeout_add(150, search_debounce_cb, aw);
 }
 
 /* Ripoppola la lista dopo il filtro tag. */
@@ -930,12 +969,6 @@ static void on_filter_changed(GtkComboBox *combo, gpointer data) {
     aw->tag_filter = text;
     sync_tag_tree(aw);
     repopulate_list(aw);
-}
-
-/* Aggiorna la lista del giorno selezionato. */
-static void on_calendar_day_selected(GtkCalendar *calendar, gpointer data) {
-    (void)calendar;
-    update_calendar(data);
 }
 
 /* Comparatore per chiavi numeriche. */
@@ -1319,6 +1352,34 @@ static void restore_flow_scroll_later(ArchiveWindow *aw) {
         g_idle_add_full(G_PRIORITY_DEFAULT_IDLE, restore_flow_scroll, aw, NULL);
 }
 
+/* Aggiorna titolo finestra e header in base a vista e filtri. */
+static void update_window_title(ArchiveWindow *aw) {
+    const char *visible;
+    const char *text;
+    gboolean calendar_view;
+    gboolean filtered;
+    const char *header_title;
+    char *window_title;
+
+    if (!aw || !aw->header) return;
+    visible = gtk_stack_get_visible_child_name(GTK_STACK(aw->stack));
+    calendar_view = visible && g_strcmp0(visible, "calendar") == 0;
+    text = gtk_entry_get_text(GTK_ENTRY(aw->search));
+    filtered = (text && *text) ||
+               (aw->tag_filter && *aw->tag_filter) ||
+               (aw->date_filter && aw->date_kind > 0);
+
+    if (calendar_view)
+        header_title = filtered ? "Calendar - Filtered notes" : "Calendar";
+    else
+        header_title = "Archive";
+
+    gtk_header_bar_set_title(GTK_HEADER_BAR(aw->header), header_title);
+    window_title = g_strdup_printf("Jotilla \342\200\224 %s", header_title);
+    gtk_window_set_title(GTK_WINDOW(aw->window), window_title);
+    g_free(window_title);
+}
+
 /* Ricarica la lista con filtri e ricerca. */
 static void repopulate_list(ArchiveWindow *aw) {
     const char *text;
@@ -1334,6 +1395,10 @@ static void repopulate_list(ArchiveWindow *aw) {
 
     clear_flowbox(aw->flow);
     aw->first_note = NULL;
+    if (!aw->visible_notes)
+        aw->visible_notes = g_ptr_array_new();
+    else
+        g_ptr_array_set_size(aw->visible_notes, 0);
 
     text = gtk_entry_get_text(GTK_ENTRY(aw->search));
     query = (text && *text) ? text : NULL;
@@ -1345,6 +1410,7 @@ static void repopulate_list(ArchiveWindow *aw) {
 
             if (!note) continue;
             if (!note_matches_date(aw, note->date)) continue;
+            g_ptr_array_add(aw->visible_notes, note);
             ++total;
             if (shown < ARCHIVE_RESULT_LIMIT) {
                 gtk_flow_box_insert(GTK_FLOW_BOX(aw->flow),
@@ -1385,30 +1451,495 @@ static void repopulate_list(ArchiveWindow *aw) {
     }
     gtk_header_bar_set_subtitle(GTK_HEADER_BAR(aw->header), subtitle->str);
     g_string_free(subtitle, TRUE);
+    update_window_title(aw);
+    update_calendar(aw);
 }
 
-/* Marca sul calendario ogni giorno distinto che contiene almeno una nota. */
+/* Data odierna in formato AAAAMMGG (0 se non disponibile). */
+static guint32 calendar_today_date(void) {
+    GDateTime *now = g_date_time_new_now_local();
+    guint32 date;
+
+    if (!now) return 0;
+    date = (guint32)(g_date_time_get_year(now) * 10000 +
+                     g_date_time_get_month(now) * 100 +
+                     g_date_time_get_day_of_month(now));
+    g_date_time_unref(now);
+    return date;
+}
+
+/* Colonne della griglia annuale in base alla larghezza disponibile. */
+static gint calendar_columns(gint width) {
+    return width >= 900 ? 4 : 3;
+}
+
+/* Data sotto il puntatore nella vista annuale (0 se nessuna). */
+static guint32 calendar_date_at(ArchiveWindow *aw, gint width, gint height,
+                                gint px, gint py) {
+    gint cols, rows, mw, mh, idx, cw, ch, month, gx, gy, slot, day;
+    guint32 first;
+
+    if (!aw || width <= 0 || height <= 0 || px < 0 || py < 0) return 0;
+    cols = calendar_columns(width);
+    rows = 12 / cols;
+    mw = width / cols;
+    mh = height / rows;
+    idx = (py / mh) * cols + (px / mw);
+    if (idx < 0 || idx >= 12) return 0;
+    month = idx + 1;
+    cw = (mw - 2 * CAL_PAD) / 7;
+    ch = (mh - CAL_GRID_TOP - CAL_PAD) / 6;
+    if (cw < 1 || ch < 1) return 0;
+    gx = px - (idx % cols) * mw - CAL_PAD;
+    gy = py - (idx / cols) * mh - CAL_GRID_TOP;
+    if (gx < 0 || gx >= cw * 7 || gy < 0 || gy >= ch * 6) return 0;
+    first = aw->cal_year * 10000u + (guint32)month * 100u + 1u;
+    slot = (gy / ch) * 7 + (gx / cw);
+    day = slot - date_weekday(first) + 1;
+    if (day < 1 || day > date_days((gint)aw->cal_year, month)) return 0;
+    return aw->cal_year * 10000u + (guint32)month * 100u + (guint32)day;
+}
+
+/* Disegna testo centrato in un rettangolo con Pango. */
+static void calendar_draw_text(cairo_t *cr, PangoLayout *layout,
+                               const char *text, PangoFontDescription *font,
+                               const GdkRGBA *color, gint x, gint y,
+                               gint w, gint h, PangoAlignment align) {
+    gint th = 0;
+
+    pango_layout_set_font_description(layout, font);
+    pango_layout_set_text(layout, text, -1);
+    pango_layout_set_width(layout, w > 0 ? w * PANGO_SCALE : -1);
+    pango_layout_set_alignment(layout, align);
+    pango_layout_set_ellipsize(layout, PANGO_ELLIPSIZE_NONE);
+    pango_layout_get_pixel_size(layout, NULL, &th);
+    gdk_cairo_set_source_rgba(cr, color);
+    cairo_move_to(cr, x, y + (h - th) / 2.0);
+    pango_cairo_show_layout(cr, layout);
+}
+
+/* Disegna la griglia annuale con marcatori e selezione. */
+static gboolean on_calendar_draw(GtkWidget *widget, cairo_t *cr, gpointer data) {
+    static const char *const month_names[12] = {
+        "January", "February", "March", "April", "May", "June",
+        "July", "August", "September", "October", "November", "December"
+    };
+    static const char *const week_names[7] = {
+        "M", "T", "W", "T", "F", "S", "S"
+    };
+    ArchiveWindow *aw = data;
+    GtkStyleContext *context = gtk_widget_get_style_context(widget);
+    PangoFontDescription *base, *heading, *weekday, *day_font, *badge_font;
+    PangoLayout *layout;
+    GdkRGBA ink, dim, edge, accent, selected_ink, hover;
+    gint width = gtk_widget_get_allocated_width(widget);
+    gint height = gtk_widget_get_allocated_height(widget);
+    gint cols, rows, mw, mh, month;
+
+    gtk_render_background(context, cr, 0, 0, width, height);
+    if (width <= 0 || height <= 0) return FALSE;
+
+    gtk_style_context_get_color(context,
+                                gtk_style_context_get_state(context), &ink);
+    dim = ink;
+    dim.alpha *= 0.55;
+    edge = ink;
+    edge.alpha *= 0.35;
+    hover = ink;
+    hover.alpha *= 0.08;
+    accent = (GdkRGBA){211 / 255.0, 194 / 255.0, 162 / 255.0, 0.80};
+    selected_ink = (GdkRGBA){0.23, 0.20, 0.17, 1.0};
+
+    base = pango_font_description_copy(
+        pango_context_get_font_description(gtk_widget_get_pango_context(widget)));
+    heading = pango_font_description_copy(base);
+    pango_font_description_set_weight(heading, PANGO_WEIGHT_BOLD);
+    pango_font_description_set_size(heading, 12 * PANGO_SCALE);
+    weekday = pango_font_description_copy(base);
+    pango_font_description_set_size(weekday, 8 * PANGO_SCALE);
+    day_font = pango_font_description_copy(base);
+    pango_font_description_set_size(day_font, 9 * PANGO_SCALE);
+    badge_font = pango_font_description_copy(base);
+    pango_font_description_set_weight(badge_font, PANGO_WEIGHT_BOLD);
+    pango_font_description_set_size(badge_font, 7 * PANGO_SCALE);
+    layout = pango_cairo_create_layout(cr);
+
+    cols = calendar_columns(width);
+    rows = 12 / cols;
+    mw = width / cols;
+    mh = height / rows;
+
+    for (month = 1; month <= 12; ++month) {
+        gint idx = month - 1;
+        gint ox = (idx % cols) * mw;
+        gint oy = (idx / cols) * mh;
+        gint cw = (mw - 2 * CAL_PAD) / 7;
+        gint ch = (mh - CAL_GRID_TOP - CAL_PAD) / 6;
+        guint32 first = aw->cal_year * 10000u + (guint32)month * 100u + 1u;
+        gint d;
+
+        if (cw < 1 || ch < 1) continue;
+
+        calendar_draw_text(cr, layout, month_names[idx], heading, &ink,
+                           ox, oy, mw, CAL_TITLE_H, PANGO_ALIGN_CENTER);
+        for (d = 0; d < 7; ++d)
+            calendar_draw_text(cr, layout, week_names[d], weekday, &dim,
+                               ox + CAL_PAD + d * cw, oy + CAL_TITLE_H,
+                               cw, CAL_WEEK_H, PANGO_ALIGN_CENTER);
+
+        for (d = 1; d <= date_days((gint)aw->cal_year, month); ++d) {
+            guint32 date = aw->cal_year * 10000u + (guint32)month * 100u +
+                           (guint32)d;
+            guint count = GPOINTER_TO_UINT(
+                g_hash_table_lookup(aw->day_counts, GUINT_TO_POINTER(date)));
+            gint x, y, w, h, slot;
+            char number[8];
+
+            slot = date_weekday(first) + d - 1;
+            x = ox + CAL_PAD + (slot % 7) * cw;
+            y = oy + CAL_GRID_TOP + (slot / 7) * ch;
+            w = cw;
+            h = ch;
+
+            if (date == aw->cal_hover && date != aw->cal_selected) {
+                cairo_set_source_rgba(cr, hover.red, hover.green,
+                                      hover.blue, hover.alpha);
+                cairo_rectangle(cr, x, y, w, h);
+                cairo_fill(cr);
+            }
+            if (date == aw->cal_selected) {
+                gdouble r = MIN(w, h) / 2.0 - 1.0;
+
+                cairo_set_source_rgba(cr, accent.red, accent.green,
+                                      accent.blue, accent.alpha);
+                cairo_arc(cr, x + w / 2.0, y + h / 2.0, r, 0, 2 * G_PI);
+                cairo_fill(cr);
+            } else if (count > 0) {
+                gdouble r = MIN(w, h) / 2.0 - 1.0;
+
+                cairo_set_source_rgba(cr, edge.red, edge.green,
+                                      edge.blue, edge.alpha);
+                cairo_set_line_width(cr, 1.0);
+                cairo_arc(cr, x + w / 2.0, y + h / 2.0, r, 0, 2 * G_PI);
+                cairo_stroke(cr);
+            }
+
+            g_snprintf(number, sizeof(number), "%d", d);
+            calendar_draw_text(cr, layout, number, day_font,
+                               date == aw->cal_selected ? &selected_ink : &ink,
+                               x, y, w, h, PANGO_ALIGN_CENTER);
+
+            if (count > 1) {
+                gint br = MIN(w, h) / 4;
+                gint bx, by;
+                char label[8];
+
+                if (br < 4) br = 4;
+                bx = x + w - br - 1;
+                by = y + 1;
+                g_snprintf(label, sizeof(label), "%u", count > 9 ? 9u : count);
+                cairo_set_source_rgba(cr, accent.red, accent.green,
+                                      accent.blue, 0.95);
+                cairo_arc(cr, bx + br / 2.0, by + br / 2.0, br / 2.0,
+                          0, 2 * G_PI);
+                cairo_fill(cr);
+                calendar_draw_text(cr, layout, label, badge_font,
+                                   &selected_ink, bx, by, br, br,
+                                   PANGO_ALIGN_CENTER);
+            }
+
+            if (date == aw->cal_today) {
+                cairo_set_source_rgba(cr, ink.red, ink.green, ink.blue, 0.9);
+                cairo_set_line_width(cr, 1.5);
+                cairo_move_to(cr, x + w * 0.2, y + h - 2.0);
+                cairo_line_to(cr, x + w * 0.8, y + h - 2.0);
+                cairo_stroke(cr);
+            }
+
+            if (date == aw->cal_focus && gtk_widget_has_focus(widget)) {
+                const double dashes[2] = {2.0, 2.0};
+
+                cairo_set_source_rgba(cr, ink.red, ink.green, ink.blue, 0.6);
+                cairo_set_line_width(cr, 1.0);
+                cairo_set_dash(cr, dashes, 2, 0);
+                cairo_rectangle(cr, x + 0.5, y + 0.5, w - 1, h - 1);
+                cairo_stroke(cr);
+                cairo_set_dash(cr, NULL, 0, 0);
+            }
+        }
+    }
+
+    g_object_unref(layout);
+    pango_font_description_free(base);
+    pango_font_description_free(heading);
+    pango_font_description_free(weekday);
+    pango_font_description_free(day_font);
+    pango_font_description_free(badge_font);
+    return FALSE;
+}
+
+/* Scrive l'anno nel campo senza innescare la validazione. */
+static void calendar_sync_year_entry(ArchiveWindow *aw) {
+    char text[16];
+
+    if (!aw->calendar_year) return;
+    g_snprintf(text, sizeof(text), "%u", aw->cal_year);
+    aw->cal_updating = TRUE;
+    gtk_entry_set_text(GTK_ENTRY(aw->calendar_year), text);
+    aw->cal_updating = FALSE;
+}
+
+/* Seleziona una data e aggiorna lista e disegno. */
+static void calendar_select_date(ArchiveWindow *aw, guint32 date,
+                                 gboolean refresh) {
+    if (!date_valid(date)) return;
+    aw->cal_selected = date;
+    aw->cal_focus = date;
+    if (date / 10000u != aw->cal_year) {
+        aw->cal_year = date / 10000u;
+        calendar_sync_year_entry(aw);
+    }
+    gtk_widget_queue_draw(aw->calendar);
+    if (refresh) update_calendar(aw);
+}
+
+/* Cambia anno mantenendo il giorno del mese quando possibile. */
+static void calendar_set_year(ArchiveWindow *aw, guint year) {
+    guint32 focus;
+    gint month, day, max_day;
+
+    if (year < DATE_MIN_YEAR) year = DATE_MIN_YEAR;
+    if (year > DATE_MAX_YEAR) year = DATE_MAX_YEAR;
+    focus = date_valid(aw->cal_focus) ? aw->cal_focus : calendar_today_date();
+    if (!date_valid(focus)) focus = (guint32)year * 10000u + 101u;
+    month = (gint)(focus / 100u % 100u);
+    day = (gint)(focus % 100u);
+    max_day = date_days((gint)year, month);
+    if (day > max_day) day = max_day;
+
+    aw->cal_year = year;
+    aw->cal_focus = (guint32)year * 10000u + (guint32)month * 100u +
+                    (guint32)day;
+    if (aw->cal_selected && aw->cal_selected / 10000u != year)
+        aw->cal_selected = 0;
+    calendar_sync_year_entry(aw);
+    gtk_widget_queue_draw(aw->calendar);
+    update_calendar(aw);
+}
+
+/* Valida e applica l'anno digitato. */
+static void calendar_commit_year(ArchiveWindow *aw) {
+    const char *text;
+    gchar *end = NULL;
+    gint64 value;
+
+    if (!aw->calendar_year || aw->cal_updating) return;
+    text = gtk_entry_get_text(GTK_ENTRY(aw->calendar_year));
+    value = g_ascii_strtoll(text, &end, 10);
+    while (end && g_ascii_isspace(*end)) ++end;
+    if (!text[0] || (end && *end) ||
+        value < DATE_MIN_YEAR || value > DATE_MAX_YEAR) {
+        calendar_sync_year_entry(aw);
+        return;
+    }
+    calendar_set_year(aw, (guint)value);
+}
+
+/* Apre la prima nota di una data, se presente. */
+static void open_day_first_note(ArchiveWindow *aw, guint32 date) {
+    guint i;
+
+    if (!aw->store || !aw->store->notes) return;
+    for (i = 0; i < aw->store->notes->len; ++i) {
+        Note *note = g_ptr_array_index(aw->store->notes, i);
+
+        if (!note || note->date != date) continue;
+        if (aw->open_cb) aw->open_cb(note, aw->open_data);
+        return;
+    }
+}
+
+/* Sposta una data di N mesi, saturando il giorno. */
+static guint32 calendar_shift_month(guint32 date, gint delta) {
+    gint year = (gint)(date / 10000u);
+    gint month = (gint)(date / 100u % 100u);
+    gint day = (gint)(date % 100u);
+    gint max_day;
+
+    if (!date_valid(date)) return date;
+    month += delta;
+    while (month < 1) {
+        month += 12;
+        --year;
+    }
+    while (month > 12) {
+        month -= 12;
+        ++year;
+    }
+    if (year < DATE_MIN_YEAR || year > DATE_MAX_YEAR) return date;
+    max_day = date_days(year, month);
+    if (day > max_day) day = max_day;
+    return (guint32)(year * 10000 + month * 100 + day);
+}
+
+/* Gestione tastiera della vista annuale. */
+static gboolean on_calendar_key_press(GtkWidget *widget, GdkEventKey *event,
+                                      gpointer data) {
+    ArchiveWindow *aw = data;
+    guint32 base = aw->cal_selected ? aw->cal_selected : aw->cal_focus;
+    guint32 date = base;
+    gboolean move = TRUE;
+
+    (void)widget;
+    if (!date_valid(base))
+        base = aw->cal_year * 10000u + 101u;
+    date = base;
+
+    switch (event->keyval) {
+    case GDK_KEY_Left:
+        date = date_shift(base, -1);
+        break;
+    case GDK_KEY_Right:
+        date = date_shift(base, 1);
+        break;
+    case GDK_KEY_Up:
+        date = date_shift(base, -7);
+        break;
+    case GDK_KEY_Down:
+        date = date_shift(base, 7);
+        break;
+    case GDK_KEY_Page_Up:
+        date = calendar_shift_month(base, -1);
+        break;
+    case GDK_KEY_Page_Down:
+        date = calendar_shift_month(base, 1);
+        break;
+    case GDK_KEY_Home:
+        date = base / 100u * 100u + 1u;
+        break;
+    case GDK_KEY_End: {
+        guint year = base / 10000u;
+        guint month = base / 100u % 100u;
+
+        date = year * 10000u + month * 100u +
+               (guint32)date_days((gint)year, (gint)month);
+        break;
+    }
+    case GDK_KEY_Return:
+    case GDK_KEY_KP_Enter:
+        if (!aw->cal_selected) calendar_select_date(aw, base, TRUE);
+        open_day_first_note(aw, aw->cal_selected ? aw->cal_selected : base);
+        return TRUE;
+    case GDK_KEY_Escape:
+        aw->cal_selected = 0;
+        gtk_widget_queue_draw(aw->calendar);
+        update_calendar(aw);
+        return TRUE;
+    default:
+        move = FALSE;
+        break;
+    }
+    if (!move) return FALSE;
+    if (date_valid(date)) calendar_select_date(aw, date, TRUE);
+    return TRUE;
+}
+
+/* Clic su un giorno della vista annuale. */
+static gboolean on_calendar_button_press(GtkWidget *widget, GdkEventButton *event,
+                                         gpointer data) {
+    ArchiveWindow *aw = data;
+    guint32 date;
+    gint width, height;
+
+    if (event->type != GDK_BUTTON_PRESS || event->button != 1) return FALSE;
+    gtk_widget_grab_focus(widget);
+    width = gtk_widget_get_allocated_width(widget);
+    height = gtk_widget_get_allocated_height(widget);
+    date = calendar_date_at(aw, width, height, (gint)event->x, (gint)event->y);
+    if (date) calendar_select_date(aw, date, TRUE);
+    return TRUE;
+}
+
+/* Evidenzia il giorno sotto il puntatore. */
+static gboolean on_calendar_motion(GtkWidget *widget, GdkEventMotion *event,
+                                   gpointer data) {
+    ArchiveWindow *aw = data;
+    guint32 date;
+    gint width, height;
+
+    width = gtk_widget_get_allocated_width(widget);
+    height = gtk_widget_get_allocated_height(widget);
+    date = calendar_date_at(aw, width, height, (gint)event->x, (gint)event->y);
+    if (date != aw->cal_hover) {
+        aw->cal_hover = date;
+        gtk_widget_queue_draw(widget);
+    }
+    return FALSE;
+}
+
+/* Rimuove l'evidenziazione quando il puntatore esce. */
+static gboolean on_calendar_leave(GtkWidget *widget, GdkEventCrossing *event,
+                                  gpointer data) {
+    ArchiveWindow *aw = data;
+
+    (void)widget;
+    (void)event;
+    if (aw->cal_hover) {
+        aw->cal_hover = 0;
+        gtk_widget_queue_draw(aw->calendar);
+    }
+    return FALSE;
+}
+
+/* Applica l'anno digitato. */
+static void on_calendar_year_activate(GtkEntry *entry, gpointer data) {
+    (void)entry;
+    calendar_commit_year(data);
+}
+
+/* Applica l'anno quando il campo perde il focus. */
+static gboolean on_calendar_year_focus_out(GtkWidget *widget, GdkEvent *event,
+                                           gpointer data) {
+    (void)widget;
+    (void)event;
+    calendar_commit_year(data);
+    return FALSE;
+}
+
+/* Passo anno dai pulsanti precedente/successivo. */
+static void on_calendar_year_step(GtkButton *button, gpointer data) {
+    ArchiveWindow *aw = data;
+    gint step = GPOINTER_TO_INT(g_object_get_data(G_OBJECT(button), "step"));
+    gint64 year = (gint64)aw->cal_year + step;
+
+    if (year < DATE_MIN_YEAR) year = DATE_MIN_YEAR;
+    if (year > DATE_MAX_YEAR) year = DATE_MAX_YEAR;
+    calendar_set_year(aw, (guint)year);
+}
+
+/* Marca sulla vista annuale ogni giorno che contiene almeno una nota. */
 static void refresh_calendar_marks(ArchiveWindow *aw) {
-    GHashTable *seen;
     guint i;
 
     if (!aw || !aw->calendar) return;
-    gtk_calendar_clear_marks(GTK_CALENDAR(aw->calendar));
-    if (!aw->store || !aw->store->notes) return;
+    if (!aw->day_counts)
+        aw->day_counts = g_hash_table_new(g_direct_hash, g_direct_equal);
+    else
+        g_hash_table_remove_all(aw->day_counts);
+    if (aw->visible_notes) {
+        for (i = 0; i < aw->visible_notes->len; ++i) {
+            Note *note = g_ptr_array_index(aw->visible_notes, i);
+            guint count;
 
-    seen = g_hash_table_new(g_direct_hash, g_direct_equal);
-    for (i = 0; i < aw->store->notes->len; ++i) {
-        Note *note = g_ptr_array_index(aw->store->notes, i);
-        guint day;
-
-        if (!note || !note->date || !date_valid(note->date)) continue;
-        day = note->date % 100u;
-        if (!day || g_hash_table_contains(seen, GUINT_TO_POINTER(day)))
-            continue;
-        g_hash_table_add(seen, GUINT_TO_POINTER(day));
-        gtk_calendar_mark_day(GTK_CALENDAR(aw->calendar), day);
+            if (!note || !note->date || !date_valid(note->date)) continue;
+            count = GPOINTER_TO_UINT(
+                g_hash_table_lookup(aw->day_counts,
+                                    GUINT_TO_POINTER(note->date)));
+            g_hash_table_insert(aw->day_counts, GUINT_TO_POINTER(note->date),
+                                GUINT_TO_POINTER(count + 1));
+        }
     }
-    g_hash_table_destroy(seen);
+    gtk_widget_queue_draw(aw->calendar);
 }
 
 /* Aggiorna il calendario e le note del giorno. */
@@ -1427,22 +1958,25 @@ static void update_calendar(ArchiveWindow *aw) {
     if (!aw || !aw->calendar || !aw->calendar_list) return;
 
     refresh_calendar_marks(aw);
-    gtk_calendar_get_date(GTK_CALENDAR(aw->calendar), &year, &month, &day);
-    if (day == 0) {
+    selected = aw->cal_selected;
+    if (!date_valid(selected)) {
         clear_listbox(aw->calendar_list);
         gtk_label_set_text(GTK_LABEL(aw->calendar_label), "No day selected");
         visible = gtk_stack_get_visible_child_name(GTK_STACK(aw->stack));
         if (visible && g_strcmp0(visible, "calendar") == 0)
             gtk_header_bar_set_subtitle(GTK_HEADER_BAR(aw->header),
                                         "No day selected");
+        update_window_title(aw);
         return;
     }
-    selected = (guint32)(year * 10000u + (month + 1u) * 100u + day);
+    year = selected / 10000u;
+    month = selected / 100u % 100u;
+    day = selected % 100u;
 
     clear_listbox(aw->calendar_list);
-    if (aw->store && aw->store->notes) {
-        for (i = 0; i < aw->store->notes->len; ++i) {
-            Note *note = g_ptr_array_index(aw->store->notes, i);
+    if (aw->visible_notes) {
+        for (i = 0; i < aw->visible_notes->len; ++i) {
+            Note *note = g_ptr_array_index(aw->visible_notes, i);
 
             if (!note || note->date != selected) continue;
             ++total;
@@ -1455,7 +1989,7 @@ static void update_calendar(ArchiveWindow *aw) {
     }
 
     g_snprintf(date_text, sizeof(date_text), "%04u-%02u-%02u",
-               year, month + 1u, day);
+               year, month, day);
     label = g_strdup_printf("%u note%s on %s", total,
                             total == 1 ? "" : "s", date_text);
     gtk_label_set_text(GTK_LABEL(aw->calendar_label), label);
@@ -1463,6 +1997,7 @@ static void update_calendar(ArchiveWindow *aw) {
     visible = gtk_stack_get_visible_child_name(GTK_STACK(aw->stack));
     if (visible && g_strcmp0(visible, "calendar") == 0)
         gtk_header_bar_set_subtitle(GTK_HEADER_BAR(aw->header), label);
+    update_window_title(aw);
     g_free(label);
 }
 
@@ -1489,6 +2024,7 @@ static void focus_flowbox(ArchiveWindow *aw) {
 /* Pulisce ricerca, filtro data e selezione calendario. */
 static void clear_search_filters(ArchiveWindow *aw) {
     if (!aw) return;
+    cancel_search_timeout(aw);
     aw->date_filter = 0;
     aw->date_kind = 0;
     aw->updating_sidebar = TRUE;
@@ -1500,8 +2036,8 @@ static void clear_search_filters(ArchiveWindow *aw) {
     gtk_entry_set_text(GTK_ENTRY(aw->search), "");
     g_signal_handlers_unblock_by_func(aw->search,
                                       G_CALLBACK(on_search_changed), aw);
-    gtk_calendar_clear_marks(GTK_CALENDAR(aw->calendar));
-    gtk_calendar_select_day(GTK_CALENDAR(aw->calendar), 0);
+    aw->cal_selected = 0;
+    gtk_widget_queue_draw(aw->calendar);
     repopulate_list(aw);
     update_calendar(aw);
 }
@@ -1536,6 +2072,21 @@ static gboolean on_window_key_press(GtkWidget *widget, GdkEventKey *event,
     (void)widget;
     if (ctrl && (event->keyval == GDK_KEY_f || event->keyval == GDK_KEY_F)) {
         archive_window_focus_search(aw->window);
+        return TRUE;
+    }
+    if (ctrl && (event->keyval == GDK_KEY_r || event->keyval == GDK_KEY_R)) {
+        archive_window_refresh(aw->window);
+        return TRUE;
+    }
+    if (ctrl && (event->keyval == GDK_KEY_a || event->keyval == GDK_KEY_A) &&
+        !gtk_widget_has_focus(aw->search)) {
+        GList *children = gtk_container_get_children(GTK_CONTAINER(aw->flow));
+        GList *item;
+
+        for (item = children; item != NULL; item = item->next)
+            gtk_flow_box_select_child(GTK_FLOW_BOX(aw->flow),
+                                      GTK_FLOW_BOX_CHILD(item->data));
+        g_list_free(children);
         return TRUE;
     }
     if (event->keyval == GDK_KEY_Escape) {
@@ -1683,8 +2234,11 @@ static void archive_state_free(gpointer data) {
     ArchiveWindow *aw = data;
 
     if (!aw) return;
+    cancel_search_timeout(aw);
     if (aw->flow_scroll_restore_id)
         g_source_remove(aw->flow_scroll_restore_id);
+    if (aw->day_counts) g_hash_table_destroy(aw->day_counts);
+    if (aw->visible_notes) g_ptr_array_free(aw->visible_notes, TRUE);
     g_free(aw->tag_filter);
     g_free(aw);
 }
@@ -1727,6 +2281,14 @@ GtkWidget *archive_window_new(Store *store) {
     aw->window = window;
     aw->store = store;
     aw->sidebar_tags = FALSE;
+    aw->cal_today = calendar_today_date();
+    aw->cal_year = date_valid(aw->cal_today)
+                       ? aw->cal_today / 10000u
+                       : (guint32)DATE_MIN_YEAR;
+    aw->cal_focus = date_valid(aw->cal_today)
+                        ? aw->cal_today
+                        : aw->cal_year * 10000u + 101u;
+    aw->day_counts = g_hash_table_new(g_direct_hash, g_direct_equal);
 
     header = gtk_header_bar_new();
     gtk_header_bar_set_title(GTK_HEADER_BAR(header), "Archive");
@@ -1919,9 +2481,60 @@ GtkWidget *archive_window_new(Store *store) {
     gtk_widget_set_margin_top(calendar_page, 8);
     gtk_widget_set_margin_bottom(calendar_page, 8);
 
-    aw->calendar = gtk_calendar_new();
-    gtk_widget_set_halign(aw->calendar, GTK_ALIGN_CENTER);
-    gtk_box_pack_start(GTK_BOX(calendar_page), aw->calendar, FALSE, FALSE, 0);
+    {
+        GtkWidget *calendar_nav = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
+
+        gtk_widget_set_halign(calendar_nav, GTK_ALIGN_CENTER);
+        aw->calendar_prev = gtk_button_new_with_label("\342\200\271");
+        set_accessible_label(aw->calendar_prev, "Previous year");
+        g_object_set_data(G_OBJECT(aw->calendar_prev), "step",
+                          GINT_TO_POINTER(-1));
+        g_signal_connect(aw->calendar_prev, "clicked",
+                         G_CALLBACK(on_calendar_year_step), aw);
+        gtk_box_pack_start(GTK_BOX(calendar_nav), aw->calendar_prev,
+                           FALSE, FALSE, 0);
+
+        aw->calendar_year = gtk_entry_new();
+        gtk_entry_set_max_length(GTK_ENTRY(aw->calendar_year), 4);
+        gtk_entry_set_width_chars(GTK_ENTRY(aw->calendar_year), 6);
+        gtk_entry_set_alignment(GTK_ENTRY(aw->calendar_year), 0.5f);
+        set_accessible_label(aw->calendar_year, "Calendar year");
+        gtk_box_pack_start(GTK_BOX(calendar_nav), aw->calendar_year,
+                           FALSE, FALSE, 0);
+
+        aw->calendar_next = gtk_button_new_with_label("\342\200\272");
+        set_accessible_label(aw->calendar_next, "Next year");
+        g_object_set_data(G_OBJECT(aw->calendar_next), "step",
+                          GINT_TO_POINTER(1));
+        g_signal_connect(aw->calendar_next, "clicked",
+                         G_CALLBACK(on_calendar_year_step), aw);
+        gtk_box_pack_start(GTK_BOX(calendar_nav), aw->calendar_next,
+                           FALSE, FALSE, 0);
+        gtk_box_pack_start(GTK_BOX(calendar_page), calendar_nav,
+                           FALSE, FALSE, 0);
+    }
+
+    aw->calendar = gtk_drawing_area_new();
+    gtk_style_context_add_class(gtk_widget_get_style_context(aw->calendar),
+                                "view");
+    gtk_widget_set_size_request(aw->calendar, 640, 400);
+    gtk_widget_set_vexpand(aw->calendar, TRUE);
+    gtk_widget_set_can_focus(aw->calendar, TRUE);
+    gtk_widget_add_events(aw->calendar,
+                          GDK_BUTTON_PRESS_MASK | GDK_POINTER_MOTION_MASK |
+                          GDK_LEAVE_NOTIFY_MASK);
+    set_accessible_label(aw->calendar, "Year calendar");
+    g_signal_connect(aw->calendar, "draw", G_CALLBACK(on_calendar_draw), aw);
+    g_signal_connect(aw->calendar, "button-press-event",
+                     G_CALLBACK(on_calendar_button_press), aw);
+    g_signal_connect(aw->calendar, "motion-notify-event",
+                     G_CALLBACK(on_calendar_motion), aw);
+    g_signal_connect(aw->calendar, "leave-notify-event",
+                     G_CALLBACK(on_calendar_leave), aw);
+    g_signal_connect(aw->calendar, "key-press-event",
+                     G_CALLBACK(on_calendar_key_press), aw);
+    gtk_box_pack_start(GTK_BOX(calendar_page), aw->calendar, TRUE, TRUE, 0);
+    calendar_sync_year_entry(aw);
 
     aw->calendar_label = gtk_label_new("");
     gtk_label_set_xalign(GTK_LABEL(aw->calendar_label), 0.0f);
@@ -1961,8 +2574,10 @@ GtkWidget *archive_window_new(Store *store) {
                      G_CALLBACK(on_search_key_press), aw);
     g_signal_connect(aw->tag_combo, "changed",
                      G_CALLBACK(on_filter_changed), aw);
-    g_signal_connect(aw->calendar, "day-selected",
-                     G_CALLBACK(on_calendar_day_selected), aw);
+    g_signal_connect(aw->calendar_year, "activate",
+                     G_CALLBACK(on_calendar_year_activate), aw);
+    g_signal_connect(aw->calendar_year, "focus-out-event",
+                     G_CALLBACK(on_calendar_year_focus_out), aw);
     g_signal_connect(window, "key-press-event",
                      G_CALLBACK(on_window_key_press), aw);
 
@@ -1979,6 +2594,7 @@ void archive_window_refresh(GtkWidget *window) {
     ArchiveWindow *aw = get_state(window);
 
     if (!aw) return;
+    cancel_search_timeout(aw);
     capture_flow_scroll(aw);
     populate_tag_combo(aw);
     populate_sidebar(aw);

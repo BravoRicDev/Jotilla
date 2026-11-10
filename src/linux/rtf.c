@@ -54,6 +54,10 @@ typedef struct {
     gboolean has_comp;
     gboolean colortbl_first;
     gboolean star;
+    int codepage;
+    int uc;
+    int pending_fallback;
+    gunichar high_surrogate;
     gboolean ok;
 } ParseCtx;
 
@@ -171,15 +175,16 @@ static void append_escaped_char(GString *out, gunichar ch) {
         g_string_append_printf(out, "\\'%02x", (unsigned int)ch);
     } else if (ch < 0x80) {
         g_string_append_c(out, (char)ch);
-    } else {
-        char utf8[6];
-        int len = g_unichar_to_utf8(ch, utf8);
-        int i;
+    } else if (ch <= 0xFFFF) {
+        long value = ch > 0x7FFF ? (long)ch - 65536 : (long)ch;
 
-        for (i = 0; i < len; i++) {
-            g_string_append_printf(out, "\\'%02x",
-                                   (unsigned int)(unsigned char)utf8[i]);
-        }
+        g_string_append_printf(out, "\\u%ld?", value);
+    } else {
+        gunichar value = ch - 0x10000;
+        long high = (long)(0xD800 + (value >> 10)) - 65536;
+        long low = (long)(0xDC00 + (value & 0x3FF)) - 65536;
+
+        g_string_append_printf(out, "\\u%ld?\\u%ld?", high, low);
     }
 }
 
@@ -196,7 +201,7 @@ char *rtf_from_buffer(GtkTextBuffer *buffer) {
     int prev_size_half = RTF_DEFAULT_SIZE_HALF;
 
     if (buffer == NULL) {
-        return g_strdup("{\\rtf1\\ansi\\deff0{\\fonttbl{\\f0 Sans;}}{\\colortbl;}}");
+        return g_strdup("{\\rtf1\\ansi\\ansicpg1252\\uc1\\deff0{\\fonttbl{\\f0 Sans;}}{\\colortbl;}}");
     }
 
     used = g_array_new(FALSE, FALSE, sizeof(GdkRGBA));
@@ -213,7 +218,7 @@ char *rtf_from_buffer(GtkTextBuffer *buffer) {
     }
 
     out = g_string_new(NULL);
-    g_string_append(out, "{\\rtf1\\ansi\\deff0{\\fonttbl{\\f0 Sans;}}");
+    g_string_append(out, "{\\rtf1\\ansi\\ansicpg1252\\uc1\\deff0{\\fonttbl{\\f0 Sans;}}");
     g_string_append(out, "{\\colortbl;");
     {
         guint i;
@@ -384,6 +389,55 @@ static void parse_emit_byte(ParseCtx *p, unsigned char byte) {
     g_array_append_val(p->spans, span);
 }
 
+/* Emette un byte nella codepage RTF corrente convertendolo in UTF-8. */
+static void parse_emit_codepage_byte(ParseCtx *p, unsigned char byte) {
+    if (p->codepage == 65001) {
+        parse_emit_byte(p, byte);
+    } else {
+        const char *encoding = p->codepage == 1251 ? "CP1251" : "CP1252";
+        gsize written = 0;
+        char *converted = g_convert((const char *)&byte, 1, "UTF-8", encoding,
+                                    NULL, &written, NULL);
+
+        if (converted != NULL) {
+            gsize index;
+
+            for (index = 0; index < written; index++)
+                parse_emit_byte(p, (unsigned char)converted[index]);
+            g_free(converted);
+        } else {
+            parse_emit_byte(p, byte);
+        }
+    }
+}
+
+/* Emette un code point Unicode RTF (\uN). */
+static void parse_emit_unicode(ParseCtx *p, long value) {
+    gunichar codepoint = (gunichar)(value < 0 ? value + 65536 : value);
+    char utf8[6];
+    int length;
+    int index;
+
+    if (p->high_surrogate) {
+        gunichar high = p->high_surrogate;
+
+        p->high_surrogate = 0;
+        if (codepoint >= 0xDC00 && codepoint <= 0xDFFF)
+            codepoint = 0x10000 + ((high - 0xD800) << 10) +
+                        (codepoint - 0xDC00);
+        else
+            codepoint = 0xFFFD;
+    } else if (codepoint >= 0xD800 && codepoint <= 0xDBFF) {
+        p->high_surrogate = codepoint;
+        return;
+    } else if (codepoint >= 0xDC00 && codepoint <= 0xDFFF) {
+        codepoint = 0xFFFD;
+    }
+    length = g_unichar_to_utf8(codepoint, utf8);
+    for (index = 0; index < length; index++)
+        parse_emit_byte(p, (unsigned char)utf8[index]);
+}
+
 /* Aggiunge colore corrente alla tabella. */
 static void parse_push_color(ParseCtx *p) {
     GdkRGBA color;
@@ -409,6 +463,8 @@ static gboolean rtf_parse_subset(const char *rtf, GString **out_text,
     p.colors = g_array_new(FALSE, FALSE, sizeof(GdkRGBA));
     p.skip_depth = -1;
     p.colortbl_depth = -1;
+    p.codepage = 1252;
+    p.uc = 1;
     p.cur.size_half = RTF_DEFAULT_SIZE_HALF;
     p.ok = TRUE;
     {
@@ -510,6 +566,25 @@ static gboolean rtf_parse_subset(const char *rtf, GString **out_text,
             continue;
         }
 
+        if (p.pending_fallback > 0) {
+            if (c == '\\' && i + 3 < n && s[i + 1] == '\'') {
+                i += 4;
+                --p.pending_fallback;
+                continue;
+            }
+            if (c == '\\' && i + 1 < n &&
+                g_ascii_isalpha((unsigned char)s[i + 1])) {
+                p.pending_fallback = 0;
+            } else if (c == '\r' || c == '\n') {
+                i++;
+                continue;
+            } else {
+                i++;
+                --p.pending_fallback;
+                continue;
+            }
+        }
+
         if (c == '{') {
             p.depth++;
             i++;
@@ -553,7 +628,7 @@ static gboolean rtf_parse_subset(const char *rtf, GString **out_text,
                     p.ok = FALSE;
                     break;
                 }
-                parse_emit_byte(&p, (unsigned char)((hi << 4) | lo));
+                parse_emit_codepage_byte(&p, (unsigned char)((hi << 4) | lo));
                 i += 4;
                 continue;
             }
@@ -603,6 +678,16 @@ static gboolean rtf_parse_subset(const char *rtf, GString **out_text,
                     p.cur.strike = !has_param || param != 0;
                 } else if (g_strcmp0(word, "cf") == 0) {
                     p.cur.color = (has_param && param > 0) ? (int)param : 0;
+                } else if (g_strcmp0(word, "ansicpg") == 0) {
+                    if (has_param && param > 0)
+                        p.codepage = (int)param;
+                } else if (g_strcmp0(word, "uc") == 0) {
+                    p.uc = has_param && param >= 0 ? (int)param : 1;
+                } else if (g_strcmp0(word, "u") == 0) {
+                    if (has_param) {
+                        parse_emit_unicode(&p, param);
+                        p.pending_fallback = p.uc;
+                    }
                 } else if (g_strcmp0(word, "fs") == 0) {
                     if (has_param && param > 0) {
                         long half = param;
@@ -640,6 +725,11 @@ static gboolean rtf_parse_subset(const char *rtf, GString **out_text,
             continue;
         }
 
+        if (c == '\r' || c == '\n') {
+            /* RTF ignora i ritorni a capo usati per formattare il sorgente. */
+            i++;
+            continue;
+        }
         parse_emit_byte(&p, (unsigned char)c);
         i++;
     }

@@ -155,6 +155,35 @@ void platform_hotkey_uninstall(void)
     hotkey_data = NULL;
 }
 
+/* True se l'eseguibile corrente e' in modalita' portatile. */
+static gboolean platform_portable(void)
+{
+    char *exe = g_file_read_link("/proc/self/exe", NULL);
+
+    if (exe != NULL) {
+        char *dir = g_path_get_dirname(exe);
+        char *flag = g_build_filename(dir, "portable.flag", NULL);
+        gboolean found = g_file_test(flag, G_FILE_TEST_EXISTS);
+
+        g_free(flag);
+        g_free(dir);
+        g_free(exe);
+        if (found)
+            return TRUE;
+    }
+    {
+        char *cwd = g_get_current_dir();
+        char *flag = g_build_filename(cwd, "portable.flag", NULL);
+        gboolean found = g_file_test(flag, G_FILE_TEST_EXISTS);
+
+        g_free(flag);
+        g_free(cwd);
+        if (found)
+            return TRUE;
+    }
+    return FALSE;
+}
+
 /* ----------------------------- Autostart ------------------------------ */
 
 /* Percorso del file .desktop di autostart dell'utente. */
@@ -165,9 +194,13 @@ static char *platform_autostart_path(void)
 
 /* True se la voce autostart esiste. */
 gboolean platform_autostart_enabled(void)
-{    char *path = platform_autostart_path();
-    gboolean exists = g_file_test(path, G_FILE_TEST_IS_REGULAR);
+{    char *path;
+    gboolean exists;
 
+    if (platform_portable())
+        return FALSE;
+    path = platform_autostart_path();
+    exists = g_file_test(path, G_FILE_TEST_IS_REGULAR);
     g_free(path);
     return exists;
 }
@@ -181,6 +214,10 @@ gboolean platform_autostart_set(gboolean enabled)
         ok = !g_file_test(path, G_FILE_TEST_EXISTS) || (g_remove(path) == 0);
         g_free(path);
         return ok;
+    }
+    if (platform_portable()) {
+        g_free(path);
+        return FALSE;
     }
 
     {

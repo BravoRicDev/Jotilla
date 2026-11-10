@@ -236,16 +236,16 @@ static char *ini_serialize(Ini *ini)
             g_string_append(text, entry->key);
             g_string_append_c(text, '=');
             g_string_append(text, entry->value ? entry->value : "");
-            g_string_append_c(text, '\n');
+            g_string_append(text, "\r\n");
         } else if (entry->section) {
             g_string_append_c(text, '[');
             g_string_append(text, entry->section);
-            g_string_append(text, "]\n");
+            g_string_append(text, "]\r\n");
         } else if (entry->raw) {
             g_string_append(text, entry->raw);
-            g_string_append_c(text, '\n');
+            g_string_append(text, "\r\n");
         } else {
-            g_string_append_c(text, '\n');
+            g_string_append(text, "\r\n");
         }
     }
     return g_string_free(text, FALSE);
@@ -646,7 +646,12 @@ static gboolean save_ini(Store *store, GError **err)
         ini_set_bool(ini, note->id, "has_title", note->has_title);
         ini_set_bool(ini, note->id, "custom_ink", note->custom_ink);
         ini_set(ini, note->id, "tags", note->tags ? note->tags : "");
-        ini_set_int(ini, note->id, "calendar_date", (gint)note->date);
+        {
+            char date[16];
+
+            g_snprintf(date, sizeof(date), "%08u", note->date);
+            ini_set(ini, note->id, "calendar_date", date);
+        }
         ini_remove_key(ini, note->id, "w");
         ini_remove_key(ini, note->id, "h");
     }

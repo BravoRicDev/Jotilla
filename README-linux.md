@@ -43,11 +43,15 @@ Jotilla follows the XDG Base Directory specification:
 
 - Notes archive: `$XDG_DATA_HOME/jotilla/notes`
   (defaults to `~/.local/share/jotilla/notes`)
-- Configuration: `$XDG_CONFIG_HOME/jotilla/notes.ini`
-  (defaults to `~/.config/jotilla/notes.ini`)
+- Machine-local configuration: `$XDG_CONFIG_HOME/jotilla/archive.path`
+  (defaults to `~/.config/jotilla/archive.path`)
 
-Notes are stored as UTF-8 `.txt` files with optional `.rtf` companions and INI
-metadata, so they remain readable and portable.
+The archive folder is self-contained: UTF-8 `.txt` notes with optional `.rtf`
+companions and a Windows/macOS-compatible `notes.ini` (UTF-16LE with BOM,
+`width`/`height`, `1`/`0` flags, CRLF text). The same folder can be synced and
+opened by Jotilla on Windows, macOS and Linux; only the archive location
+preference stays local to each machine. A `.jotila.lock` file prevents
+concurrent writers.
 
 ## Features
 
@@ -58,11 +62,11 @@ metadata, so they remain readable and portable.
 - Palette picker with 80+ palettes (3 built-in plus the 80 popular palettes)
   and a favourite palette
 - Note sizes (Small, Medium, Large, Extra large, Square) and opacity control
-- Autosave (400 ms debounce) and save-on-quit
+- Autosave (400 ms debounce), save-on-focus-loss, save-on-quit
 - Archive tile view with search-match highlighting, multi-select delete,
   date/tag tree filters, calendar filtering, and open/move archive location
-- Calendar annual (year) view and year navigation
-- Tag normalisation, filtering and autocomplete
+- Annual calendar view with day counts, year navigation and same-day note list
+- Tag normalisation, filtering and per-token autocomplete (usage-ordered)
 - System tray and global hotkey on X11 (see *Platform limitations*)
 - Optional autostart via an XDG autostart desktop entry
 - Portable mode (`portable.flag`) and single-instance behaviour
@@ -79,8 +83,9 @@ Each note is a borderless sticky note with a coloured title bar:
 - `—`: collapse the note to its title bar.
 - `×`: save and close.
 
-Right-click anywhere on the note for the full menu: new note, archive, tags,
-calendar, formatting, palette, opacity, always-on-top, sticky, delete and close.
+Right-click the note for the full menu: open notes archive, browse notes,
+opacity, edit title, note size, new-note palette, tags, assign day, fold,
+save now and export an RTF copy.
 
 Keyboard shortcuts: `Ctrl+N` new note, `Ctrl+S` save, `Ctrl+Z`/`Ctrl+Y`
 (also `Ctrl+Shift+Z`) undo/redo, `Ctrl+B/I/U` bold/italic/underline,

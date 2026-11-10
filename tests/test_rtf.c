@@ -152,11 +152,54 @@ static void test_rtf_font_size(void) {
     g_object_unref(buffer);
 }
 
+static void test_rtf_external_plain_text(void) {
+    const char *rtf =
+        "{\\rtf1\\ansi\\ansicpg1252\\cocoartf2761\n"
+        "{\\fonttbl\\f0\\fswiss\\fcharset0 Helvetica;}\n"
+        "{\\colortbl;\\red255\\green255\\blue255;\\red0\\green0\\blue0;}\n"
+        "{\\*\\expandedcolortbl;;\\cssrgb\\c0\\c0\\c0;}\n"
+        "\\paperw11900\\paperh16840\\margl1440\\margr1440\n"
+        "\\pard\\tx566\\tx1133\\pardirnatural\\partightenfactor0\n"
+        "\\f0\\fs24 \\cf2 Hello \\b bold\\b0  world\\par\n"
+        "\\cf2 Second \\i line\\i0\\par\n"
+        "Caf\\'e9 \\u8212? ok\\par\n"
+        "}";
+    char *text;
+
+    if (!gtk_init_check(NULL, NULL)) {
+        g_test_skip("GTK could not be initialized (no display)");
+        return;
+    }
+    text = rtf_plain_text(rtf);
+    g_assert_nonnull(text);
+    g_assert_cmpstr(text, ==, "Hello bold world\nSecond line\nCafé — ok\n");
+    g_free(text);
+    {
+        GtkTextBuffer *buffer = gtk_text_buffer_new(NULL);
+        GtkTextIter iter, end;
+        GtkTextTagTable *table;
+        GtkTextTag *bold;
+
+        rtf_to_buffer(rtf, buffer);
+        gtk_text_buffer_get_bounds(buffer, &iter, &end);
+        text = gtk_text_buffer_get_text(buffer, &iter, &end, FALSE);
+        g_assert_cmpstr(text, ==, "Hello bold world\nSecond line\nCafé — ok\n");
+        g_free(text);
+        table = gtk_text_buffer_get_tag_table(buffer);
+        bold = gtk_text_tag_table_lookup(table, "bold");
+        g_assert_nonnull(bold);
+        gtk_text_buffer_get_iter_at_offset(buffer, &iter, 6);
+        g_assert_true(gtk_text_iter_has_tag(&iter, bold));
+        g_object_unref(buffer);
+    }
+}
+
 int main(int argc, char **argv) {
     g_test_init(&argc, &argv, NULL);
 
     g_test_add_func("/rtf/roundtrip", test_rtf_roundtrip);
     g_test_add_func("/rtf/font_size", test_rtf_font_size);
+    g_test_add_func("/rtf/external_plain_text", test_rtf_external_plain_text);
 
     return g_test_run();
 }
