@@ -23,6 +23,9 @@ with `Jotilla.exe` while keeping `portable.flag`, `archive.path` and the archive
 
 **Ctrl + Alt + +** places the new note's top-left corner exactly at the mouse
 pointer. Creating a note from the tray keeps the usual staggered position.
+Single-click the tray to recall the last used note, including a closed note in the archive.
+If it was deleted or no recent note is available, the explorer opens without creating a note.
+The recent-note identity is saved with the session for each archive.
 Minimizing the explorer hides it in the tray; double-click the tray icon to return.
 
 **Ctrl + C / X / V** copy, cut and paste text, including between Jotilla and other

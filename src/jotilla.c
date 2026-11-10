@@ -91,6 +91,9 @@ static HINSTANCE instance;
 static HWND controller;
 static HICON app_icon;
 static Note *notes;
+/* Stable IDs survive closing a window; no pointer to a freed note is retained. */
+static wchar_t last_note[80], saved_last_note[80];
+static BOOL restoring_notes;
 static wchar_t directory[PATH_CAP], state_path[PATH_CAP];
 static wchar_t location_config[PATH_CAP];
 static UINT taskbar_created;
@@ -114,6 +117,10 @@ static HWND browse_notes(void);
 static void choose_archive(HWND owner);
 static void wheel_resize(Note *note, int delta);
 static void end_session(BOOL ending);
+
+static void remember_note(const Note *note) {
+    if (note->ready && !restoring_notes) wcscpy_s(last_note, 80, note->id);
+}
 
 static int scaled(const Note *note, int value) { return MulDiv(value, note->dpi, 96); }
 static int bar_height(const Note *note) { return scaled(note, 32); }
@@ -1721,6 +1728,9 @@ static LRESULT CALLBACK note_proc(HWND window, UINT message, WPARAM wparam, LPAR
     case WM_NCLBUTTONDBLCLK:
         if (wparam == HTCAPTION) { note_command(note, CMD_TITLE); return 0; }
         break;
+    case WM_ACTIVATE:
+        if (LOWORD(wparam) != WA_INACTIVE) remember_note(note);
+        break;
     case WM_SETFOCUS:
         if (!note->collapsed) SetFocus(note->edit);
         return 0;
@@ -1835,6 +1845,7 @@ static Note *open_note_at(const wchar_t *id, int color, BOOL restore, const POIN
     if (!apply_opacity(note)) { destroy_note(note); return NULL; }
     if (note_has_content(note) && !save_layout(note, TRUE)) { destroy_note(note); return NULL; }
     if (note->persisted && !note_has_content(note) && !save_note(note)) { destroy_note(note); return NULL; }
+    remember_note(note);
     if (!testing) {
         ShowWindow(window, startup_restore ? SW_SHOWNOACTIVATE : SW_SHOWNORMAL);
         if (!startup_restore) {
@@ -1883,6 +1894,7 @@ static BOOL restore_notes(void) {
     if (swprintf_s(pattern, PATH_CAP, L"%s\\*.txt", directory) < 0) return FALSE;
     search = FindFirstFileW(pattern, &found);
     if (search == INVALID_HANDLE_VALUE) return GetLastError() == ERROR_FILE_NOT_FOUND;
+    restoring_notes = TRUE;
     do {
         wchar_t id[80];
         size_t length = wcslen(found.cFileName);
@@ -1893,6 +1905,8 @@ static BOOL restore_notes(void) {
     } while (FindNextFileW(search, &found));
     if (GetLastError() != ERROR_NO_MORE_FILES) ok = FALSE;
     FindClose(search);
+    restoring_notes = FALSE;
+    if (!last_note[0] && notes) remember_note(notes);
     return ok;
 }
 
@@ -1901,7 +1915,7 @@ static void tray(BOOL add) {
     data.cbSize = sizeof(data); data.hWnd = controller; data.uID = 1;
     data.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP;
     data.uCallbackMessage = TRAY_MESSAGE; data.hIcon = app_icon ? app_icon : LoadIconW(NULL, IDI_APPLICATION);
-    wcscpy_s(data.szTip, 128, L"Jotilla - Ctrl+Alt++");
+    wcscpy_s(data.szTip, 128, L"Jotilla - last note; double-click for explorer; Ctrl+Alt++ for new note");
     Shell_NotifyIconW(add ? NIM_ADD : NIM_DELETE, &data);
 }
 
@@ -1909,6 +1923,11 @@ static BOOL save_all(void) {
     Note *note;
     BOOL ok = TRUE;
     for (note = notes; note; note = note->next) if (!save_note(note)) ok = FALSE;
+    if (wcscmp(last_note, saved_last_note)) {
+        if (WritePrivateProfileStringW(L"app", L"last_note", last_note, state_path))
+            wcscpy_s(saved_last_note, 80, last_note);
+        else ok = FALSE;
+    }
     if (next_color != saved_next_color) {
         if (write_setting(L"app", L"next_color", next_color)) saved_next_color = next_color;
         else ok = FALSE;
@@ -1936,6 +1955,7 @@ static BOOL open_archived_note(const wchar_t *id) {
     Note *note = find_note(id);
     if (!note) note = open_note(id, 0, TRUE);
     if (!note) return FALSE;
+    remember_note(note);
     if (note->collapsed) toggle_note(note);
     ShowWindow(note->window, SW_SHOWNORMAL);
     SetForegroundWindow(note->window); SetFocus(note->edit);
@@ -1995,7 +2015,30 @@ static HWND browse_notes(void) {
     return browser;
 }
 
+static void recall_note(void) {
+    wchar_t path[PATH_CAP];
+    DWORD attributes;
+    if (last_note[0]) {
+        if (find_note(last_note)) { open_archived_note(last_note); return; }
+        if (swprintf_s(path, PATH_CAP, L"%s\\%s.txt", directory, last_note) >= 0) {
+            attributes = GetFileAttributesW(path);
+            if (attributes != INVALID_FILE_ATTRIBUTES && !(attributes & FILE_ATTRIBUTE_DIRECTORY)) {
+                if (!open_archived_note(last_note))
+                    report_error(controller, L"The last note could not be opened. Its original files have been kept.");
+                return;
+            }
+        }
+    }
+    browse_notes();
+}
+
 static void load_preferences(void) {
+    GetPrivateProfileStringW(L"app", L"last_note", L"", last_note, 80, state_path);
+    /* Never let an externally edited ID escape the selected archive. */
+    if ((wcsncmp(last_note, L"note-", 5) && wcsncmp(last_note, L"nota-", 5)) ||
+        wcsspn(last_note, L"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_") != wcslen(last_note))
+        last_note[0] = 0;
+    wcscpy_s(saved_last_note, 80, last_note);
     default_scrolling = setting(L"app", L"scroll", FALSE) != 0;
     next_color = setting(L"app", L"next_color", 0);
     if (next_color < 0 || next_color >= COLOR_COUNT) next_color = 0;
@@ -2090,7 +2133,7 @@ static LRESULT CALLBACK controller_proc(HWND window, UINT message, WPARAM wparam
                 tray_click = TRAY_PENDING;
                 if (!SetTimer(window, TRAY_CLICK_TIMER, GetDoubleClickTime(), NULL)) {
                     tray_click = TRAY_IDLE;
-                    PostMessageW(window, NEW_NOTE_MESSAGE, 0, 0);
+                    recall_note();
                 }
             }
         }
@@ -2124,7 +2167,7 @@ static LRESULT CALLBACK controller_proc(HWND window, UINT message, WPARAM wparam
         if (wparam == TRAY_CLICK_TIMER && tray_click == TRAY_PENDING) {
             KillTimer(window, TRAY_CLICK_TIMER);
             tray_click = TRAY_IDLE;
-            PostMessageW(window, NEW_NOTE_MESSAGE, 0, 0);
+            recall_note();
         }
         return 0;
     case WM_CLOSE:

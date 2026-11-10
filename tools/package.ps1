@@ -9,7 +9,8 @@ $readme = @'
 Jotilla - Sticky notes, on silicon
 
 Run Jotilla.exe. Ctrl+Alt++ creates a note exactly at the mouse pointer.
-Single-click the tray icon for a new note; double-click to browse notes.
+Single-click the tray icon to recall the last used note; double-click to browse notes.
+Use Ctrl+Alt++ or right-click the tray and choose New note to create a note.
 Tray creation keeps the usual staggered position.
 Open notes return to their saved positions, sizes and folded state after restart.
 Closed notes remain archived. Unplugged monitors cannot strand a note's title bar.

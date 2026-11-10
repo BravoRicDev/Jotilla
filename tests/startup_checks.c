@@ -196,6 +196,18 @@ int main(void) {
     stop(); start(TRUE);
     require(note_windows(windows)==1 && GetWindowRect(windows[0],&after) && EqualRect(&before,&after),
             "real process restart retains note geometry and folded state");
+    SendMessageW(windows[0],WM_ACTIVATE,WA_ACTIVE,0);
+    stop(); start(TRUE);
+    SendMessageW(control,WM_APP+1,1,WM_LBUTTONUP);
+    SendMessageW(control,WM_TIMER,2,0);
+    require(note_windows(windows)==1 && GetWindowRect(windows[0],&after) &&
+            after.bottom-after.top>before.bottom-before.top,
+            "tray recalls and unfolds the saved last note across a real process restart without creating another");
+    SendMessageW(windows[0],WM_CLOSE,0,0);
+    require(note_windows(windows)==0,"close last real-process note into archive");
+    SendMessageW(control,WM_APP+1,1,WM_LBUTTONUP);
+    SendMessageW(control,WM_TIMER,2,0);
+    require(note_windows(windows)==1,"tray reopens last archived note in the running release");
     stop();
     scrolling_restart_checks();
     path(pattern,L"notes\\*");
