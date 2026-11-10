@@ -130,6 +130,7 @@ static void on_archive_change(const char *path, gpointer data)
 
     store_free(ctx->store);
     ctx->store = new_store;
+    store_set_archive_path(ctx->store, path);
 
     g_free(ctx->archive_dir);
     ctx->archive_dir = g_strdup(path);
@@ -187,7 +188,8 @@ static void on_note_destroy(GtkWidget *widget, gpointer data)
     if (ref != NULL) {
         if (ref->ctx->note_windows != NULL)
             g_ptr_array_remove(ref->ctx->note_windows, widget);
-        if (ref->note != NULL) {
+        if (ref->note != NULL &&
+            !GPOINTER_TO_INT(g_object_get_data(G_OBJECT(widget), "deleted"))) {
             GError *err = NULL;
             ref->note->open = FALSE;
             if (!store_save(ref->ctx->store, ref->note, &err)) {

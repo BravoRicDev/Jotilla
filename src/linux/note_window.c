@@ -1539,10 +1539,11 @@ static gboolean delete_empty_note(GtkWidget *window)
         return FALSE;
 
     remove_timeout(window);
-    if (!store_delete(store, note->id, NULL))
-        return FALSE;
-
     g_object_set_data(G_OBJECT(window), "deleted", GINT_TO_POINTER(1));
+    if (!store_delete(store, note->id, NULL)) {
+        g_object_set_data(G_OBJECT(window), "deleted", GINT_TO_POINTER(0));
+        return FALSE;
+    }
     return TRUE;
 }
 
