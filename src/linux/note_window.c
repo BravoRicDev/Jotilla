@@ -59,6 +59,7 @@ typedef struct {
 
 /* Salva il contenuto e lo stato della finestra. */
 static gboolean save_now(GtkWidget *window);
+static gboolean show_context_menu(GtkWidget *window, GdkEvent *event);
 /* Alterna lo stato collassato. */
 static void header_collapse_clicked(GtkButton *button, gpointer data);
 /* Applica un colore di testo alla selezione. */
@@ -792,6 +793,7 @@ static void on_palette_picked(int palette, int color, gpointer data)
 {
     GtkWidget *window = data;
     Note *note = window_note(window);
+    Store *store = window_store(window);
 
     if (note == NULL || palette < 0 || palette >= PALETTE_COUNT ||
         color < 0 || color >= COLOR_COUNT)
@@ -799,6 +801,8 @@ static void on_palette_picked(int palette, int color, gpointer data)
 
     note->palette = palette;
     note->color = color;
+    if (store != NULL)
+        store->session_palette = palette;
     restyle(window);
     touch(window);
     save_now(window);
@@ -809,12 +813,24 @@ static void on_palette_favorite(int palette, gpointer data)
 {
     GtkWidget *window = data;
     Note *note = window_note(window);
+    Store *store = window_store(window);
 
     if (note == NULL || palette < 0 || palette >= PALETTE_COUNT)
         return;
 
+    if (store != NULL) {
+        int current = store_app_get_int(store, "favorite_palette", -1);
+
+        if (current == palette) {
+            store_app_set_int(store, "favorite_palette", -1);
+            store->session_palette = -1;
+            return;
+        }
+        store_app_set_int(store, "favorite_palette", palette);
+        store->session_palette = -1;
+    }
     note->palette = palette;
-    if (note->color < 0 || note->color >= COLOR_COUNT)
+    if (note->color < 0 || note->color >= PALETTE_SIZES[palette])
         note->color = 0;
     restyle(window);
     touch(window);
@@ -852,7 +868,6 @@ static void show_palette_picker_mode(GtkWidget *window, GdkEventButton *event,
                                      gboolean text_mode)
 {
     Note *note = window_note(window);
-    Store *store = window_store(window);
     GtkWidget *old = g_object_get_data(G_OBJECT(window), "palette-popover");
     GtkWidget *popover;
 
@@ -862,11 +877,10 @@ static void show_palette_picker_mode(GtkWidget *window, GdkEventButton *event,
     if (old != NULL)
         gtk_widget_destroy(old);
 
-    popover = palette_picker_new(GTK_WINDOW(window),
-                                 store != NULL ? store->config_dir : NULL,
-                                 note->palette, note->color, text_mode,
+    popover = palette_picker_new(GTK_WINDOW(window), note->palette,
+                                 note->color, text_mode,
                                  text_mode ? on_text_color_picked : on_palette_picked,
-                                 text_mode ? NULL : on_palette_favorite, window);
+                                 on_palette_favorite, window);
     if (popover == NULL)
         return;
 
@@ -1498,7 +1512,7 @@ static gboolean on_tag_completion_match(GtkEntryCompletion *completion,
     if (model == NULL)
         return FALSE;
 
-    gtk_tree_model_get(model, iter, 0, &name, -1);
+    gtk_tree_model_get(model, iter, 1, &name, -1);
     tag_completion_parts(key, &token, &assigned);
 
     if (name != NULL && token != NULL && !tags_contains(assigned, name)) {
@@ -1532,7 +1546,7 @@ static gboolean on_tag_completion_selected(GtkEntryCompletion *completion,
 
     (void)completion;
 
-    gtk_tree_model_get(model, iter, 0, &name, -1);
+    gtk_tree_model_get(model, iter, 1, &name, -1);
     if (name == NULL)
         return FALSE;
 
@@ -1574,22 +1588,26 @@ static void on_tags_activate(GtkMenuItem *item, gpointer data)
 
     entry = gtk_entry_new();
     gtk_entry_set_text(GTK_ENTRY(entry), note->tags != NULL ? note->tags : "");
-    gtk_entry_set_placeholder_text(GTK_ENTRY(entry), "tag1, tag2");
+    gtk_entry_set_placeholder_text(GTK_ENTRY(entry), "tag1; tag2");
     gtk_entry_set_activates_default(GTK_ENTRY(entry), TRUE);
     gtk_box_pack_start(GTK_BOX(content), entry, TRUE, TRUE, 0);
 
     {
         GPtrArray *rows = tag_completion_rows(store);
         GtkEntryCompletion *completion = gtk_entry_completion_new();
-        GtkListStore *model = gtk_list_store_new(1, G_TYPE_STRING);
+        GtkListStore *model = gtk_list_store_new(2, G_TYPE_STRING, G_TYPE_STRING);
         guint i;
 
         for (i = 0; i < rows->len; ++i) {
             TagRow *row = g_ptr_array_index(rows, i);
             GtkTreeIter iter;
+            char *label = row->count > 0
+                              ? g_strdup_printf("%s  (%d)", row->name, row->count)
+                              : g_strdup(row->name);
 
             gtk_list_store_append(model, &iter);
-            gtk_list_store_set(model, &iter, 0, row->name, -1);
+            gtk_list_store_set(model, &iter, 0, label, 1, row->name, -1);
+            g_free(label);
         }
 
         gtk_entry_completion_set_model(completion, GTK_TREE_MODEL(model));
@@ -1606,10 +1624,24 @@ static void on_tags_activate(GtkMenuItem *item, gpointer data)
     }
 
     gtk_widget_show_all(dialog);
-    if (gtk_dialog_run(GTK_DIALOG(dialog)) == GTK_RESPONSE_ACCEPT) {
-        store_set_tags(store, note, gtk_entry_get_text(GTK_ENTRY(entry)));
-        save_now(window);
-        update_title(window);
+    for (;;) {
+        if (gtk_dialog_run(GTK_DIALOG(dialog)) != GTK_RESPONSE_ACCEPT)
+            break;
+        if (store_set_tags(store, note, gtk_entry_get_text(GTK_ENTRY(entry)))) {
+            save_now(window);
+            update_title(window);
+            break;
+        }
+        {
+            GtkWidget *error = gtk_message_dialog_new(
+                GTK_WINDOW(dialog), GTK_DIALOG_MODAL | GTK_DIALOG_DESTROY_WITH_PARENT,
+                GTK_MESSAGE_ERROR, GTK_BUTTONS_CLOSE,
+                "Tags must be shorter than 64 characters and cannot contain quotes, # or control characters. "
+                "A note can have at most 24 tags.");
+
+            gtk_dialog_run(GTK_DIALOG(error));
+            gtk_widget_destroy(error);
+        }
     }
     gtk_widget_destroy(dialog);
 }
@@ -1774,17 +1806,15 @@ static void on_note_size_activate(GtkMenuItem *item, gpointer data)
 static void on_new_palette_activate(GtkMenuItem *item, gpointer data)
 {
     GtkWidget *window = data;
-    Note *note = window_note(window);
+    Store *store = window_store(window);
     int palette = GPOINTER_TO_INT(g_object_get_data(G_OBJECT(item), "palette"));
 
-    if (note == NULL || palette < 0 || palette >= PALETTE_COUNT)
+    if (store == NULL || palette < 0 || palette >= PALETTE_COUNT)
         return;
 
-    note->palette = palette;
-    note->color = 0;
-    restyle(window);
-    touch(window);
-    save_now(window);
+    store_app_set_int(store, "palette", palette);
+    store_app_set_int(store, "next_color", 0);
+    store->session_palette = palette;
 }
 
 /* Cambia l'opacità della nota. */
@@ -1971,7 +2001,10 @@ static GtkWidget *build_menu(GtkWidget *window)
             char label[16];
             GtkWidget *opacity_item;
 
-            g_snprintf(label, sizeof(label), "%d%%", levels[i]);
+            if (levels[i] == 100)
+                g_snprintf(label, sizeof(label), "%d%% (opaque)", levels[i]);
+            else
+                g_snprintf(label, sizeof(label), "%d%% opacity", levels[i]);
             opacity_item = gtk_radio_menu_item_new_with_label(group, label);
             group = gtk_radio_menu_item_get_group(GTK_RADIO_MENU_ITEM(opacity_item));
             if (note != NULL && note->opacity == levels[i])
@@ -2014,10 +2047,23 @@ static GtkWidget *build_menu(GtkWidget *window)
     item = tip_item("New note palette", "Choose the palette for new notes");
     submenu = gtk_menu_new();
     {
+        Store *store = window_store(window);
+        int current = store != NULL ? store->session_palette : -1;
+        GSList *group = NULL;
         int i;
+
+        if (current < 0 && store != NULL) {
+            current = store_app_get_int(store, "favorite_palette", -1);
+            if (current < 0)
+                current = store_app_get_int(store, "palette", 0);
+        }
         for (i = 0; i < 3 && i < PALETTE_COUNT; i++) {
-            GtkWidget *palette_item = tip_item(palette_name(i),
-                                               "Use this palette, colour 0");
+            GtkWidget *palette_item =
+                gtk_radio_menu_item_new_with_label(group, palette_name(i));
+            group = gtk_radio_menu_item_get_group(GTK_RADIO_MENU_ITEM(palette_item));
+            if (current == i)
+                gtk_check_menu_item_set_active(GTK_CHECK_MENU_ITEM(palette_item), TRUE);
+            gtk_widget_set_tooltip_text(palette_item, "Use this palette, colour 0");
             g_object_set_data(G_OBJECT(palette_item), "palette", GINT_TO_POINTER(i));
             g_signal_connect(palette_item, "activate",
                              G_CALLBACK(on_new_palette_activate), window);
@@ -2462,14 +2508,8 @@ static gboolean on_key_press(GtkWidget *widget, GdkEventKey *event, gpointer dat
 
     (void)data;
 
-    if (key == GDK_KEY_Menu || (shift && key == GDK_KEY_F10)) {
-        GtkWidget *menu = g_object_get_data(G_OBJECT(window), "menu");
-
-        if (menu != NULL) {
-            gtk_menu_popup_at_pointer(GTK_MENU(menu), (GdkEvent *)event);
-            return TRUE;
-        }
-    }
+    if (key == GDK_KEY_Menu || (shift && key == GDK_KEY_F10))
+        return show_context_menu(window, (GdkEvent *)event);
 
     if (!ctrl && !shift && key == GDK_KEY_Escape) {
         save_now(window);
@@ -2658,23 +2698,27 @@ static void header_close_clicked(GtkButton *button, gpointer data)
     gtk_widget_destroy(window);
 }
 
-/* Mostra il menu contestuale. */
+/* Ricostruisce il menu a ogni apertura per aggiornare i segni di spunta. */
+static gboolean show_context_menu(GtkWidget *window, GdkEvent *event)
+{
+    GtkWidget *menu = build_menu(window);
+
+    /* g_object_set_data_full distrugge il menu precedente. */
+    g_object_set_data_full(G_OBJECT(window), "menu", menu,
+                           (GDestroyNotify)gtk_widget_destroy);
+    gtk_menu_popup_at_pointer(GTK_MENU(menu), event);
+    return TRUE;
+}
+
 static gboolean on_context_menu(GtkWidget *widget, GdkEventButton *event, gpointer data)
 {
     GtkWidget *window = data;
-    GtkWidget *menu;
 
     (void)widget;
 
     if (event->type != GDK_BUTTON_PRESS || event->button != 3)
         return FALSE;
-
-    menu = g_object_get_data(G_OBJECT(window), "menu");
-    if (menu == NULL)
-        return FALSE;
-
-    gtk_menu_popup_at_pointer(GTK_MENU(menu), (GdkEvent *)event);
-    return TRUE;
+    return show_context_menu(window, (GdkEvent *)event);
 }
 
 /* Imposta il nome accessibile di un widget. */
@@ -2710,7 +2754,6 @@ GtkWidget *note_window_new(Store *store, Note *note)
     GtkWidget *outer;
     GtkWidget *header;
     GtkWidget *title;
-    GtkWidget *menu;
     GtkWidget *scrolled;
     GtkWidget *view;
     GtkTextBuffer *buffer;
@@ -2794,10 +2837,6 @@ GtkWidget *note_window_new(Store *store, Note *note)
                          G_CALLBACK(header_close_clicked), window);
         gtk_box_pack_start(GTK_BOX(header), close, FALSE, FALSE, 0);
     }
-
-    menu = build_menu(window);
-    g_object_set_data_full(G_OBJECT(window), "menu", menu,
-                           (GDestroyNotify)gtk_widget_destroy);
 
     g_signal_connect(header, "button-press-event", G_CALLBACK(on_header_press), window);
     g_signal_connect(header, "button-press-event", G_CALLBACK(on_context_menu), window);
@@ -2897,7 +2936,13 @@ void note_window_save(GtkWidget *window)
 {
     if (window == NULL)
         return;
-    save_now(window);
+    (void)save_now(window);
+}
+
+/* Salva la nota e riferisce l'esito (per bloccare la chiusura). */
+gboolean note_window_flush(GtkWidget *window)
+{
+    return window != NULL ? save_now(window) : TRUE;
 }
 
 /* Imposta il callback di nuova nota. */

@@ -513,6 +513,20 @@ static void normalize_newlines(char *text)
     *write = '\0';
 }
 
+static glong text_utf16_units(const char *text)
+{
+    glong units = 0;
+    gunichar2 *utf16;
+
+    if (text == NULL)
+        return 0;
+    utf16 = g_utf8_to_utf16(text, -1, NULL, &units, NULL);
+    if (utf16 == NULL)
+        return -1;
+    g_free(utf16);
+    return units;
+}
+
 static gboolean text_is_blank(const char *text)
 {
     const char *cursor;
@@ -768,6 +782,7 @@ Store *store_open(const char *archive_dir, const char *config_dir, GError **err)
         return NULL;
     }
     store->lock_fd = -1;
+    store->session_palette = -1;
     store->config_dir = config_dir ? g_strdup(config_dir) : store_default_config_dir();
     store->portable = portable_base_dir() != NULL;
     store->archive_path_file = g_build_filename(store->config_dir, "archive.path", NULL);
@@ -900,6 +915,11 @@ Store *store_open(const char *archive_dir, const char *config_dir, GError **err)
             continue;
         }
         normalize_newlines(text);
+        if (text_utf16_units(text) > (glong)NOTE_TEXT_MAX) {
+            g_free(id);
+            g_free(text);
+            continue;
+        }
 
         note = note_alloc(id);
         if (!note) {
@@ -1116,24 +1136,31 @@ Note *store_new(Store *store, const char *text)
     {
         int palette = palette_clamp(store_app_get_int(store, "palette", 0));
         int favorite = store_app_get_int(store, "favorite_palette", -1);
+        int session = store->session_palette;
+        int next = store_app_get_int(store, "next_color", 0);
         int size;
 
-        if (favorite >= 0 && favorite < PALETTE_COUNT) {
-            palette = favorite;
-            note->color = draw_shuffled_color(palette);
-        } else {
-            int next = store_app_get_int(store, "next_color", 0);
-
+        if (next < 0 || next >= COLOR_COUNT)
+            next = 0;
+        note->x = 100 + next % 7 * 28;
+        note->y = 100 + next % 7 * 28;
+        if (session >= 0 && session < PALETTE_COUNT) {
+            palette = session;
             size = PALETTE_SIZES[palette];
             if (size < 1)
                 size = 1;
-            next %= size;
-            if (next < 0)
-                next += size;
-            note->color = next;
-            store_app_set_int(store, "next_color", (note->color + 1) % size);
+            note->color = next % size;
+        } else if (favorite >= 0 && favorite < PALETTE_COUNT) {
+            palette = favorite;
+            note->color = draw_shuffled_color(palette);
+        } else {
+            size = PALETTE_SIZES[palette];
+            if (size < 1)
+                size = 1;
+            note->color = next % size;
         }
         note->palette = palette;
+        store_app_set_int(store, "next_color", (next + 1) % COLOR_COUNT);
     }
 
     position = store->notes->len;
@@ -1202,7 +1229,7 @@ gboolean store_save(Store *store, Note *note, GError **err)
         return FALSE;
     }
 
-    if (note->text && g_utf8_strlen(note->text, -1) > (glong)NOTE_TEXT_MAX) {
+    if (note->text && text_utf16_units(note->text) > (glong)NOTE_TEXT_MAX) {
         g_set_error_literal(err, G_FILE_ERROR, G_FILE_ERROR_INVAL,
                             "Note text exceeds 16 MB");
         return FALSE;
@@ -1283,6 +1310,19 @@ static gboolean query_parse(const char *query, GPtrArray *terms, GError **err)
 {
     const char *cursor = query ? query : "";
 
+    if (query != NULL) {
+        glong units = 0;
+        gunichar2 *utf16 = g_utf8_to_utf16(query, -1, NULL, &units, NULL);
+
+        if (utf16 == NULL || units >= 512) {
+            g_free(utf16);
+            g_set_error_literal(err, G_FILE_ERROR, G_FILE_ERROR_INVAL,
+                                "Search is too long");
+            return FALSE;
+        }
+        g_free(utf16);
+    }
+
     while (*cursor) {
         SearchTerm *term;
         GString *value;
@@ -1320,23 +1360,13 @@ static gboolean query_parse(const char *query, GPtrArray *terms, GError **err)
 
         value = g_string_new(NULL);
         if (*cursor == '"') {
-            gboolean closed_quote = FALSE;
-
             ++cursor;
             while (*cursor && *cursor != '"') {
                 g_string_append_c(value, *cursor);
                 ++cursor;
             }
-            if (*cursor == '"') {
+            if (*cursor == '"')
                 ++cursor;
-                closed_quote = TRUE;
-            }
-            if (!closed_quote) {
-                g_string_free(value, TRUE);
-                search_term_free(term);
-                g_set_error_literal(err, G_FILE_ERROR, G_FILE_ERROR_INVAL, "Unclosed quote");
-                return FALSE;
-            }
         } else {
             while (*cursor && !g_ascii_isspace(*cursor)) {
                 g_string_append_c(value, *cursor);
@@ -1598,18 +1628,19 @@ void store_set_archive_path(Store *store, const char *path)
 }
 
 /* Imposta tag normalizzati e salva. */
-void store_set_tags(Store *store, Note *note, const char *raw)
+gboolean store_set_tags(Store *store, Note *note, const char *raw)
 {
     char *normalized;
 
     if (!store || !note)
-        return;
+        return FALSE;
     normalized = tags_normalize(raw ? raw : "");
     if (!normalized)
-        return;
+        return FALSE;
     g_free(note->tags);
     note->tags = normalized;
     (void)store_save(store, note, NULL);
+    return TRUE;
 }
 
 /* Imposta data calendario e salva. */

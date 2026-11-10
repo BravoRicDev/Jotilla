@@ -18,6 +18,7 @@
  */
 #if defined(__GNUC__)
 extern void note_window_save(GtkWidget *window) __attribute__((weak));
+extern gboolean note_window_flush(GtkWidget *window) __attribute__((weak));
 extern void archive_window_set_change_callback(GtkWidget *window,
                                                ArchiveChangeFunc cb,
                                                gpointer data)
@@ -50,17 +51,24 @@ static void on_show_archive(gpointer data);
 static void on_archive_destroy(GtkWidget *widget, gpointer data);
 
 /* Salva tutte le finestre nota aperte (usato alla chiusura). */
-static void save_open_notes(AppCtx *ctx)
+static gboolean save_open_notes(AppCtx *ctx)
 {    guint i;
+    gboolean ok = TRUE;
 
     if (ctx == NULL || ctx->note_windows == NULL)
-        return;
+        return TRUE;
 
     for (i = 0; i < ctx->note_windows->len; ++i) {
         GtkWidget *window = g_ptr_array_index(ctx->note_windows, i);
-        if (window != NULL && note_window_save != NULL)
+
+        if (window == NULL)
+            continue;
+        if (note_window_flush != NULL)
+            ok = note_window_flush(window) && ok;
+        else if (note_window_save != NULL)
             note_window_save(window);
     }
+    return ok;
 }
 
 /* Callback GApplication: mostra l'archivio o crea la prima nota. */
@@ -88,6 +96,32 @@ static void on_new_note(gpointer data)
     Note *note = store_new(ctx->store, "");
     if (note != NULL)
         open_note(ctx, note);
+}
+
+/* Nuova nota dall'hotkey globale: usa il puntatore quando disponibile. */
+static void on_hotkey_new_note(gpointer data)
+{    AppCtx *ctx = data;
+    Note *note;
+    gint x = -1, y = -1;
+
+    if (ctx == NULL || ctx->store == NULL)
+        return;
+    if (!platform_is_wayland()) {
+        GdkDisplay *display = gdk_display_get_default();
+        GdkSeat *seat = display ? gdk_display_get_default_seat(display) : NULL;
+        GdkDevice *pointer = seat ? gdk_seat_get_pointer(seat) : NULL;
+
+        if (pointer != NULL)
+            (void)gdk_device_get_position(pointer, NULL, &x, &y);
+    }
+    note = store_new(ctx->store, "");
+    if (note == NULL)
+        return;
+    if (x >= 0) {
+        note->x = x;
+        note->y = y;
+    }
+    open_note(ctx, note);
 }
 
 /* Apre una nota selezionata dall'archivio. */
@@ -198,6 +232,10 @@ static void on_archive_change(const char *path, gboolean move, gpointer data)
 
     if (ctx == NULL || path == NULL || *path == '\0')
         return;
+    if (!save_open_notes(ctx)) {
+        g_warning("Could not save all notes; the archive was not changed");
+        return;
+    }
 
     if (move) {
         char *old_path = ctx->store != NULL && ctx->store->archive_dir != NULL
@@ -505,7 +543,15 @@ static void on_tray_exit(GtkMenuItem *item, gpointer data)
 {    AppCtx *ctx = data;
 
     (void)item;
-    save_open_notes(ctx);
+    if (!save_open_notes(ctx)) {
+        GtkWidget *dialog = gtk_message_dialog_new(
+            NULL, GTK_DIALOG_MODAL, GTK_MESSAGE_ERROR, GTK_BUTTONS_CLOSE,
+            "Some notes could not be saved. Check that the archive is writable.");
+
+        gtk_dialog_run(GTK_DIALOG(dialog));
+        gtk_widget_destroy(dialog);
+        return;
+    }
     gtk_main_quit();
 }
 
@@ -619,7 +665,7 @@ static void setup_tray(AppCtx *ctx)
 
 /* Salva le note e termina su SIGTERM/SIGINT. */
 static gboolean on_terminate_signal(gpointer data)
-{    save_open_notes(data);
+{    (void)save_open_notes(data);
     gtk_main_quit();
     return G_SOURCE_REMOVE;
 }
@@ -837,7 +883,7 @@ int main(int argc, char **argv)
     g_unix_signal_add(SIGINT, on_terminate_signal, &ctx);
 
     setup_tray(&ctx);
-    platform_hotkey_install(on_new_note, &ctx);
+    platform_hotkey_install(on_hotkey_new_note, &ctx);
 
     if (smoke_test) {
         on_show_archive(&ctx);

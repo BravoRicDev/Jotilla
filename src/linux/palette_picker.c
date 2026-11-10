@@ -8,7 +8,6 @@ typedef struct {
     GtkWidget *grid;
     GtkWidget *name_label;
     GtkWidget *favorite_button;
-    const char *config_dir;
     int palette;
     int color;
     gboolean text_mode;
@@ -28,28 +27,6 @@ static int wrap_palette(int value)
     return value;
 }
 
-static void write_favorite(Picker *picker, int palette)
-{
-    GKeyFile *keyfile;
-    char *path;
-    char *data;
-    gsize length = 0;
-
-    if (picker->config_dir == NULL)
-        return;
-
-    path = g_build_filename(picker->config_dir, "notes.ini", NULL);
-    keyfile = g_key_file_new();
-    (void)g_key_file_load_from_file(keyfile, path, G_KEY_FILE_KEEP_COMMENTS, NULL);
-    g_key_file_set_integer(keyfile, "app", "favorite_palette", palette);
-    data = g_key_file_to_data(keyfile, &length, NULL);
-    if (data != NULL) {
-        (void)g_file_set_contents(path, data, (gssize)length, NULL);
-        g_free(data);
-    }
-    g_key_file_free(keyfile);
-    g_free(path);
-}
 
 static void rebuild_grid(Picker *picker)
 {
@@ -133,14 +110,60 @@ static void on_favorite(GtkButton *button, gpointer data)
 {
     Picker *picker = data;
     (void)button;
-    write_favorite(picker, picker->palette);
     if (picker->favorite != NULL)
         picker->favorite(picker->palette, picker->data);
 }
 
-GtkWidget *palette_picker_new(GtkWindow *parent, const char *config_dir,
-                              int palette, int color, gboolean text_mode,
-                              PalettePickedFunc picked,
+static gboolean on_key_press(GtkWidget *widget, GdkEventKey *event, gpointer data)
+{
+    Picker *picker = data;
+    int count = PALETTE_SIZES[picker->palette];
+    (void)widget;
+
+    if (count < 1)
+        count = 1;
+    switch (event->keyval) {
+    case GDK_KEY_Left:
+    case GDK_KEY_Right:
+        picker->palette = wrap_palette(picker->palette +
+                                       (event->keyval == GDK_KEY_Left ? -1 : 1));
+        if (picker->color >= PALETTE_SIZES[picker->palette])
+            picker->color = 0;
+        rebuild_grid(picker);
+        return TRUE;
+    case GDK_KEY_Up:
+    case GDK_KEY_Down:
+        picker->color = (picker->color +
+                         (event->keyval == GDK_KEY_Up ? count - 1 : 1)) % count;
+        return TRUE;
+    case GDK_KEY_Return:
+    case GDK_KEY_KP_Enter:
+        if (picker->picked != NULL)
+            picker->picked(picker->palette, picker->color, picker->data);
+        gtk_popover_popdown(GTK_POPOVER(picker->popover));
+        return TRUE;
+    case GDK_KEY_Escape:
+        gtk_popover_popdown(GTK_POPOVER(picker->popover));
+        return TRUE;
+    case GDK_KEY_f:
+    case GDK_KEY_F:
+        if (picker->favorite != NULL)
+            picker->favorite(picker->palette, picker->data);
+        return TRUE;
+    default:
+        return FALSE;
+    }
+}
+
+static gboolean on_show(GtkWidget *widget, gpointer data)
+{
+    (void)data;
+    gtk_widget_grab_focus(widget);
+    return FALSE;
+}
+
+GtkWidget *palette_picker_new(GtkWindow *parent, int palette, int color,
+                              gboolean text_mode, PalettePickedFunc picked,
                               PaletteFavoriteFunc favorite, gpointer data)
 {
     Picker *picker = g_new0(Picker, 1);
@@ -155,7 +178,6 @@ GtkWidget *palette_picker_new(GtkWindow *parent, const char *config_dir,
     if (color < 0 || color >= COLOR_COUNT)
         color = 0;
 
-    picker->config_dir = config_dir;
     picker->palette = palette;
     picker->color = color;
     picker->text_mode = text_mode;
@@ -207,6 +229,10 @@ GtkWidget *palette_picker_new(GtkWindow *parent, const char *config_dir,
     gtk_box_pack_start(GTK_BOX(outer), label, FALSE, FALSE, 0);
 
     rebuild_grid(picker);
+    gtk_widget_set_can_focus(picker->popover, TRUE);
+    g_signal_connect(picker->popover, "key-press-event",
+                     G_CALLBACK(on_key_press), picker);
+    g_signal_connect(picker->popover, "show", G_CALLBACK(on_show), picker);
 
     g_object_set_data_full(G_OBJECT(picker->popover), "picker", picker, g_free);
     gtk_widget_show_all(outer);

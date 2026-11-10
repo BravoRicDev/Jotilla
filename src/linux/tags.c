@@ -5,17 +5,27 @@
 #include "tags.h"
 
 #define TAGS_MAX 24
-#define TAG_BYTES_MAX 63
+#define TAG_UNITS_MAX 64
 
 /* Verifica che il nome del tag non contenga caratteri di controllo o delimitatori. */
 static gboolean tag_name_valid(const char *name) {
     const unsigned char *p = (const unsigned char *)name;
     if (!*p) return FALSE;
     for (; *p; ++p) {
-        if (*p < 0x20 || *p == 0x7f) return FALSE;
+        if (*p < 0x20) return FALSE;
         if (*p == '#' || *p == '"') return FALSE;
     }
     return TRUE;
+}
+
+/* Windows/macOS limitano il nome a 63 unita' UTF-16. */
+static gboolean tag_too_long(const char *name) {
+    glong units = 0;
+    gunichar2 *utf16 = g_utf8_to_utf16(name, -1, NULL, &units, NULL);
+
+    if (utf16 == NULL) return TRUE;
+    g_free(utf16);
+    return units >= TAG_UNITS_MAX;
 }
 
 /* Comparatore per ordinamento alfabetico Unicode. */
@@ -55,18 +65,24 @@ char *tags_normalize(const char *input) {
 
         raw = g_strdup(parts[i]);
         trimmed = g_strstrip(raw);
-        if (*trimmed == '#') trimmed = g_strstrip(trimmed + 1); /* Rimuove prefisso '#' opzionale. */
-
-        if (!tag_name_valid(trimmed) || strlen(trimmed) > TAG_BYTES_MAX) {
+        if (!*trimmed) {
             g_free(raw);
             continue;
+        }
+        if (!tag_name_valid(trimmed) || tag_too_long(trimmed)) {
+            g_free(raw);
+            g_strfreev(parts);
+            g_ptr_array_free(names, TRUE);
+            return NULL;
         }
 
         folded = tag_fold(trimmed);
         g_free(raw);
-        if (!folded || !*folded || strlen(folded) > TAG_BYTES_MAX) {
+        if (!folded || !*folded) {
             g_free(folded);
-            continue;
+            g_strfreev(parts);
+            g_ptr_array_free(names, TRUE);
+            return NULL;
         }
 
         for (j = 0; j < names->len; ++j)
@@ -80,7 +96,9 @@ char *tags_normalize(const char *input) {
         }
         if (names->len >= TAGS_MAX) {
             g_free(folded);
-            break; /* Limite massimo di tag raggiunto. */
+            g_strfreev(parts);
+            g_ptr_array_free(names, TRUE);
+            return NULL;
         }
         g_ptr_array_add(names, folded);
     }

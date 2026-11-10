@@ -45,6 +45,7 @@ typedef struct {
     GtkWidget *flow;
     GtkWidget *flow_scroll;
     GtkWidget *calendar;
+    GtkWidget *calendar_button;
     GtkWidget *calendar_year;
     GtkWidget *calendar_prev;
     GtkWidget *calendar_next;
@@ -867,9 +868,11 @@ static void on_calendar_clicked(GtkButton *button, gpointer data) {
     visible = gtk_stack_get_visible_child_name(GTK_STACK(aw->stack));
     if (visible && g_strcmp0(visible, "calendar") == 0) {
         gtk_stack_set_visible_child_name(GTK_STACK(aw->stack), "list");
+        gtk_button_set_label(GTK_BUTTON(aw->calendar_button), "Calendar");
         repopulate_list(aw);
     } else {
         gtk_stack_set_visible_child_name(GTK_STACK(aw->stack), "calendar");
+        gtk_button_set_label(GTK_BUTTON(aw->calendar_button), "Notes");
         update_calendar(aw);
     }
     update_window_title(aw);
@@ -2316,6 +2319,7 @@ GtkWidget *archive_window_new(Store *store) {
     gtk_header_bar_pack_start(GTK_HEADER_BAR(header), new_note);
 
     calendar_button = gtk_button_new_with_label("Calendar");
+    aw->calendar_button = calendar_button;
     set_accessible_label(calendar_button, "Toggle the calendar view");
     g_signal_connect(calendar_button, "clicked",
                      G_CALLBACK(on_calendar_clicked), aw);
@@ -2450,6 +2454,7 @@ GtkWidget *archive_window_new(Store *store) {
     gtk_widget_set_margin_bottom(top, 8);
 
     aw->search = gtk_search_entry_new();
+    gtk_entry_set_max_length(GTK_ENTRY(aw->search), 511);
     gtk_entry_set_placeholder_text(GTK_ENTRY(aw->search),
                                    "Search notes\342\200\246");
     gtk_widget_set_hexpand(aw->search, TRUE);

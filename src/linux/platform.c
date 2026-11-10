@@ -83,6 +83,45 @@ static KeyCode hotkey_plus = 0;
 static KeyCode hotkey_equal = 0;
 static KeyCode hotkey_kp_add = 0;
 
+static const unsigned int hotkey_modifiers[] = {
+    ControlMask | Mod1Mask,
+    ControlMask | Mod1Mask | ShiftMask,
+    ControlMask | Mod1Mask | LockMask,
+    ControlMask | Mod1Mask | ShiftMask | LockMask,
+    ControlMask | Mod1Mask | Mod2Mask,
+    ControlMask | Mod1Mask | ShiftMask | Mod2Mask,
+    ControlMask | Mod1Mask | LockMask | Mod2Mask,
+    ControlMask | Mod1Mask | ShiftMask | LockMask | Mod2Mask
+};
+
+static int ignore_grab_error(Display *display, XErrorEvent *event)
+{
+    (void)display;
+    (void)event;
+    return 0;
+}
+
+static void hotkey_grabs(Display *display, gboolean grab)
+{
+    KeyCode codes[] = { hotkey_plus, hotkey_equal, hotkey_kp_add };
+    guint c, m;
+
+    for (c = 0; c < G_N_ELEMENTS(codes); ++c) {
+        if (codes[c] == 0)
+            continue;
+        for (m = 0; m < G_N_ELEMENTS(hotkey_modifiers); ++m) {
+            if (grab)
+                XGrabKey(display, codes[c], hotkey_modifiers[m],
+                         DefaultRootWindow(display), True, GrabModeAsync,
+                         GrabModeAsync);
+            else
+                XUngrabKey(display, codes[c], hotkey_modifiers[m],
+                           DefaultRootWindow(display));
+        }
+    }
+    XSync(display, False);
+}
+
 /* Filtro eventi X11: intercetta Ctrl+Alt++ e Ctrl+Alt+Shift++ . */
 static GdkFilterReturn hotkey_filter(GdkXEvent *xevent, GdkEvent *event,
                                      gpointer data)
@@ -133,6 +172,12 @@ gboolean platform_hotkey_install(PlatformHotkeyFunc cb, gpointer data)
         hotkey_kp_add = XKeysymToKeycode(xdisplay, XK_KP_Add);
         hotkey_cb = cb;
         hotkey_data = data;
+        {
+            XErrorHandler previous = XSetErrorHandler(ignore_grab_error);
+
+            hotkey_grabs(xdisplay, TRUE);
+            XSetErrorHandler(previous);
+        }
         gdk_window_add_filter(NULL, hotkey_filter, data);
         return TRUE;
     }
@@ -148,6 +193,14 @@ gboolean platform_hotkey_install(PlatformHotkeyFunc cb, gpointer data)
 void platform_hotkey_uninstall(void)
 {
 #if defined(GDK_WINDOWING_X11)
+    GdkDisplay *display = gdk_display_get_default();
+
+    if (display != NULL && GDK_IS_X11_DISPLAY(display)) {
+        XErrorHandler previous = XSetErrorHandler(ignore_grab_error);
+
+        hotkey_grabs(GDK_DISPLAY_XDISPLAY(display), FALSE);
+        XSetErrorHandler(previous);
+    }
     if (hotkey_cb != NULL && hotkey_data != NULL)
         gdk_window_remove_filter(NULL, hotkey_filter, hotkey_data);
 #endif

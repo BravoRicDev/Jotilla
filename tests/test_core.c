@@ -60,9 +60,11 @@ static void test_tags(void) {
     char *normalized;
     GPtrArray *parts;
 
-    normalized = tags_normalize(" Work ; #work ; urgent ");
+    normalized = tags_normalize(" Work ; urgent ");
     g_assert_cmpstr(normalized, ==, "urgent;work");
     g_free(normalized);
+
+    g_assert_null(tags_normalize(" Work ; #work ; urgent "));
 
     normalized = tags_normalize("");
     g_assert_cmpstr(normalized, ==, "");

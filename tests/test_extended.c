@@ -121,9 +121,9 @@ static void test_tags_extended(void) {
     g_assert_cmpstr(out, ==, "");
     g_free(out);
 
-    /* At most 24 tags; 25 inputs -> 24 kept. */
+    /* 24 tag distinti sono validi; il 25esimo invalida l'elenco. */
     input = g_string_new(NULL);
-    for (i = 0; i < 25; ++i) {
+    for (i = 0; i < 24; ++i) {
         if (i)
             g_string_append_c(input, ';');
         g_string_append_printf(input, "tag%02u", i);
@@ -132,30 +132,28 @@ static void test_tags_extended(void) {
     g_assert_cmpuint(tag_count(out), ==, 24);
     g_assert_true(tags_contains(out, "tag00"));
     g_assert_true(tags_contains(out, "tag23"));
-    g_assert_false(tags_contains(out, "tag24"));
     g_free(out);
+    g_string_append(input, ";tag24");
+    g_assert_null(tags_normalize(input->str));
     g_string_free(input, TRUE);
 
     /* 63 bytes allowed, 64 bytes rejected. */
     t63 = g_strnfill(63, 'a');
     t64 = g_strnfill(64, 'b');
-    joined = g_strdup_printf("%s;%s", t63, t64);
-    out = tags_normalize(joined);
+    out = tags_normalize(t63);
     g_assert_cmpstr(out, ==, t63);
     g_free(out);
+    joined = g_strdup_printf("%s;%s", t63, t64);
+    g_assert_null(tags_normalize(joined));
     g_free(joined);
     g_free(t63);
     g_free(t64);
 
-    /* Invalid characters: '#' inside, '"', control chars, DEL. */
-    out = tags_normalize("good;bad#tag;has\"quote;ctrl\x01" "char;del\x7f" "char;tail#");
-    g_assert_cmpstr(out, ==, "good");
-    g_free(out);
-
-    /* A leading '#' is accepted and stripped. */
-    out = tags_normalize("#Work");
-    g_assert_cmpstr(out, ==, "work");
-    g_free(out);
+    /* Un tag non valido invalida l'intero elenco (Windows/macOS). */
+    g_assert_null(tags_normalize("good;bad#tag"));
+    g_assert_null(tags_normalize("good;has\"quote"));
+    g_assert_null(tags_normalize("good;ctrl\x01char"));
+    g_assert_null(tags_normalize("#Work"));
 
     /* Duplicates with different case collapse. */
     out = tags_normalize("Work;work;WORK");
@@ -625,9 +623,10 @@ static void test_search_term_limit(void) {
     g_ptr_array_free(results, TRUE);
 
     results = store_search(store, "\"unclosed", NULL, &err);
-    g_assert_nonnull(err);
-    g_assert_null(results);
-    g_clear_error(&err);
+    g_assert_no_error(err);
+    g_assert_nonnull(results);
+    g_assert_cmpuint(results->len, ==, 0);
+    g_ptr_array_free(results, TRUE);
 
     results = store_search(store, "#bad;tag", NULL, &err);
     g_assert_nonnull(err);
