@@ -23,6 +23,7 @@ typedef struct {
     gboolean collapsed;
     gboolean has_title; /* TRUE se il titolo e' stato promosso */
     gboolean custom_ink; /* TRUE se il colore testo e' stato scelto dall'utente */
+    gboolean scrolling; /* TRUE se il testo puo' superare l'area visibile */
 } Note;
 
 typedef struct {
@@ -63,6 +64,9 @@ char *store_tags_catalog(Store *store);
 char *store_tag_counts(Store *store);
 int store_app_get_int(Store *store, const char *key, int fallback);
 void store_app_set_int(Store *store, const char *key, int value);
+char *store_app_get_string(Store *store, const char *key);
+gboolean store_app_set_string(Store *store, const char *key, const char *value);
+gboolean note_id_supported(const char *id);
 void store_set_archive_path(Store *store, const char *path);
 /* Imposta i tag di una nota. */
 /* Imposta tag normalizzati e salva. */

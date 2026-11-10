@@ -48,7 +48,8 @@ Jotilla follows the XDG Base Directory specification:
 
 The archive folder is self-contained: UTF-8 `.txt` notes with optional `.rtf`
 companions and a Windows/macOS-compatible `notes.ini` (UTF-16LE with BOM,
-`width`/`height`, `1`/`0` flags, CRLF text). The same folder can be synced and
+`width`/`height`, `1`/`0` flags, per-note `scroll`, `[app] scroll`/`last_note`,
+CRLF text). The same folder can be synced and
 opened by Jotilla on Windows, macOS and Linux; only the archive location
 preference stays local to each machine. A `.jotila.lock` file prevents
 concurrent writers.
@@ -65,6 +66,10 @@ concurrent writers.
 - Note sizes (Small, Medium, Large, Extra large, Square) and opacity control
 - Autosave (400 ms debounce), save-on-focus-loss, save-on-quit, plain-text
   paste, and save failures keep the note open and retry
+- Per-note **Scrollable text** (bar menu, with an optional default for new
+  notes) for text taller than the note; scroll bars stay hidden and the wheel,
+  Page Up/Down and Ctrl+Home/End navigate. Bounded notes reject overflow with a
+  paste notice and keep existing text/formatting/selection
 - Archive tile view ordered newest first, with search-match highlighting,
   Ctrl/Shift multi-select, delete, creation-date/tag trees, calendar filtering,
   and open/move archive location
@@ -73,7 +78,8 @@ concurrent writers.
 - Tag normalisation (24 tags, 63 UTF-16 units), filtering and per-token
   autocomplete with usage counts and assigned-tag exclusion
 - System tray and true global hotkey on X11 (see *Platform limitations*);
-  the app stays in the tray when the last note is closed if the tray is hosted
+  single-click recalls the last used note (or opens the archive), double-click
+  opens the archive, and the app stays in the tray when hosted
 - Optional autostart via an XDG autostart desktop entry
 - Portable mode (`portable.flag`) and single-instance behaviour
   (`GApplication`/D-Bus)

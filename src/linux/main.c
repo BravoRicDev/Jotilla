@@ -37,6 +37,10 @@ typedef struct {
     GtkWidget *tray_startup_item;
     guint tray_click_timer;
     int tray_clicks;
+    char *last_note;
+    gboolean last_note_dirty;
+    gboolean restoring;
+    gboolean preserving_open;
     GApplication *gapp;
 } AppCtx;
 
@@ -61,6 +65,54 @@ static void report_ui_error(const char *message)
     gtk_widget_destroy(dialog);
 }
 
+/* Carica l'identita' dell'ultima nota usata da questo archivio. */
+static void load_last_note(AppCtx *ctx)
+{    char *id;
+
+    if (ctx == NULL)
+        return;
+    g_free(ctx->last_note);
+    ctx->last_note = NULL;
+    ctx->last_note_dirty = FALSE;
+    if (ctx->store == NULL)
+        return;
+    id = store_app_get_string(ctx->store, "last_note");
+    if (id != NULL && note_id_supported(id) &&
+        strspn(id, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_") ==
+            strlen(id)) {
+        ctx->last_note = id;
+    } else {
+        g_free(id);
+    }
+}
+
+/* Ricorda la nota attiva senza trattenere puntatori a note liberate. */
+static void remember_note(AppCtx *ctx, Note *note)
+{    if (ctx == NULL || note == NULL || note->id == NULL || ctx->restoring)
+        return;
+    if (g_strcmp0(ctx->last_note, note->id) == 0)
+        return;
+    g_free(ctx->last_note);
+    ctx->last_note = g_strdup(note->id);
+    ctx->last_note_dirty = TRUE;
+}
+
+/* Persiste l'ultima nota nella sezione [app] dell'archivio. */
+static gboolean save_last_note(AppCtx *ctx)
+{    if (ctx == NULL || ctx->store == NULL || !ctx->last_note_dirty)
+        return TRUE;
+    if (!store_app_set_string(ctx->store, "last_note",
+                              ctx->last_note != NULL ? ctx->last_note : ""))
+        return FALSE;
+    ctx->last_note_dirty = FALSE;
+    return TRUE;
+}
+
+/* Callback di focus della nota. */
+static void on_note_focused(Note *note, gpointer data)
+{    remember_note(data, note);
+}
+
 /* Salva tutte le finestre nota aperte (usato alla chiusura). */
 static gboolean save_open_notes(AppCtx *ctx)
 {    guint i;
@@ -79,7 +131,7 @@ static gboolean save_open_notes(AppCtx *ctx)
         else if (note_window_save != NULL)
             note_window_save(window);
     }
-    return ok;
+    return save_last_note(ctx) && ok;
 }
 
 /* Callback GApplication: mostra l'archivio o crea la prima nota. */
@@ -296,6 +348,7 @@ static void on_archive_change(const char *path, gboolean move, gpointer data)
             return;
         }
         /* Salva e chiude le note esistenti prima di spostare i file. */
+        ctx->preserving_open = TRUE;
         if (ctx->note_windows != NULL) {
             while (ctx->note_windows->len > 0) {
                 GtkWidget *window = g_ptr_array_index(
@@ -339,6 +392,7 @@ static void on_archive_change(const char *path, gboolean move, gpointer data)
     }
 
     /* Salva e chiude le note esistenti prima di liberare il vecchio store. */
+    ctx->preserving_open = TRUE;
     if (ctx->note_windows != NULL) {
         while (ctx->note_windows->len > 0) {
             GtkWidget *window = g_ptr_array_index(ctx->note_windows,
@@ -355,6 +409,8 @@ static void on_archive_change(const char *path, gboolean move, gpointer data)
     store_free(ctx->store);
     ctx->store = new_store;
     store_set_archive_path(ctx->store, path);
+    ctx->preserving_open = FALSE;
+    load_last_note(ctx);
 
     g_free(ctx->archive_dir);
     ctx->archive_dir = g_strdup(path);
@@ -370,6 +426,7 @@ static void on_archive_change(const char *path, gboolean move, gpointer data)
     gtk_widget_show_all(ctx->archive);
     gtk_window_present(GTK_WINDOW(ctx->archive));
 
+    ctx->restoring = TRUE;
     if (ctx->store->notes->len == 0) {
         on_new_note(ctx);
     } else {
@@ -382,6 +439,9 @@ static void on_archive_change(const char *path, gboolean move, gpointer data)
                 open_note(ctx, note);
         }
     }
+    ctx->restoring = FALSE;
+    if (ctx->last_note == NULL && ctx->store->notes->len > 0)
+        remember_note(ctx, g_ptr_array_index(ctx->store->notes, 0));
 }
 
 /* Mostra o crea la finestra archivio. */
@@ -400,6 +460,34 @@ static void on_show_archive(gpointer data)
     }
     gtk_widget_show_all(ctx->archive);
     gtk_window_present(GTK_WINDOW(ctx->archive));
+}
+
+/* Richiama l'ultima nota usata; se manca apre l'archivio. */
+static void on_recall_note(gpointer data)
+{    AppCtx *ctx = data;
+    Note *note = NULL;
+    guint i;
+
+    if (ctx == NULL || ctx->store == NULL)
+        return;
+    if (ctx->last_note != NULL)
+        note = store_get(ctx->store, ctx->last_note);
+    if (note == NULL) {
+        on_show_archive(ctx);
+        return;
+    }
+    open_note(ctx, note);
+    for (i = 0; i < ctx->note_windows->len; ++i) {
+        GtkWidget *window = g_ptr_array_index(ctx->note_windows, i);
+        Note *current = window != NULL ? note_window_get_note(window) : NULL;
+
+        if (current == note) {
+            note_window_expand(window);
+            gtk_window_present(GTK_WINDOW(window));
+            break;
+        }
+    }
+    remember_note(ctx, note);
 }
 
 /* Esce dall'app se non restano finestre. */
@@ -426,7 +514,8 @@ static void on_note_destroy(GtkWidget *widget, gpointer data)
         if (ref->ctx->note_windows != NULL)
             g_ptr_array_remove(ref->ctx->note_windows, widget);
         if (ref->note != NULL &&
-            !GPOINTER_TO_INT(g_object_get_data(G_OBJECT(widget), "deleted"))) {
+            !GPOINTER_TO_INT(g_object_get_data(G_OBJECT(widget), "deleted")) &&
+            !ref->ctx->preserving_open) {
             GError *err = NULL;
             ref->note->open = FALSE;
             if (!store_save(ref->ctx->store, ref->note, &err)) {
@@ -478,6 +567,7 @@ static void open_note(AppCtx *ctx, Note *note)
 
             if (current == note ||
                 (current != NULL && g_strcmp0(current->id, note->id) == 0)) {
+                remember_note(ctx, note);
                 gtk_window_present(GTK_WINDOW(existing));
                 return;
             }
@@ -497,6 +587,7 @@ static void open_note(AppCtx *ctx, Note *note)
         return;
 
     note_window_set_changed_callback(window, on_note_changed, ctx);
+    note_window_set_focus_callback(window, on_note_focused, ctx);
     note_window_set_new_callback(window, on_new_note, ctx);
     note_window_set_archive_callback(window, on_show_archive, ctx);
 
@@ -512,6 +603,7 @@ static void open_note(AppCtx *ctx, Note *note)
     ctx->window_count++;
     gtk_widget_show_all(window);
     gtk_window_present(GTK_WINDOW(window));
+    remember_note(ctx, note);
 }
 
 /* Forza l'uscita dal ciclo GTK (smoke test). */
@@ -570,12 +662,12 @@ static gboolean tray_click_timeout(gpointer data)
 
     ctx->tray_click_timer = 0;
     if (ctx->tray_clicks == 1)
-        on_new_note(ctx);
+        on_recall_note(ctx);
     ctx->tray_clicks = 0;
     return G_SOURCE_REMOVE;
 }
 
-/* Click sinistro sul tray: singolo = nuova nota, doppio = archivio. */
+/* Click sinistro sul tray: singolo = ultima nota, doppio = archivio. */
 static void on_tray_activate(GtkStatusIcon *icon, gpointer data)
 {    AppCtx *ctx = data;
 
@@ -719,7 +811,9 @@ static void setup_tray(AppCtx *ctx)
 
     ctx->tray_icon = gtk_status_icon_new_from_pixbuf(pixbuf);
     g_object_unref(pixbuf);
-    gtk_status_icon_set_tooltip_text(ctx->tray_icon, "Jotilla");
+    gtk_status_icon_set_tooltip_text(
+        ctx->tray_icon,
+        "Jotilla - last note; double-click for explorer; Ctrl+Alt++ for new note");
     gtk_status_icon_set_visible(ctx->tray_icon, TRUE);
     g_signal_connect(ctx->tray_icon, "activate",
                      G_CALLBACK(on_tray_activate), ctx);
@@ -754,6 +848,7 @@ static void teardown(AppCtx *ctx, GApplication *gapp)
         ctx->tray_menu = NULL;
     }
 
+    ctx->preserving_open = TRUE;
     if (ctx->note_windows != NULL) {
         while (ctx->note_windows->len > 0) {
             GtkWidget *window = g_ptr_array_index(ctx->note_windows,
@@ -766,6 +861,8 @@ static void teardown(AppCtx *ctx, GApplication *gapp)
 
     if (ctx->archive != NULL)
         gtk_widget_destroy(ctx->archive);
+
+    (void)save_last_note(ctx);
 
     if (gapp != NULL)
         g_object_unref(gapp);
@@ -927,6 +1024,8 @@ int main(int argc, char **argv)
     ctx.archive_dir = g_strdup(archive_dir != NULL ? archive_dir : store_archive_dir(ctx.store));
     ctx.config_dir = g_strdup(config_dir);
     ctx.note_windows = g_ptr_array_new();
+    load_last_note(&ctx);
+    ctx.restoring = TRUE;
 
     if (ctx.store->notes->len == 0) { /* nessuna nota: crea una vuota */
         Note *note = store_new(ctx.store, smoke_test ? "smoke test" : "");
@@ -955,6 +1054,9 @@ int main(int argc, char **argv)
             }
         }
     }
+    ctx.restoring = FALSE;
+    if (ctx.last_note == NULL && ctx.store->notes->len > 0)
+        remember_note(&ctx, g_ptr_array_index(ctx.store->notes, 0));
 
     g_unix_signal_add(SIGTERM, on_terminate_signal, &ctx);
     g_unix_signal_add(SIGINT, on_terminate_signal, &ctx);
@@ -971,6 +1073,7 @@ int main(int argc, char **argv)
 
     teardown(&ctx, gapp);
     store_free(ctx.store);
+    g_free(ctx.last_note);
     g_free(ctx.archive_dir);
     g_free(ctx.config_dir);
     g_free(archive_dir);

@@ -17,6 +17,8 @@ The Linux implementation is in place and builds/tests on this machine.
   - Archive window: tile view, search with match highlighting, multi-select delete, date/tag tree filters, calendar filtering, tag autocomplete.
   - Tags normalisation and catalog; calendar date assignment with monthly and annual (year) views.
   - Tray icon (`GtkStatusIcon`/XEmbed) and global hotkey `Ctrl+Alt++`, both on X11 only.
+  - Tray single-click recalls the last used note (falling back to the archive); double-click opens the archive. `[app] last_note` is per archive.
+  - Per-note Scrollable text uses the shared `scroll` key and `[app] scroll` default; bars stay hidden while wheel/Page/Ctrl+Home/End navigate. Bounded notes reject overflow and warn on paste.
   - Autostart via an XDG autostart `.desktop` entry; portable mode via `portable.flag`; single instance via `GApplication`/D-Bus.
   - Always-on-top: works on X11/XWayland; documented GNOME Wayland limitation.
   - Packaging: `.desktop`, SVG icon, AppStream metainfo, Flatpak manifest, AppImage script.
@@ -98,7 +100,7 @@ tags.c/.h
 
 ### 2.5 Storage format
 - Note files: `note-YYYY-MM-DD_HH-MM-SS-mmm-ccc.txt` (UTF-8) + `.rtf` (companion) + `.ini` (per-note metadata: tags, calendar_date).
-- `notes.ini` inside the archive: per-note sections with layout keys (`x`, `y`, `color`, `has_title`, `collapsed`, `open`, `palette`, `size`, `opacity`, `width`, `height`, `custom_ink`), `tags`, `calendar_date`; UTF-16LE with BOM, CRLF, unknown keys preserved.
+- `notes.ini` inside the archive: per-note sections with layout keys (`x`, `y`, `color`, `has_title`, `collapsed`, `open`, `palette`, `size`, `opacity`, `width`, `height`, `custom_ink`, `scroll`), `tags`, `calendar_date`; `[app]` keeps `scroll` and `last_note`; UTF-16LE with BOM, CRLF, unknown keys preserved.
 - Archive path resolved via `portable.flag` (portable) or XDG defaults; the chosen path is stored in the machine-local `archive.path` file, never in the synced archive.
 - Limits: text 16 MB (`TEXT_LIMIT`), tag name 63 chars, 24 tags max, 2 KB tags string, excerpt 1200 chars.
 
@@ -117,7 +119,7 @@ tags.c/.h
 ### 2.7 Note lifecycle
 1. Create: generate ID `note-YYYY-MM-DD_HH-MM-SS-mmm-ccc.txt`, pick color via shuffled palette queue, create window with DPI-aware sizing.
 2. Edit: RichEdit control; formatting shortcuts; todo markers (`☐`/`☑`); title promotion on Shift+Enter.
-3. Save: dirty flags (`DIRTY_TEXT`, `DIRTY_RICH`); `save_text()` writes UTF-8 with BOM; `save_rich()` streams RTF atomically; 400 ms timer debounce; tags persist; archive notified.
+3. Save: dirty flags (`DIRTY_TEXT`, `DIRTY_RICH`); `save_text()` writes UTF-8 with CRLF; `save_rich()` streams RTF atomically; 400 ms timer debounce; tags split into `[note] tags=` metadata; archive notified.
 4. Close: save layout, cleanup window.
 5. Delete: `remove_note_files()` removes TXT+RTF; archive refreshed.
 

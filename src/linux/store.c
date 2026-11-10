@@ -642,7 +642,7 @@ static Note *note_alloc(const char *id)
 
 /* Confronta note per id. */
 /* Accetta gli id Windows (note-/nota-) e gli UUID creati da macOS. */
-static gboolean note_id_supported(const char *id)
+gboolean note_id_supported(const char *id)
 {
     size_t length = strlen(id);
     size_t i;
@@ -705,6 +705,7 @@ static gboolean save_ini(Store *store, GError **err)
         ini_set_bool(ini, note->id, "collapsed", note->collapsed);
         ini_set_bool(ini, note->id, "has_title", note->has_title);
         ini_set_bool(ini, note->id, "custom_ink", note->custom_ink);
+        ini_set_bool(ini, note->id, "scroll", note->scrolling);
         ini_set(ini, note->id, "tags", note->tags ? note->tags : "");
         {
             char date[16];
@@ -1000,6 +1001,7 @@ Store *store_open(const char *archive_dir, const char *config_dir, GError **err)
         note->collapsed = ini_bool(ini, id, "collapsed", FALSE);
         note->has_title = ini_bool(ini, id, "has_title", FALSE);
         note->custom_ink = ini_bool(ini, id, "custom_ink", FALSE);
+        note->scrolling = ini_bool(ini, id, "scroll", FALSE);
         if (note->palette < 0 || note->palette >= PALETTE_COUNT)
             note->palette = 0;
         if (note->color < 0 || note->color >= PALETTE_SIZES[note->palette])
@@ -1238,6 +1240,7 @@ Note *store_new(Store *store, const char *text)
             note->color = next % size;
         }
         note->palette = palette;
+        note->scrolling = store_app_get_int(store, "scroll", 0) != 0;
         store_app_set_int(store, "next_color", (next + 1) % COLOR_COUNT);
     }
 
@@ -1693,6 +1696,38 @@ void store_app_set_int(Store *store, const char *key, int value)
     ini_set_int(ini, "app", key, value);
     (void)ini_write_file(store, ini, NULL);
     ini_free(ini);
+}
+
+/* Legge una stringa dalla sezione [app] di notes.ini. */
+char *store_app_get_string(Store *store, const char *key)
+{
+    Ini *ini;
+    const char *value;
+    char *result = NULL;
+
+    if (!store || !key)
+        return NULL;
+    ini = ini_load_file(store->notes_ini);
+    value = ini_value(ini, "app", key);
+    if (value)
+        result = g_strdup(value);
+    ini_free(ini);
+    return result;
+}
+
+/* Scrive una stringa nella sezione [app], conservando le altre chiavi. */
+gboolean store_app_set_string(Store *store, const char *key, const char *value)
+{
+    Ini *ini;
+    gboolean ok;
+
+    if (!store || !key)
+        return FALSE;
+    ini = ini_load_file(store->notes_ini);
+    ini_set(ini, "app", key, value ? value : "");
+    ok = ini_write_file(store, ini, NULL);
+    ini_free(ini);
+    return ok;
 }
 
 /* Il percorso dell'archivio resta nella configurazione locale della macchina. */

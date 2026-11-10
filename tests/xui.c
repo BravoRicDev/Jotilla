@@ -422,6 +422,58 @@ static int cmd_key(int argc, char **argv)
     return send_symbol(symbol, force_shift, 0) == 0 ? 0 : 1;
 }
 
+static int cmd_wheel(int argc, char **argv)
+{
+    Window win;
+    int x, y, button;
+
+    if (argc != 7) {
+        fprintf(stderr, "usage: xui wheel <winid> <x> <y> <up|down> <count>\n");
+        return 2;
+    }
+    if (parse_window(argv[2], &win) != 0) {
+        fprintf(stderr, "invalid window id: %s\n", argv[2]);
+        return 2;
+    }
+    x = atoi(argv[3]);
+    y = atoi(argv[4]);
+    button = strcmp(argv[5], "up") == 0 ? 4 : 5;
+    {
+        int count = atoi(argv[6]);
+        int i;
+
+        XRaiseWindow(display, win);
+        XSetInputFocus(display, win, RevertToParent, CurrentTime);
+        XSync(display, False);
+        XTestFakeMotionEvent(display, DefaultScreen(display), x, y, 0);
+        XSync(display, False);
+        usleep(30000);
+        for (i = 0; i < count; ++i) {
+            XTestFakeButtonEvent(display, button, True, 0);
+            XTestFakeButtonEvent(display, button, False, 0);
+            XSync(display, False);
+            usleep(20000);
+        }
+    }
+    return 0;
+}
+
+static int cmd_keyglobal(int argc, char **argv)
+{
+    KeySym symbol;
+
+    if (argc != 3) {
+        fprintf(stderr, "usage: xui keyglobal <keysymname>\n");
+        return 2;
+    }
+    symbol = XStringToKeysym(argv[2]);
+    if (symbol == NoSymbol) {
+        fprintf(stderr, "unknown keysym: %s\n", argv[2]);
+        return 2;
+    }
+    return send_symbol(symbol, 0, 0) == 0 ? 0 : 1;
+}
+
 static int cmd_ctrlkey(int argc, char **argv)
 {
     Window win;
@@ -490,6 +542,10 @@ int main(int argc, char **argv)
         rc = cmd_key(argc, argv);
     else if (strcmp(argv[1], "ctrlkey") == 0)
         rc = cmd_ctrlkey(argc, argv);
+    else if (strcmp(argv[1], "keyglobal") == 0)
+        rc = cmd_keyglobal(argc, argv);
+    else if (strcmp(argv[1], "wheel") == 0)
+        rc = cmd_wheel(argc, argv);
     else {
         fprintf(stderr, "xui: unknown command: %s\n", argv[1]);
         usage();

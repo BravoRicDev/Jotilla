@@ -519,7 +519,7 @@ static void test_cross_platform_archive(void) {
         "future=keep\n"
         "[note-2024-01-02_03-04-05-006-001]\n"
         "x=10\ny=20\nwidth=321\nheight=210\ncolor=2\npalette=5\nsize=3\n"
-        "opacity=70\nopen=1\ncollapsed=0\nhas_title=1\ncustom_ink=1\n"
+        "opacity=70\nopen=1\ncollapsed=0\nhas_title=1\ncustom_ink=1\nscroll=1\n"
         "tags=café;work\ncalendar_date=20240115\n"
         "[app]\npalette=7\n");
 
@@ -544,6 +544,7 @@ static void test_cross_platform_archive(void) {
     g_assert_false(note->collapsed);
     g_assert_true(note->has_title);
     g_assert_true(note->custom_ink);
+    g_assert_true(note->scrolling);
     g_assert_cmpuint(note->date, ==, 20240115u);
     g_assert_cmpuint(note->created, ==, 20240102u);
     g_assert_cmpint(store_app_get_int(store, "palette", 0), ==, 7);
@@ -716,6 +717,62 @@ static void test_unavailable_archive_path(void) {
     g_free(base);
 }
 
+static void test_scrolling_settings(void) {
+    GError *err = NULL;
+    char *archive = g_dir_make_tmp("jotilla-test-scroll-XXXXXX", &err);
+    char *config = g_dir_make_tmp("jotilla-test-scroll-cfg-XXXXXX", &err);
+    Store *store;
+    Note *bounded;
+    Note *scrollable;
+    char *bounded_id;
+    char *scrollable_id;
+    char *value;
+
+    g_assert_no_error(err);
+    store = store_open(archive, config, &err);
+    g_assert_no_error(err);
+    g_assert_nonnull(store);
+
+    g_assert_true(store_app_set_string(store, "last_note", "note-test-1"));
+    value = store_app_get_string(store, "last_note");
+    g_assert_cmpstr(value, ==, "note-test-1");
+    g_free(value);
+
+    store_app_set_int(store, "scroll", 0);
+    bounded = store_new(store, "bounded");
+    g_assert_nonnull(bounded);
+    g_assert_false(bounded->scrolling);
+
+    store_app_set_int(store, "scroll", 1);
+    scrollable = store_new(store, "scrollable");
+    g_assert_nonnull(scrollable);
+    g_assert_true(scrollable->scrolling);
+
+    bounded_id = g_strdup(bounded->id);
+    scrollable_id = g_strdup(scrollable->id);
+    g_assert_true(store_save(store, scrollable, &err));
+    g_assert_no_error(err);
+    store_free(store);
+
+    store = store_open(archive, config, &err);
+    g_assert_no_error(err);
+    g_assert_nonnull(store);
+    scrollable = store_get(store, scrollable_id);
+    bounded = store_get(store, bounded_id);
+    g_assert_nonnull(scrollable);
+    g_assert_nonnull(bounded);
+    g_assert_true(scrollable->scrolling);
+    g_assert_false(bounded->scrolling);
+    store_free(store);
+    g_free(bounded_id);
+    g_free(scrollable_id);
+
+    remove_tree(archive);
+    remove_tree(config);
+    g_free(archive);
+    g_free(config);
+}
+
 int main(int argc, char **argv) {
     g_test_init(&argc, &argv, NULL);
 
@@ -732,6 +789,7 @@ int main(int argc, char **argv) {
     g_test_add_func("/core/macos_uuid_archive", test_macos_uuid_archive);
     g_test_add_func("/core/archive_lock_blank_notes", test_archive_lock_and_blank_notes);
     g_test_add_func("/core/unavailable_archive_path", test_unavailable_archive_path);
+    g_test_add_func("/core/scrolling_settings", test_scrolling_settings);
 
     return g_test_run();
 }

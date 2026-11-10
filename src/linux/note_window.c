@@ -33,6 +33,11 @@ typedef struct {
     gpointer data;
 } SimpleHook;
 
+typedef struct {
+    NoteFocusFunc fn;
+    gpointer data;
+} FocusHook;
+
 static guint note_window_seq = 0;
 
 /* Restituisce lo store associato alla finestra. */
@@ -54,6 +59,64 @@ static GtkTextView *window_view(GtkWidget *window)
         return NULL;
     return g_object_get_data(G_OBJECT(window), "textview");
 }
+
+static GtkWidget *window_scrolled(GtkWidget *window)
+{
+    return g_object_get_data(G_OBJECT(window), "scrolled");
+}
+
+/* Larghezza/altezza disponibili per il testo nella finestra espansa. */
+static gint note_view_height(GtkWidget *window, gint window_height)
+{
+    GtkWidget *header = g_object_get_data(G_OBJECT(window), "header");
+    gint header_height = header != NULL ? gtk_widget_get_allocated_height(header) : 32;
+
+    if (header_height < 1)
+        header_height = 32;
+    return window_height - header_height;
+}
+
+/* True se il documento sta nell'area visibile corrente. */
+static gboolean text_fits_window(GtkWidget *window)
+{
+    GtkWidget *scrolled = window_scrolled(window);
+    GtkAdjustment *adjustment;
+    gdouble upper, page;
+
+    if (scrolled == NULL)
+        return TRUE;
+    adjustment = gtk_scrolled_window_get_vadjustment(GTK_SCROLLED_WINDOW(scrolled));
+    if (adjustment == NULL)
+        return TRUE;
+    upper = gtk_adjustment_get_upper(adjustment);
+    page = gtk_adjustment_get_page_size(adjustment);
+    if (page > 1.0)
+        return upper <= page + 0.5;
+    {
+        Note *note = window_note(window);
+
+        return upper <= note_view_height(window, note != NULL ? note->h : 240) + 0.5;
+    }
+}
+
+/* True se il documento starebbe in una finestra alta window_height. */
+static gboolean text_fits_height(GtkWidget *window, gint window_height)
+{
+    GtkWidget *scrolled = window_scrolled(window);
+    GtkAdjustment *adjustment;
+    gdouble upper;
+
+    if (scrolled == NULL)
+        return TRUE;
+    adjustment = gtk_scrolled_window_get_vadjustment(GTK_SCROLLED_WINDOW(scrolled));
+    if (adjustment == NULL)
+        return TRUE;
+    upper = gtk_adjustment_get_upper(adjustment);
+    return upper <= note_view_height(window, window_height) + 0.5;
+}
+
+static void schedule_fit_check(GtkWidget *window);
+static void schedule_initial_fit(GtkWidget *window);
 
 typedef struct {
     char *rtf;
@@ -175,23 +238,226 @@ static void ensure_tags(GtkTextBuffer *buffer)
         gtk_text_buffer_create_tag(buffer, "strike", "strikethrough", TRUE, NULL);
 }
 
-/* Incolla sempre testo semplice, come Windows (CF_UNICODETEXT). */
+typedef struct {
+    char *rtf;
+    int cursor;
+    int sel_start;
+    int sel_end;
+    gboolean has_selection;
+} RollbackSnapshot;
+
+/* Libera l'istantanea di rollback. */
+static void rollback_free(gpointer data)
+{
+    RollbackSnapshot *snapshot = data;
+
+    if (snapshot == NULL)
+        return;
+    g_free(snapshot->rtf);
+    g_free(snapshot);
+}
+
+/* Cattura lo stato prima di un'azione utente (solo note non scrollabili). */
+static void capture_rollback(GtkWidget *window)
+{
+    Note *note = window_note(window);
+    GtkTextView *view = window_view(window);
+    GtkTextBuffer *buffer;
+    GtkTextIter start, end;
+    RollbackSnapshot *snapshot;
+
+    if (note == NULL || note->scrolling || view == NULL)
+        return;
+    if (GPOINTER_TO_INT(g_object_get_data(G_OBJECT(window), "rollback-idle")) ||
+        GPOINTER_TO_INT(g_object_get_data(G_OBJECT(window), "paste-check-id")))
+        return;
+    if (GPOINTER_TO_INT(g_object_get_data(G_OBJECT(window), "validating")))
+        return;
+    if (GPOINTER_TO_INT(g_object_get_data(G_OBJECT(window), "loading")) ||
+        GPOINTER_TO_INT(g_object_get_data(G_OBJECT(window), "destroyed")) ||
+        GPOINTER_TO_INT(g_object_get_data(G_OBJECT(window), "deleted")))
+        return;
+    buffer = gtk_text_view_get_buffer(view);
+    if (buffer == NULL)
+        return;
+    snapshot = g_new0(RollbackSnapshot, 1);
+    snapshot->rtf = rtf_from_buffer(buffer);
+    if (snapshot->rtf == NULL)
+        snapshot->rtf = g_strdup("");
+    {
+        GtkTextMark *mark = gtk_text_buffer_get_insert(buffer);
+        GtkTextIter cursor;
+
+        gtk_text_buffer_get_iter_at_mark(buffer, &cursor, mark);
+        snapshot->cursor = gtk_text_iter_get_offset(&cursor);
+    }
+    if (gtk_text_buffer_get_selection_bounds(buffer, &start, &end)) {
+        snapshot->has_selection = TRUE;
+        snapshot->sel_start = gtk_text_iter_get_offset(&start);
+        snapshot->sel_end = gtk_text_iter_get_offset(&end);
+    }
+    g_object_set_data_full(G_OBJECT(window), "rollback", snapshot, rollback_free);
+}
+
+/* Ripristina lo stato catturato prima dell'azione corrente. */
+static gboolean restore_rollback(GtkWidget *window)
+{
+    RollbackSnapshot *snapshot = g_object_steal_data(G_OBJECT(window), "rollback");
+    GtkTextView *view = window_view(window);
+    GtkTextBuffer *buffer;
+    GtkTextIter iter, start, end;
+    gint length;
+
+    if (snapshot == NULL || view == NULL) {
+        rollback_free(snapshot);
+        return FALSE;
+    }
+    buffer = gtk_text_view_get_buffer(view);
+    if (buffer == NULL) {
+        rollback_free(snapshot);
+        return FALSE;
+    }
+    g_object_set_data(G_OBJECT(window), "validating", GINT_TO_POINTER(1));
+    rtf_to_buffer(snapshot->rtf, buffer);
+    length = gtk_text_buffer_get_char_count(buffer);
+    if (snapshot->cursor > length) snapshot->cursor = length;
+    if (snapshot->cursor < 0) snapshot->cursor = 0;
+    gtk_text_buffer_get_iter_at_offset(buffer, &iter, snapshot->cursor);
+    gtk_text_buffer_place_cursor(buffer, &iter);
+    if (snapshot->has_selection) {
+        if (snapshot->sel_start > length) snapshot->sel_start = length;
+        if (snapshot->sel_end > length) snapshot->sel_end = length;
+        if (snapshot->sel_start < 0) snapshot->sel_start = 0;
+        if (snapshot->sel_end < 0) snapshot->sel_end = 0;
+        gtk_text_buffer_get_iter_at_offset(buffer, &start, snapshot->sel_start);
+        gtk_text_buffer_get_iter_at_offset(buffer, &end, snapshot->sel_end);
+        gtk_text_buffer_select_range(buffer, &start, &end);
+    } else {
+        gtk_text_buffer_select_range(buffer, &iter, &iter);
+    }
+    g_object_set_data(G_OBJECT(window), "validating", GINT_TO_POINTER(0));
+    rollback_free(snapshot);
+    return TRUE;
+}
+
+static gboolean on_rollback_idle(gpointer data)
+{
+    GtkWidget *window = data;
+    Note *note = window_note(window);
+
+    g_object_set_data(G_OBJECT(window), "rollback-idle", GUINT_TO_POINTER(0));
+    if (GPOINTER_TO_INT(g_object_get_data(G_OBJECT(window), "destroyed")) ||
+        GPOINTER_TO_INT(g_object_get_data(G_OBJECT(window), "deleted")))
+        return G_SOURCE_REMOVE;
+    if (note != NULL && !note->scrolling && !text_fits_window(window)) {
+        restore_rollback(window);
+        update_title(window);
+        gdk_display_beep(gdk_display_get_default());
+    }
+    return G_SOURCE_REMOVE;
+}
+
+static gboolean on_begin_user_action(GtkTextBuffer *buffer, gpointer data)
+{
+    (void)buffer;
+    capture_rollback(data);
+    return FALSE;
+}
+
+/* Avviso quando un incolla non entra nella nota non scrollabile. */
+static void show_paste_overflow(GtkWidget *window)
+{
+    GtkWidget *dialog = gtk_message_dialog_new(
+        GTK_WINDOW(window), GTK_DIALOG_MODAL | GTK_DIALOG_DESTROY_WITH_PARENT,
+        GTK_MESSAGE_INFO, GTK_BUTTONS_OK,
+        "The pasted text does not fit in this note.");
+    gtk_message_dialog_format_secondary_text(
+        GTK_MESSAGE_DIALOG(dialog),
+        "Enlarge the note, paste less text, or enable Scrollable text from the note menu. "
+        "Your existing text has been kept.");
+    gtk_dialog_run(GTK_DIALOG(dialog));
+    gtk_widget_destroy(dialog);
+}
+
+/* Verifica l'incolla dopo che GTK ha riallocato il testo. */
+static gboolean on_paste_check(gpointer data)
+{
+    GtkWidget *window = data;
+    Note *note = window_note(window);
+
+    g_object_set_data(G_OBJECT(window), "paste-check-id", GUINT_TO_POINTER(0));
+    if (GPOINTER_TO_INT(g_object_get_data(G_OBJECT(window), "destroyed")) ||
+        GPOINTER_TO_INT(g_object_get_data(G_OBJECT(window), "deleted")))
+        return G_SOURCE_REMOVE;
+    update_title(window);
+    if (note != NULL && !note->scrolling && !text_fits_window(window)) {
+        if (!restore_rollback(window)) {
+            /* Nessuna istantanea: almeno non salvare il contenuto eccedente. */
+        }
+        update_title(window);
+        gdk_display_beep(gdk_display_get_default());
+        show_paste_overflow(window);
+        return G_SOURCE_REMOVE;
+    }
+    touch(window);
+    return G_SOURCE_REMOVE;
+}
+
+static void schedule_paste_check(GtkWidget *window)
+{
+    guint id;
+
+    if (window == NULL || GPOINTER_TO_INT(g_object_get_data(G_OBJECT(window), "paste-check-id")))
+        return;
+    id = g_idle_add(on_paste_check, window);
+    g_object_set_data(G_OBJECT(window), "paste-check-id", GUINT_TO_POINTER(id));
+}
+
+/* Incolla sempre testo semplice; in modalita' limitata rifiuta l'eccesso. */
 static void on_paste_clipboard(GtkTextView *view, gpointer data)
 {
+    GtkWidget *window = data;
+    Note *note = window_note(window);
     GtkTextBuffer *buffer = gtk_text_view_get_buffer(view);
     GtkClipboard *clipboard = gtk_clipboard_get(GDK_SELECTION_CLIPBOARD);
+    GtkTextIter start, end, insert;
+    gboolean had_selection = FALSE;
+    gint start_offset = 0, end_offset = 0;
     gchar *text;
 
-    (void)data;
     g_signal_stop_emission_by_name(view, "paste-clipboard");
-    if (buffer == NULL)
+    if (buffer == NULL || note == NULL)
         return;
     text = gtk_clipboard_wait_for_text(clipboard);
     if (text == NULL)
         return;
+
+    if (gtk_text_buffer_get_selection_bounds(buffer, &start, &end)) {
+        had_selection = TRUE;
+        start_offset = gtk_text_iter_get_offset(&start);
+        end_offset = gtk_text_iter_get_offset(&end);
+    } else {
+        GtkTextMark *mark = gtk_text_buffer_get_insert(buffer);
+
+        gtk_text_buffer_get_iter_at_mark(buffer, &insert, mark);
+        start_offset = end_offset = gtk_text_iter_get_offset(&insert);
+    }
+
+    g_object_set_data(G_OBJECT(window), "pasting", GINT_TO_POINTER(1));
     gtk_text_buffer_begin_user_action(buffer);
-    gtk_text_buffer_insert_at_cursor(buffer, text, -1);
+    if (had_selection)
+        gtk_text_buffer_delete(buffer, &start, &end);
+    gtk_text_buffer_get_iter_at_offset(buffer, &insert, start_offset);
+    gtk_text_buffer_insert(buffer, &insert, text, -1);
     gtk_text_buffer_end_user_action(buffer);
+    g_object_set_data(G_OBJECT(window), "pasting", GINT_TO_POINTER(0));
+    update_title(window);
+
+    if (!note->scrolling) {
+        schedule_paste_check(window);
+    } else {
+        touch(window);
+    }
     g_free(text);
 }
 
@@ -598,6 +864,7 @@ static void restyle(GtkWidget *window)
             "#%s textview { font-size: %dpt; }\n"
             "#%s scrolledwindow, #%s scrolledwindow viewport { background-color: transparent; "
             "border: none; }\n"
+            "#%s scrollbar { opacity: 0; min-width: 0; min-height: 0; }\n"
             ".save-error { border: 2px solid #cc2222; }\n"
             "#%s.save-error { border: 2px solid #cc2222; }\n",
             name, bg, ink, bar,
@@ -608,6 +875,7 @@ static void restyle(GtkWidget *window)
             name, name, color_decl,
             name, font_size,
             name, name,
+            name,
             name);
     }
 
@@ -735,6 +1003,11 @@ static void change_note_size(GtkWidget *window, int direction)
             gtk_text_buffer_apply_tag(buffer, tag, &start, &end);
         gtk_text_buffer_end_user_action(buffer);
 
+        if (!note->scrolling && !text_fits_window(window)) {
+            restore_rollback(window);
+            gdk_display_beep(gdk_display_get_default());
+            return;
+        }
         touch(window);
         save_now(window);
         return;
@@ -784,18 +1057,31 @@ static void change_note_size(GtkWidget *window, int direction)
 static void set_note_size(GtkWidget *window, int index)
 {
     Note *note = window_note(window);
+    gboolean enforce;
 
     if (note == NULL || index < 0 || index >= NOTE_SIZE_COUNT)
         return;
 
+    enforce = !note->scrolling && !note->collapsed &&
+              GPOINTER_TO_INT(g_object_get_data(G_OBJECT(window), "initialized")) != 0;
+    if (enforce) {
+        g_object_set_data(G_OBJECT(window), "preset-old-w", GINT_TO_POINTER(note->w));
+        g_object_set_data(G_OBJECT(window), "preset-old-h", GINT_TO_POINTER(note->h));
+        g_object_set_data(G_OBJECT(window), "preset-old-size", GINT_TO_POINTER(note->size));
+        g_object_set_data(G_OBJECT(window), "preset-pending", GINT_TO_POINTER(1));
+    }
     note->w = NOTE_SIZE_W[index];
     note->h = NOTE_SIZE_H[index];
     note->size = index;
     gtk_window_resize(GTK_WINDOW(window), note->w,
                       note->collapsed ? 32 : note->h);
     restyle(window);
-    touch(window);
-    save_now(window);
+    if (enforce) {
+        schedule_fit_check(window);
+    } else {
+        touch(window);
+        save_now(window);
+    }
 }
 
 /* Aggiorna il tooltip dell'header con la data della nota. */
@@ -1087,11 +1373,22 @@ static void apply_named_tag(GtkWidget *window, const char *name)
     if (tag == NULL)
         return;
 
+    gtk_text_buffer_begin_user_action(buffer);
     if (gtk_text_iter_has_tag(&start, tag))
         gtk_text_buffer_remove_tag(buffer, tag, &start, &end);
     else
         gtk_text_buffer_apply_tag(buffer, tag, &start, &end);
+    gtk_text_buffer_end_user_action(buffer);
 
+    {
+        Note *note = window_note(window);
+
+        if (note != NULL && !note->scrolling && !text_fits_window(window)) {
+            restore_rollback(window);
+            gdk_display_beep(gdk_display_get_default());
+            return;
+        }
+    }
     touch(window);
 }
 
@@ -1825,6 +2122,103 @@ static gboolean delete_empty_note(GtkWidget *window)
     return TRUE;
 }
 
+/* Attiva/disattiva il testo scrollabile con scelta dell'ambito. */
+static void on_scrolling_activate(GtkMenuItem *item, gpointer data)
+{
+    GtkWidget *window = data;
+    Note *note = window_note(window);
+    Store *store = window_store(window);
+    gboolean enabled;
+    GtkWidget *dialog;
+    gint response;
+
+    (void)item;
+    if (note == NULL || store == NULL)
+        return;
+    enabled = !note->scrolling;
+    if (!enabled) {
+        gboolean fits = note->collapsed
+                            ? text_fits_height(window, note->h)
+                            : text_fits_window(window);
+
+        if (!fits) {
+            dialog = gtk_message_dialog_new(
+                GTK_WINDOW(window), GTK_DIALOG_MODAL | GTK_DIALOG_DESTROY_WITH_PARENT,
+                GTK_MESSAGE_INFO, GTK_BUTTONS_OK,
+                "The text does not fit without scrolling.");
+            gtk_message_dialog_format_secondary_text(
+                GTK_MESSAGE_DIALOG(dialog),
+                "Enlarge the note or shorten its text before turning scrolling off. Your text has been kept.");
+            gtk_dialog_run(GTK_DIALOG(dialog));
+            gtk_widget_destroy(dialog);
+            return;
+        }
+    }
+
+    dialog = gtk_message_dialog_new(
+        GTK_WINDOW(window), GTK_DIALOG_MODAL | GTK_DIALOG_DESTROY_WITH_PARENT,
+        GTK_MESSAGE_QUESTION, GTK_BUTTONS_NONE, "%s",
+        enabled ? "Enable scrollable text?" : "Turn off scrollable text?");
+    gtk_message_dialog_format_secondary_text(
+        GTK_MESSAGE_DIALOG(dialog),
+        enabled ? "Text wraps to the note width and scrolls vertically without a scrollbar."
+                : "Text will need to fit inside the note. No text will be removed.");
+    gtk_dialog_add_button(GTK_DIALOG(dialog), "Only this note", GTK_RESPONSE_YES);
+    gtk_dialog_add_button(GTK_DIALOG(dialog), "This note and new notes", GTK_RESPONSE_NO);
+    gtk_dialog_add_button(GTK_DIALOG(dialog), "Cancel", GTK_RESPONSE_CANCEL);
+    gtk_dialog_set_default_response(GTK_DIALOG(dialog), GTK_RESPONSE_YES);
+    response = gtk_dialog_run(GTK_DIALOG(dialog));
+    gtk_widget_destroy(dialog);
+    if (response != GTK_RESPONSE_YES && response != GTK_RESPONSE_NO)
+        return;
+
+    if (!save_now(window)) {
+        dialog = gtk_message_dialog_new(
+            GTK_WINDOW(window), GTK_DIALOG_MODAL | GTK_DIALOG_DESTROY_WITH_PARENT,
+            GTK_MESSAGE_ERROR, GTK_BUTTONS_CLOSE,
+            "The note could not be saved. Its scrolling setting has not changed.");
+        gtk_dialog_run(GTK_DIALOG(dialog));
+        gtk_widget_destroy(dialog);
+        return;
+    }
+    note->scrolling = enabled;
+    if (!save_now(window)) {
+        note->scrolling = !enabled;
+        dialog = gtk_message_dialog_new(
+            GTK_WINDOW(window), GTK_DIALOG_MODAL | GTK_DIALOG_DESTROY_WITH_PARENT,
+            GTK_MESSAGE_ERROR, GTK_BUTTONS_CLOSE,
+            "The scrolling setting could not be saved. The previous setting has been restored.");
+        gtk_dialog_run(GTK_DIALOG(dialog));
+        gtk_widget_destroy(dialog);
+        return;
+    }
+    if (response == GTK_RESPONSE_NO)
+        store_app_set_int(store, "scroll", enabled ? 1 : 0);
+    {
+        GtkTextView *view = window_view(window);
+
+        if (view != NULL && !note->collapsed) {
+            if (!enabled) {
+                GtkWidget *scrolled = window_scrolled(window);
+                GtkAdjustment *adjustment = scrolled != NULL
+                    ? gtk_scrolled_window_get_vadjustment(GTK_SCROLLED_WINDOW(scrolled))
+                    : NULL;
+
+                if (adjustment != NULL)
+                    gtk_adjustment_set_value(adjustment, 0.0);
+            } else {
+                GtkTextBuffer *buffer = gtk_text_view_get_buffer(view);
+
+                if (buffer != NULL) {
+                    GtkTextMark *mark = gtk_text_buffer_get_insert(buffer);
+
+                    gtk_text_view_scroll_mark_onscreen(view, mark);
+                }
+            }
+        }
+    }
+}
+
 /* Cambia la dimensione predefinita della nota. */
 static void on_note_size_activate(GtkMenuItem *item, gpointer data)
 {
@@ -2075,6 +2469,14 @@ static GtkWidget *build_menu(GtkWidget *window)
     gtk_menu_item_set_submenu(GTK_MENU_ITEM(item), submenu);
     gtk_menu_shell_append(GTK_MENU_SHELL(menu), item);
 
+    item = gtk_check_menu_item_new_with_label("Scrollable text");
+    gtk_check_menu_item_set_active(
+        GTK_CHECK_MENU_ITEM(item),
+        window_note(window) != NULL && window_note(window)->scrolling);
+    gtk_widget_set_tooltip_text(item, "Allow text to extend beyond the visible note");
+    g_signal_connect(item, "activate", G_CALLBACK(on_scrolling_activate), window);
+    gtk_menu_shell_append(GTK_MENU_SHELL(menu), item);
+
     gtk_menu_shell_append(GTK_MENU_SHELL(menu), gtk_separator_menu_item_new());
 
     item = tip_item("New note palette", "Choose the palette for new notes");
@@ -2135,6 +2537,134 @@ static GtkWidget *build_menu(GtkWidget *window)
 }
 
 /* Aggiorna titolo e segna modifiche al buffer. */
+/* Prima configurazione: migra le note lunghe legacy a testo scrollabile. */
+static gboolean on_initial_fit(gpointer data)
+{
+    GtkWidget *window = data;
+    Note *note = window_note(window);
+    GtkTextView *view = window_view(window);
+
+    g_object_set_data(G_OBJECT(window), "initial-fit-id", GUINT_TO_POINTER(0));
+    if (GPOINTER_TO_INT(g_object_get_data(G_OBJECT(window), "destroyed")) ||
+        GPOINTER_TO_INT(g_object_get_data(G_OBJECT(window), "deleted")) ||
+        note == NULL || view == NULL)
+        return G_SOURCE_REMOVE;
+    if (GPOINTER_TO_INT(g_object_get_data(G_OBJECT(window), "initialized")))
+        return G_SOURCE_REMOVE;
+    if (note->collapsed || !gtk_widget_get_mapped(window) ||
+        !gtk_widget_get_mapped(GTK_WIDGET(view)))
+        return G_SOURCE_REMOVE;
+
+    if (!note->scrolling && !text_fits_window(window)) {
+        /* Le note create prima dell'introduzione del flag non devono perdere testo. */
+        note->scrolling = TRUE;
+        save_now(window);
+    }
+    g_object_set_data(G_OBJECT(window), "initialized", GINT_TO_POINTER(1));
+    {
+        gint width = 0, height = 0;
+
+        gtk_window_get_size(GTK_WINDOW(window), &width, &height);
+        if (width >= 160) g_object_set_data(G_OBJECT(window), "fit-w", GINT_TO_POINTER(width));
+        if (height >= 100) g_object_set_data(G_OBJECT(window), "fit-h", GINT_TO_POINTER(height));
+    }
+    return G_SOURCE_REMOVE;
+}
+
+static void schedule_initial_fit(GtkWidget *window)
+{
+    guint id;
+
+    if (window == NULL || GPOINTER_TO_INT(g_object_get_data(G_OBJECT(window), "initialized")))
+        return;
+    id = GPOINTER_TO_UINT(g_object_get_data(G_OBJECT(window), "initial-fit-id"));
+    if (id != 0)
+        return;
+    id = g_idle_add(on_initial_fit, window);
+    g_object_set_data(G_OBJECT(window), "initial-fit-id", GUINT_TO_POINTER(id));
+}
+
+/* Verifica dopo l'allocazione che il testo stia nella finestra. */
+static gboolean on_fit_check(gpointer data)
+{
+    GtkWidget *window = data;
+    Note *note = window_note(window);
+    gint current_w = 0, current_h = 0;
+
+    g_object_set_data(G_OBJECT(window), "fit-check-id", GUINT_TO_POINTER(0));
+    if (GPOINTER_TO_INT(g_object_get_data(G_OBJECT(window), "destroyed")) ||
+        GPOINTER_TO_INT(g_object_get_data(G_OBJECT(window), "deleted")) ||
+        note == NULL || note->collapsed ||
+        !GPOINTER_TO_INT(g_object_get_data(G_OBJECT(window), "initialized")))
+        return G_SOURCE_REMOVE;
+
+    gtk_window_get_size(GTK_WINDOW(window), &current_w, &current_h);
+    if (note->scrolling || text_fits_window(window)) {
+        if (current_w >= 160) g_object_set_data(G_OBJECT(window), "fit-w", GINT_TO_POINTER(current_w));
+        if (current_h >= 100) g_object_set_data(G_OBJECT(window), "fit-h", GINT_TO_POINTER(current_h));
+        if (GPOINTER_TO_INT(g_object_get_data(G_OBJECT(window), "preset-pending"))) {
+            g_object_set_data(G_OBJECT(window), "preset-pending", GINT_TO_POINTER(0));
+            touch(window);
+            save_now(window);
+        }
+        return G_SOURCE_REMOVE;
+    }
+
+    if (GPOINTER_TO_INT(g_object_get_data(G_OBJECT(window), "preset-pending"))) {
+        gint old_w = GPOINTER_TO_INT(g_object_get_data(G_OBJECT(window), "preset-old-w"));
+        gint old_h = GPOINTER_TO_INT(g_object_get_data(G_OBJECT(window), "preset-old-h"));
+        gint old_size = GPOINTER_TO_INT(g_object_get_data(G_OBJECT(window), "preset-old-size"));
+        GtkWidget *dialog;
+
+        g_object_set_data(G_OBJECT(window), "preset-pending", GINT_TO_POINTER(0));
+        note->w = old_w >= 160 ? old_w : 300;
+        note->h = old_h >= 100 ? old_h : 240;
+        note->size = old_size;
+        gtk_window_resize(GTK_WINDOW(window), note->w, note->h);
+        restyle(window);
+        dialog = gtk_message_dialog_new(
+            GTK_WINDOW(window), GTK_DIALOG_MODAL | GTK_DIALOG_DESTROY_WITH_PARENT,
+            GTK_MESSAGE_INFO, GTK_BUTTONS_OK,
+            "The text does not fit this size.");
+        gtk_message_dialog_format_secondary_text(
+            GTK_MESSAGE_DIALOG(dialog),
+            "Choose a larger size or shorten the note first.");
+        gtk_dialog_run(GTK_DIALOG(dialog));
+        gtk_widget_destroy(dialog);
+        return G_SOURCE_REMOVE;
+    }
+
+    {
+        gint fit_w = GPOINTER_TO_INT(g_object_get_data(G_OBJECT(window), "fit-w"));
+        gint fit_h = GPOINTER_TO_INT(g_object_get_data(G_OBJECT(window), "fit-h"));
+
+        if (fit_w >= 160 && fit_h >= 100 &&
+            (current_w != fit_w || current_h != fit_h)) {
+            note->w = fit_w;
+            note->h = fit_h;
+            gtk_window_resize(GTK_WINDOW(window), fit_w, fit_h);
+            return G_SOURCE_REMOVE;
+        }
+    }
+    /* Nessuna dimensione valida precedente: preserva il testo. */
+    note->scrolling = TRUE;
+    save_now(window);
+    return G_SOURCE_REMOVE;
+}
+
+static void schedule_fit_check(GtkWidget *window)
+{
+    guint id;
+
+    if (window == NULL || GPOINTER_TO_INT(g_object_get_data(G_OBJECT(window), "destroyed")))
+        return;
+    if (GPOINTER_TO_INT(g_object_get_data(G_OBJECT(window), "initialized")) == 0 ||
+        GPOINTER_TO_INT(g_object_get_data(G_OBJECT(window), "fit-check-id")) != 0)
+        return;
+    id = g_idle_add(on_fit_check, window);
+    g_object_set_data(G_OBJECT(window), "fit-check-id", GUINT_TO_POINTER(id));
+}
+
 static void on_buffer_changed(GtkTextBuffer *buffer, gpointer data)
 {
     GtkWidget *window = data;
@@ -2144,10 +2674,25 @@ static void on_buffer_changed(GtkTextBuffer *buffer, gpointer data)
     if (GPOINTER_TO_INT(g_object_get_data(G_OBJECT(window), "loading")))
         return;
     if (GPOINTER_TO_INT(g_object_get_data(G_OBJECT(window), "destroyed")) ||
-        GPOINTER_TO_INT(g_object_get_data(G_OBJECT(window), "deleted")))
+        GPOINTER_TO_INT(g_object_get_data(G_OBJECT(window), "deleted")) ||
+        GPOINTER_TO_INT(g_object_get_data(G_OBJECT(window), "validating")))
         return;
 
     update_title(window);
+    if (GPOINTER_TO_INT(g_object_get_data(G_OBJECT(window), "pasting")))
+        return;
+    {
+        Note *note = window_note(window);
+
+        if (note != NULL && !note->scrolling && !text_fits_window(window)) {
+            if (GPOINTER_TO_INT(g_object_get_data(G_OBJECT(window), "rollback-idle")) == 0) {
+                guint id = g_idle_add(on_rollback_idle, window);
+
+                g_object_set_data(G_OBJECT(window), "rollback-idle", GUINT_TO_POINTER(id));
+            }
+            return;
+        }
+    }
     touch(window);
 }
 
@@ -2173,6 +2718,11 @@ static gboolean on_configure(GtkWidget *widget, GdkEventConfigure *event, gpoint
         note->w = event->width;
     if (event->height > 0 && !note->collapsed)
         note->h = event->height;
+
+    if (!GPOINTER_TO_INT(g_object_get_data(G_OBJECT(window), "initialized")))
+        schedule_initial_fit(window);
+    else
+        schedule_fit_check(window);
 
     g_object_set_data(G_OBJECT(window), "dirty", GINT_TO_POINTER(1));
     schedule_save(window);
@@ -2862,6 +3412,26 @@ static gboolean on_focus_out(GtkWidget *widget, GdkEventFocus *event, gpointer d
     return FALSE;
 }
 
+static gboolean on_focus_in(GtkWidget *widget, GdkEventFocus *event, gpointer data)
+{
+    GtkWidget *window = widget;
+    FocusHook *hook;
+
+    (void)event;
+    (void)data;
+    if (GPOINTER_TO_INT(g_object_get_data(G_OBJECT(window), "destroyed")) ||
+        GPOINTER_TO_INT(g_object_get_data(G_OBJECT(window), "deleted")))
+        return FALSE;
+    hook = g_object_get_data(G_OBJECT(window), "focus-hook");
+    if (hook != NULL && hook->fn != NULL) {
+        Note *note = window_note(window);
+
+        if (note != NULL)
+            hook->fn(note, hook->data);
+    }
+    return FALSE;
+}
+
 /* Crea e inizializza una nuova finestra nota. */
 GtkWidget *note_window_new(Store *store, Note *note)
 {
@@ -2972,7 +3542,8 @@ GtkWidget *note_window_new(Store *store, Note *note)
 
     scrolled = gtk_scrolled_window_new(NULL, NULL);
     gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(scrolled),
-                                   GTK_POLICY_AUTOMATIC, GTK_POLICY_AUTOMATIC);
+                                   GTK_POLICY_NEVER, GTK_POLICY_AUTOMATIC);
+    gtk_scrolled_window_set_overlay_scrolling(GTK_SCROLLED_WINDOW(scrolled), TRUE);
     gtk_scrolled_window_set_shadow_type(GTK_SCROLLED_WINDOW(scrolled), GTK_SHADOW_NONE);
     gtk_box_pack_start(GTK_BOX(outer), scrolled, TRUE, TRUE, 0);
 
@@ -2999,8 +3570,11 @@ GtkWidget *note_window_new(Store *store, Note *note)
 
     buffer = gtk_text_view_get_buffer(GTK_TEXT_VIEW(view));
     g_signal_connect(buffer, "changed", G_CALLBACK(on_buffer_changed), window);
+    g_signal_connect(buffer, "begin-user-action",
+                     G_CALLBACK(on_begin_user_action), window);
     g_signal_connect(window, "configure-event", G_CALLBACK(on_configure), NULL);
     g_signal_connect(window, "key-press-event", G_CALLBACK(on_key_press), NULL);
+    g_signal_connect(window, "focus-in-event", G_CALLBACK(on_focus_in), NULL);
     g_signal_connect(window, "focus-out-event", G_CALLBACK(on_focus_out), NULL);
     g_signal_connect(scrolled, "button-press-event", G_CALLBACK(on_resize_press), window);
     g_signal_connect(window, "button-press-event", G_CALLBACK(on_resize_press), window);
@@ -3008,6 +3582,7 @@ GtkWidget *note_window_new(Store *store, Note *note)
     g_signal_connect(window, "destroy", G_CALLBACK(on_destroy), NULL);
 
     gtk_widget_show_all(outer);
+    schedule_initial_fit(window);
 
     if (note->collapsed) {
         GtkWidget *collapsed_view = g_object_get_data(G_OBJECT(window), "scrolled");
@@ -3035,6 +3610,19 @@ void note_window_refresh(GtkWidget *window)
 }
 
 /* Imposta il callback di modifica nota. */
+void note_window_set_focus_callback(GtkWidget *window, NoteFocusFunc cb, gpointer data)
+{
+    FocusHook *hook;
+
+    if (window == NULL)
+        return;
+    hook = g_new0(FocusHook, 1);
+    hook->fn = cb;
+    hook->data = data;
+    g_object_set_data_full(G_OBJECT(window), "focus-hook", hook, g_free);
+}
+
+/* Salva la nota su richiesta di altri moduli. */
 void note_window_set_changed_callback(GtkWidget *window, NoteChangedFunc cb, gpointer data)
 {
     ChangedHook *hook;
@@ -3111,4 +3699,13 @@ void note_window_set_archive_callback(GtkWidget *window, void (*cb)(gpointer), g
     hook->fn = cb;
     hook->data = data;
     g_object_set_data_full(G_OBJECT(window), "archive-hook", hook, g_free);
+}
+
+/* Espande una nota piegata (usato dal richiamo dell'ultima nota). */
+void note_window_expand(GtkWidget *window)
+{
+    Note *note = window != NULL ? window_note(window) : NULL;
+
+    if (note != NULL && note->collapsed)
+        update_collapsed(window, FALSE);
 }

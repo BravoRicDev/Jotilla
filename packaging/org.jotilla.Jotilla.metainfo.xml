@@ -32,9 +32,9 @@
     <name>Jotilla contributors</name>
   </developer>
   <releases>
-    <release version="0.1.0" date="2026-11-09">
+    <release version="1.10.0" date="2026-11-10">
       <description>
-        <p>Initial Linux release with GTK3, Wayland and X11 support.</p>
+        <p>Parity with Jotilla 1.10.0: per-note and default scrollable text with hidden scrollbars, paste overflow notices, tray recall of the last note, and the shared Windows/macOS archive format.</p>
       </description>
     </release>
   </releases>
