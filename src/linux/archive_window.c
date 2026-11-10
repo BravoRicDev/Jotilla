@@ -12,7 +12,6 @@
 
 #define ARCHIVE_STATE_KEY "archive-window-state"
 #define ARCHIVE_STORE_KEY "archive-store"
-#define ARCHIVE_RESULT_LIMIT 500
 #define ARCHIVE_CARD_WIDTH 220
 #define ARCHIVE_CARD_HEIGHT 170
 #define ARCHIVE_HIGHLIGHT "#e4c46d"
@@ -104,7 +103,7 @@ static void populate_sidebar(ArchiveWindow *aw);
 /* Seleziona il nodo tag corrente. */
 static void sync_tag_tree(ArchiveWindow *aw);
 /* Pulisce ricerca e filtri. */
-static void clear_search_filters(ArchiveWindow *aw);
+static void clear_search_text(ArchiveWindow *aw);
 /* Aggiorna titolo finestra e header in base a vista e filtri. */
 static void update_window_title(ArchiveWindow *aw);
 
@@ -893,6 +892,21 @@ static void on_new_note(GtkButton *button, gpointer data) {
     archive_window_refresh(aw->window);
 }
 
+/* Esc chiude la lista del giorno e riporta il fuoco al calendario. */
+static gboolean on_day_list_key_press(GtkWidget *widget, GdkEventKey *event,
+                                      gpointer data) {
+    ArchiveWindow *aw = data;
+
+    (void)widget;
+    if (event->keyval == GDK_KEY_Escape) {
+        aw->cal_selected = 0;
+        update_calendar(aw);
+        gtk_widget_grab_focus(aw->calendar);
+        return TRUE;
+    }
+    return FALSE;
+}
+
 /* Alterna vista calendario/lista. */
 static void on_calendar_clicked(GtkButton *button, gpointer data) {
     ArchiveWindow *aw = data;
@@ -1018,7 +1032,7 @@ static gint compare_uint_keys(gconstpointer a, gconstpointer b) {
 
 /* Comparatore per nomi di tag. */
 static gint compare_tag_keys(gconstpointer a, gconstpointer b) {
-    return g_utf8_collate((const char *)a, (const char *)b);
+    return tags_compare((const char *)a, (const char *)b);
 }
 
 /* Incrementa il contatore associato a una chiave numerica. */
@@ -1451,12 +1465,10 @@ static void repopulate_list(ArchiveWindow *aw) {
             if (!note_matches_date(aw, note->created)) continue;
             g_ptr_array_add(aw->visible_notes, note);
             ++total;
-            if (shown < ARCHIVE_RESULT_LIMIT) {
-                gtk_flow_box_insert(GTK_FLOW_BOX(aw->flow),
-                                    build_note_card(aw, note, query), -1);
-                if (!aw->first_note) aw->first_note = note;
-                ++shown;
-            }
+            gtk_flow_box_insert(GTK_FLOW_BOX(aw->flow),
+                                build_note_card(aw, note, query), -1);
+            if (!aw->first_note) aw->first_note = note;
+            ++shown;
         }
         g_ptr_array_free(results, FALSE);
     }
@@ -2014,7 +2026,6 @@ static void update_calendar(ArchiveWindow *aw) {
     guint day = 0;
     guint32 selected;
     guint total = 0;
-    guint shown = 0;
     guint i;
     char date_text[16];
     char *label;
@@ -2045,11 +2056,8 @@ static void update_calendar(ArchiveWindow *aw) {
 
             if (!note || note->date != selected) continue;
             ++total;
-            if (shown < ARCHIVE_RESULT_LIMIT) {
-                gtk_list_box_insert(GTK_LIST_BOX(aw->calendar_list),
-                                    build_note_row(aw, note), -1);
-                ++shown;
-            }
+            gtk_list_box_insert(GTK_LIST_BOX(aw->calendar_list),
+                                build_note_row(aw, note), -1);
         }
     }
 
@@ -2087,24 +2095,26 @@ static void focus_flowbox(ArchiveWindow *aw) {
 }
 
 /* Pulisce ricerca, filtro data e selezione calendario. */
-static void clear_search_filters(ArchiveWindow *aw) {
+/* Svuota solo il testo di ricerca, come Esc su Windows. */
+static void clear_search_text(ArchiveWindow *aw) {
     if (!aw) return;
     cancel_search_timeout(aw);
-    aw->date_filter = 0;
-    aw->date_kind = 0;
-    aw->updating_sidebar = TRUE;
-    select_date_node(aw);
-    aw->updating_sidebar = FALSE;
-
     g_signal_handlers_block_by_func(aw->search,
                                     G_CALLBACK(on_search_changed), aw);
     gtk_entry_set_text(GTK_ENTRY(aw->search), "");
     g_signal_handlers_unblock_by_func(aw->search,
                                       G_CALLBACK(on_search_changed), aw);
-    aw->cal_selected = 0;
-    gtk_widget_queue_draw(aw->calendar);
     repopulate_list(aw);
-    update_calendar(aw);
+}
+
+/* Porta il fuoco alla vista principale (lista o calendario). */
+static void focus_main_view(ArchiveWindow *aw) {
+    const char *visible = gtk_stack_get_visible_child_name(GTK_STACK(aw->stack));
+
+    if (visible != NULL && g_strcmp0(visible, "calendar") == 0)
+        gtk_widget_grab_focus(aw->calendar);
+    else
+        focus_flowbox(aw);
 }
 
 /* Gestisce i tasti nella casella di ricerca. */
@@ -2114,15 +2124,22 @@ static gboolean on_search_key_press(GtkWidget *widget, GdkEventKey *event,
 
     (void)widget;
     if (event->keyval == GDK_KEY_Down) {
-        focus_flowbox(aw);
+        focus_main_view(aw);
         return TRUE;
     }
     if (event->keyval == GDK_KEY_Return || event->keyval == GDK_KEY_KP_Enter) {
-        open_first_note(aw);
+        const char *visible = gtk_stack_get_visible_child_name(
+            GTK_STACK(aw->stack));
+
+        if (visible != NULL && g_strcmp0(visible, "calendar") == 0)
+            gtk_widget_grab_focus(aw->calendar);
+        else
+            open_first_note(aw);
         return TRUE;
     }
     if (event->keyval == GDK_KEY_Escape) {
-        clear_search_filters(aw);
+        clear_search_text(aw);
+        focus_main_view(aw);
         return TRUE;
     }
     return FALSE;
@@ -2155,7 +2172,11 @@ static gboolean on_window_key_press(GtkWidget *widget, GdkEventKey *event,
         return TRUE;
     }
     if (event->keyval == GDK_KEY_Escape) {
-        clear_search_filters(aw);
+        const char *text = gtk_entry_get_text(GTK_ENTRY(aw->search));
+
+        if (text != NULL && *text != '\0')
+            clear_search_text(aw);
+        focus_main_view(aw);
         return TRUE;
     }
     if (event->keyval == GDK_KEY_F5) {
@@ -2637,6 +2658,8 @@ GtkWidget *archive_window_new(Store *store) {
                                     GTK_SELECTION_SINGLE);
     g_signal_connect(aw->calendar_list, "row-activated",
                      G_CALLBACK(on_row_activated), aw);
+    g_signal_connect(aw->calendar_list, "key-press-event",
+                     G_CALLBACK(on_day_list_key_press), aw);
     g_signal_connect(aw->calendar_list, "button-press-event",
                      G_CALLBACK(on_list_button_press), aw);
     gtk_container_add(GTK_CONTAINER(calendar_scroll), aw->calendar_list);

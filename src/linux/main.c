@@ -50,6 +50,17 @@ static void on_new_note(gpointer data);
 static void on_show_archive(gpointer data);
 static void on_archive_destroy(GtkWidget *widget, gpointer data);
 
+/* Mostra un errore all'utente (equivalente delle MessageBox Windows). */
+static void report_ui_error(const char *message)
+{
+    GtkWidget *dialog = gtk_message_dialog_new(
+        NULL, GTK_DIALOG_MODAL, GTK_MESSAGE_ERROR, GTK_BUTTONS_CLOSE,
+        "%s", message != NULL ? message : "Unknown error");
+
+    gtk_dialog_run(GTK_DIALOG(dialog));
+    gtk_widget_destroy(dialog);
+}
+
 /* Salva tutte le finestre nota aperte (usato alla chiusura). */
 static gboolean save_open_notes(AppCtx *ctx)
 {    guint i;
@@ -275,13 +286,13 @@ static void on_archive_change(const char *path, gboolean move, gpointer data)
         g_free(old_path);
         g_free(new_path);
         if (nested) {
-            g_warning("The destination cannot contain or be inside the current archive: '%s'", path);
+            report_ui_error("The destination cannot contain or be inside the current archive.");
             return;
         }
         if (ctx->store != NULL && ctx->store->archive_dir != NULL &&
             g_strcmp0(ctx->store->archive_dir, path) != 0 &&
             g_file_test(path, G_FILE_TEST_IS_DIR) && !archive_dir_empty(path)) {
-            g_warning("Move requires an empty destination: '%s'", path);
+            report_ui_error("To move the archive, choose an empty folder.");
             return;
         }
         /* Salva e chiude le note esistenti prima di spostare i file. */
@@ -303,8 +314,12 @@ static void on_archive_change(const char *path, gboolean move, gpointer data)
         if (ctx->store != NULL && ctx->store->archive_dir != NULL &&
             g_strcmp0(ctx->store->archive_dir, path) != 0) {
             if (!move_note_files(ctx->store->archive_dir, path, &err)) {
-                g_warning("Could not move notes to '%s': %s", path,
-                          err != NULL ? err->message : "unknown error");
+                char *message = g_strdup_printf(
+                    "The archive could not be moved: %s",
+                    err != NULL ? err->message : "unknown error");
+
+                report_ui_error(message);
+                g_free(message);
                 g_clear_error(&err);
                 return;
             }
@@ -313,8 +328,12 @@ static void on_archive_change(const char *path, gboolean move, gpointer data)
 
     new_store = store_open(path, ctx->config_dir, &err);
     if (new_store == NULL) {
-        g_warning("Could not open archive '%s': %s", path,
-                  err != NULL ? err->message : "unknown error");
+        char *message = g_strdup_printf(
+            "The archive could not be opened: %s",
+            err != NULL ? err->message : "unknown error");
+
+        report_ui_error(message);
+        g_free(message);
         g_clear_error(&err);
         return;
     }
@@ -876,7 +895,12 @@ int main(int argc, char **argv)
 
     ctx.store = store_open(archive_dir, config_dir, &err);
     if (ctx.store == NULL) {
-        g_printerr("cannot open store: %s\n", err != NULL ? err->message : "unknown");
+        char *message = g_strdup_printf(
+            "The notes archive could not be opened: %s",
+            err != NULL ? err->message : "unknown error");
+
+        report_ui_error(message);
+        g_free(message);
         g_clear_error(&err);
         g_object_unref(gapp);
         g_free(archive_dir);

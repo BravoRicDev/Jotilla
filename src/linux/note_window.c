@@ -1725,7 +1725,6 @@ static void on_edit_title_activate(GtkMenuItem *item, gpointer data)
     content = gtk_dialog_get_content_area(GTK_DIALOG(dialog));
     entry = gtk_entry_new();
     gtk_entry_set_text(GTK_ENTRY(entry), note->title ? note->title : "");
-    gtk_entry_set_max_length(GTK_ENTRY(entry), 200);
     gtk_box_pack_start(GTK_BOX(content), entry, TRUE, TRUE, 8);
     gtk_widget_show_all(dialog);
 

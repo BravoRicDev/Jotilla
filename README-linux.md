@@ -55,19 +55,25 @@ concurrent writers.
 
 ## Features
 
-- Sticky-note windows with title promotion (first line, or Shift+Enter) and
+- Sticky-note windows draggable by the title bar with edge/corner resizing,
+  double-click title rename, title promotion (first line, or Shift+Enter) and
   checklist markers (`☐`/`☑`)
 - Rich-text formatting: bold, italic, underline, strikethrough and text colour
 - Undo/redo
 - Palette picker with 80+ palettes (3 built-in plus the 80 popular palettes)
   and a favourite palette
 - Note sizes (Small, Medium, Large, Extra large, Square) and opacity control
-- Autosave (400 ms debounce), save-on-focus-loss, save-on-quit
-- Archive tile view with search-match highlighting, multi-select delete,
-  date/tag tree filters, calendar filtering, and open/move archive location
-- Annual calendar view with day counts, year navigation and same-day note list
-- Tag normalisation, filtering and per-token autocomplete (usage-ordered)
-- System tray and global hotkey on X11 (see *Platform limitations*)
+- Autosave (400 ms debounce), save-on-focus-loss, save-on-quit, plain-text
+  paste, and save failures keep the note open and retry
+- Archive tile view ordered newest first, with search-match highlighting,
+  Ctrl/Shift multi-select, delete, creation-date/tag trees, calendar filtering,
+  and open/move archive location
+- Annual calendar view with filtered day counts, Today, year navigation,
+  focus/Enter navigation and same-day note list
+- Tag normalisation (24 tags, 63 UTF-16 units), filtering and per-token
+  autocomplete with usage counts and assigned-tag exclusion
+- System tray and true global hotkey on X11 (see *Platform limitations*);
+  the app stays in the tray when the last note is closed if the tray is hosted
 - Optional autostart via an XDG autostart desktop entry
 - Portable mode (`portable.flag`) and single-instance behaviour
   (`GApplication`/D-Bus)
