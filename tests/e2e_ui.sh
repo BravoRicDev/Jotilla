@@ -249,6 +249,23 @@ if line="$(wait_find 'Untitled' 5)"; then
         fail "ctrl+n did not create a second note (${count} note files)"
     fi
 
+    # Title promotion: # first line + Shift+Enter leaves the note body.
+    "${XUI}" click "${NWIN}" $((NX + NW / 2)) $((NY + NH / 2))
+    sleep 0.3
+    "${XUI}" type "${NWIN}" '#Promoted Title'
+    "${XUI}" key "${NWIN}" Return 1
+    sleep 1.0
+    if wait_find 'Promoted Title' 3; then
+        pass "Shift+Enter promoted the # first line to the title bar"
+    else
+        fail "title promotion did not update the title bar"
+    fi
+    if note_contains '#Promoted Title'; then
+        pass "promoted title persisted as the TXT # header"
+    else
+        fail "promoted title header missing from TXT"
+    fi
+
     # Close the extra window so the following close test can observe the
     # process lifetime without a lingering note window.
     "${XUI}" key "${NWIN}" Escape

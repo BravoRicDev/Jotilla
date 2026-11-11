@@ -2976,12 +2976,9 @@ static gboolean promote_title(GtkWidget *window)
     Note *note = window_note(window);
     GtkTextView *view = window_view(window);
     GtkTextBuffer *buffer;
-    GtkTextIter start, end, line_end;
-    char *text;
-    size_t line_len;
+    GtkTextIter start, iter, after_iter, title_start, title_end, insert_iter;
+    gint line_end_offset;
     char *title;
-    size_t tstart, tfinish;
-    GtkTextIter insert_iter;
 
     if (note == NULL || view == NULL)
         return FALSE;
@@ -2991,79 +2988,77 @@ static gboolean promote_title(GtkWidget *window)
         return FALSE;
 
     gtk_text_buffer_get_start_iter(buffer, &start);
-    gtk_text_buffer_get_end_iter(buffer, &end);
-    text = gtk_text_buffer_get_text(buffer, &start, &end, FALSE);
-    if (text == NULL || text[0] != '#')
-    {
-        g_free(text);
+    if (gtk_text_iter_get_char(&start) != '#')
         return FALSE;
-    }
 
     /* selezione deve essere vuota e il cursore a fine della prima riga */
     {
         GtkTextIter isel, esel;
         if (gtk_text_buffer_get_selection_bounds(buffer, &isel, &esel))
-        {
-            g_free(text);
             return FALSE;
-        }
     }
 
-    line_len = strcspn(text, "\n");
-    /* rimuovi \r finale */
-    if (line_len > 0 && text[line_len - 1] == '\r')
-        --line_len;
-    /* posizione cursore deve essere a fine riga */
+    /* La prima riga termina al primo '\r' o '\n', come wcscspn su Windows.
+       Gli offset di GtkTextIter sono in caratteri, non in byte. */
+    iter = start;
+    while (!gtk_text_iter_is_end(&iter) &&
+           gtk_text_iter_get_char(&iter) != '\r' &&
+           gtk_text_iter_get_char(&iter) != '\n')
+        gtk_text_iter_forward_char(&iter);
+    line_end_offset = gtk_text_iter_get_offset(&iter);
+
+    /* posizione cursore deve essere a fine riga (offset in caratteri) */
     gtk_text_buffer_get_iter_at_mark(buffer, &insert_iter, gtk_text_buffer_get_insert(buffer));
-    if (gtk_text_iter_get_offset(&insert_iter) != (gint)line_len)
-    {
-        g_free(text);
+    if (gtk_text_iter_get_offset(&insert_iter) != line_end_offset)
         return FALSE;
-    }
 
-    /* copia titolo senza # e con trim */
-    tstart = 1;
-    tfinish = line_len;
-    while (tstart < tfinish && (text[tstart] == ' ' || text[tstart] == '\t')) ++tstart;
-    while (tfinish > tstart && (text[tfinish - 1] == ' ' || text[tfinish - 1] == '\t')) --tfinish;
-    if (tfinish <= tstart)
-    {
-        g_free(text);
-        return FALSE;
+    /* Dopo la riga salta un eventuale '\r' seguito da '\n'. */
+    after_iter = iter;
+    if (!gtk_text_iter_is_end(&after_iter) && gtk_text_iter_get_char(&after_iter) == '\r')
+        gtk_text_iter_forward_char(&after_iter);
+    if (!gtk_text_iter_is_end(&after_iter) && gtk_text_iter_get_char(&after_iter) == '\n')
+        gtk_text_iter_forward_char(&after_iter);
+
+    /* copia titolo senza # e con trim di spazi/tab, in caratteri */
+    gtk_text_buffer_get_iter_at_offset(buffer, &title_start, 1);
+    gtk_text_buffer_get_iter_at_offset(buffer, &title_end, line_end_offset);
+    while (gtk_text_iter_compare(&title_start, &title_end) < 0) {
+        gunichar c = gtk_text_iter_get_char(&title_start);
+
+        if (c != ' ' && c != '\t')
+            break;
+        gtk_text_iter_forward_char(&title_start);
     }
-    title = g_strndup(text + tstart, tfinish - tstart);
+    while (gtk_text_iter_compare(&title_start, &title_end) < 0) {
+        GtkTextIter prev = title_end;
+        gunichar c;
+
+        gtk_text_iter_backward_char(&prev);
+        c = gtk_text_iter_get_char(&prev);
+        if (c != ' ' && c != '\t')
+            break;
+        title_end = prev;
+    }
+    if (gtk_text_iter_equal(&title_start, &title_end))
+        return FALSE;
+    title = gtk_text_buffer_get_text(buffer, &title_start, &title_end, FALSE);
+    if (title == NULL)
+        return FALSE;
 
     /* rimuovi la prima riga (incluso newline) dal buffer */
-    gtk_text_buffer_get_start_iter(buffer, &start);
-    gtk_text_iter_forward_to_line_end(&start);
-    gtk_text_iter_forward_char(&start); /* newline */
-    /* se c'e' \r\n, avanza anche \r */
-    /* (gia' gestito: forward_char avanza il \n; il \r e' prima del \n e resta? gestiamo sotto) */
-
     gtk_text_buffer_begin_user_action(buffer);
-    /* cancella dallo start alla fine della prima riga inclusa newline */
-    gtk_text_buffer_get_start_iter(buffer, &start);
-    line_end = start;
-    gtk_text_iter_forward_to_line_end(&line_end);
-    if (!gtk_text_iter_is_end(&line_end))
-        gtk_text_iter_forward_char(&line_end); /* \n */
-    /* gestisci \r\n: se il char prima del \n e' \r, includilo */
-    {
-        GtkTextIter prev = line_end;
-        if (gtk_text_iter_backward_char(&prev) && gtk_text_iter_get_char(&prev) == '\r')
-            line_end = prev;
-    }
-    gtk_text_buffer_delete(buffer, &start, &line_end);
+    gtk_text_buffer_delete(buffer, &start, &after_iter);
     gtk_text_buffer_end_user_action(buffer);
 
     g_free(note->title);
     note->title = title;
     note->has_title = TRUE;
 
-    g_free(text);
-
     gtk_text_buffer_get_start_iter(buffer, &start);
     gtk_text_buffer_place_cursor(buffer, &start);
+
+    /* Windows svuota l'undo dopo la promozione del titolo. */
+    snapshot_reset(window);
 
     update_title(window);
     touch(window);

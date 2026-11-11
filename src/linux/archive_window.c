@@ -12,13 +12,76 @@
 
 #define ARCHIVE_STATE_KEY "archive-window-state"
 #define ARCHIVE_STORE_KEY "archive-store"
-#define ARCHIVE_CARD_WIDTH 220
-#define ARCHIVE_CARD_HEIGHT 170
+#define ARCHIVE_CARD_WIDTH 290
+#define ARCHIVE_CARD_HEIGHT 150
 #define ARCHIVE_HIGHLIGHT "#e4c46d"
+#define ARCHIVE_PAPER "#f4eee2"
+#define ARCHIVE_SIDEBAR "#ebe2d1"
+#define ARCHIVE_INK "#3a342b"
+#define ARCHIVE_SELECTION "#d3c2a2"
+#define ARCHIVE_LINE "#b7a98f"
 #define CAL_PAD 8
 #define CAL_TITLE_H 20
 #define CAL_WEEK_H 16
 #define CAL_GRID_TOP (CAL_TITLE_H + CAL_WEEK_H + 4)
+
+static const char ARCHIVE_CSS[] =
+    ".archive-window, .archive-content { background-color: " ARCHIVE_PAPER
+    "; color: " ARCHIVE_INK "; }"
+    "headerbar.archive-header, .archive-header { background-image: none;"
+    " background-color: " ARCHIVE_PAPER "; color: " ARCHIVE_INK
+    "; border: none; box-shadow: none; }"
+    ".archive-header .title { font-size: 12px; font-weight: bold; color: "
+    ARCHIVE_INK "; }"
+    ".archive-header .subtitle { font-size: 10px; color: #6b6153; }"
+    ".archive-toolbar { background-color: " ARCHIVE_PAPER "; padding: 8px; }"
+    ".archive-search { background-color: #fffdf8; color: " ARCHIVE_INK
+    "; border: 1px solid " ARCHIVE_LINE "; border-radius: 2px;"
+    " min-height: 28px; font-size: 12px; }"
+    ".archive-search:focus { border-color: " ARCHIVE_INK "; }"
+    "button.archive-tool-button { background-image: none; background-color: "
+    ARCHIVE_SIDEBAR "; color: " ARCHIVE_INK "; border: 1px solid "
+    ARCHIVE_LINE "; border-radius: 2px; min-height: 28px; padding: 2px 14px;"
+    " font-size: 12px; box-shadow: none; text-shadow: none; }"
+    "button.archive-tool-button:hover { background-color: #e3d8c2; }"
+    "button.archive-tool-button:checked, button.archive-tool-button:active {"
+    " background-color: " ARCHIVE_SELECTION "; color: " ARCHIVE_INK "; }"
+    "button.archive-icon-button { background-image: none; background-color: "
+    ARCHIVE_SIDEBAR "; color: " ARCHIVE_INK "; border: 1px solid "
+    ARCHIVE_LINE "; border-radius: 2px; min-width: 28px; min-height: 28px;"
+    " padding: 2px; box-shadow: none; }"
+    "button.archive-icon-button:checked { background-color: " ARCHIVE_SELECTION
+    "; }"
+    ".archive-sidebar, .archive-sidebar-scroll, .archive-sidebar-scroll viewport"
+    " { background-color: " ARCHIVE_SIDEBAR "; border: none; }"
+    ".archive-tree { background-color: " ARCHIVE_SIDEBAR "; color: " ARCHIVE_INK
+    "; font-size: 12px; }"
+    ".archive-tree:selected, .archive-tree.view:selected { background-color: "
+    ARCHIVE_SELECTION "; color: " ARCHIVE_INK "; }"
+    ".archive-scroll, .archive-scroll viewport { background-color: " ARCHIVE_PAPER
+    "; border: none; }"
+    ".archive-flow, .archive-flow flowboxchild, .archive-flow flowboxchild:selected"
+    " { background-color: transparent; padding: 0; margin: 0;"
+    " border: none; min-width: 0; min-height: 0; }"
+    ".archive-card-title { font-size: 12px; font-weight: bold; }"
+    ".archive-card-excerpt { font-size: 11px; }"
+    ".archive-card-footer { font-size: 10px; }"
+    ".archive-calendar-page, .archive-calendar-page list,"
+    " .archive-calendar-page list row { background-color: " ARCHIVE_PAPER
+    "; color: " ARCHIVE_INK "; }"
+    ".archive-calendar-page list row:selected { background-color: "
+    ARCHIVE_SELECTION "; color: " ARCHIVE_INK "; }"
+    ".archive-calendar { background-color: " ARCHIVE_PAPER "; color: "
+    ARCHIVE_INK "; }"
+    ".archive-calendar-label { color: #6b6153; font-size: 11px; }"
+    "scrollbar { background-color: " ARCHIVE_SIDEBAR "; border: none; }"
+    "scrollbar slider { background-color: " ARCHIVE_LINE
+    "; border-radius: 4px; min-width: 8px; min-height: 24px; }";
+
+static const char *MONTH_NAMES[12] = {
+    "January", "February", "March", "April", "May", "June",
+    "July", "August", "September", "October", "November", "December"
+};
 
 enum {
     DATE_COL_LABEL,
@@ -39,7 +102,10 @@ typedef struct {
     Store *store;
     GtkWidget *header;
     GtkWidget *search;
-    GtkWidget *tag_combo;
+    GtkWidget *tags_button;
+    GtkWidget *date_button;
+    GtkWidget *sidebar;
+    GtkCssProvider *css;
     GtkWidget *stack;
     GtkWidget *flow;
     GtkWidget *flow_scroll;
@@ -96,12 +162,12 @@ static void show_card_menu(ArchiveWindow *aw, Note *note,
                            GdkEventButton *event);
 /* Ripristina la posizione di scorrimento del flow box. */
 static gboolean restore_flow_scroll(gpointer data);
-/* Popola il combo dei tag. */
-static void populate_tag_combo(ArchiveWindow *aw);
 /* Ricostruisce gli alberi di date e tag. */
 static void populate_sidebar(ArchiveWindow *aw);
-/* Seleziona il nodo tag corrente. */
-static void sync_tag_tree(ArchiveWindow *aw);
+/* Allinea i toggle Tags/Date allo stato della sidebar. */
+static void update_sidebar_buttons(ArchiveWindow *aw);
+/* Cambia l'albero mostrato nella sidebar. */
+static void on_sidebar_toggled(GtkToggleButton *button, gpointer data);
 /* Pulisce ricerca e filtri. */
 static void clear_search_text(ArchiveWindow *aw);
 /* Aggiorna titolo finestra e header in base a vista e filtri. */
@@ -183,7 +249,7 @@ static char *note_excerpt(const char *text) {
     return flat;
 }
 
-/* Formatta i tag per il footer della card. */
+/* Formatta i tag per il footer della card (vuoto se non ci sono tag). */
 static char *note_tag_list(const char *tags) {
     GPtrArray *items = tags_split(tags);
     GString *text;
@@ -191,15 +257,34 @@ static char *note_tag_list(const char *tags) {
 
     if (!items->len) {
         g_ptr_array_free(items, TRUE);
-        return g_strdup("No tags");
+        return g_strdup("");
     }
     text = g_string_new(NULL);
     for (i = 0; i < items->len; ++i) {
-        if (i) g_string_append(text, ", ");
+        if (i) g_string_append(text, "  ");
         g_string_append(text, (const char *)g_ptr_array_index(items, i));
     }
     g_ptr_array_free(items, TRUE);
     return g_string_free(text, FALSE);
+}
+
+/* Titolo della card senza il cancelletto iniziale. */
+static char *note_card_title(const Note *note) {
+    char *value;
+    const char *cursor;
+
+    if (note->has_title && note->title) return g_strdup(note->title);
+    value = note_title(note->text);
+    cursor = value;
+    while (*cursor == '#') ++cursor;
+    while (*cursor == ' ' || *cursor == '\t') ++cursor;
+    if (*cursor && cursor != value) {
+        char *trimmed = g_strdup(cursor);
+
+        g_free(value);
+        return trimmed;
+    }
+    return value;
 }
 
 /* Formatta i tag per la riga del calendario. */
@@ -544,15 +629,14 @@ static GtkWidget *build_note_card(ArchiveWindow *aw, Note *note,
     GtkWidget *header_row;
     GtkWidget *content;
     GtkWidget *title;
-    GtkWidget *remove;
     GtkWidget *excerpt_label;
     GtkWidget *footer;
     GtkWidget *tags;
-    GtkWidget *date;
     GtkCssProvider *provider;
     GtkStyleContext *context;
     PangoAttrList *attrs;
     char *value;
+    char *tags_text;
     char *excerpt;
     char *css;
     char class_name[64];
@@ -563,6 +647,10 @@ static GtkWidget *build_note_card(ArchiveWindow *aw, Note *note,
     child = gtk_flow_box_child_new();
     card = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
     gtk_widget_set_size_request(card, ARCHIVE_CARD_WIDTH, ARCHIVE_CARD_HEIGHT);
+    gtk_widget_set_halign(card, GTK_ALIGN_START);
+    gtk_widget_set_valign(card, GTK_ALIGN_START);
+    gtk_style_context_add_class(gtk_widget_get_style_context(card),
+                                "archive-card");
 
     paper = palette_color_hex(note->palette, note->color);
     bar = palette_bar_hex(note->palette, note->color);
@@ -574,13 +662,14 @@ static GtkWidget *build_note_card(ArchiveWindow *aw, Note *note,
     gtk_style_context_add_class(context, class_name);
     css = g_strdup_printf(
         ".%s { background-color: %s; border: 1px solid %s;"
-        " border-radius: 4px; }"
-        ".%s .card-header { background-color: %s;"
-        " border-radius: 3px 3px 0 0; }"
+        " border-radius: 0; }"
+        ".%s .card-header { background-color: %s; padding: 4px 10px;"
+        " min-height: 24px; }"
         ".%s label { color: %s; }"
-        ".%s:selected { border: 2px solid %s; }",
+        ".%s:selected { border: 2px solid %s;"
+        " box-shadow: inset 0 0 0 1px %s; }",
         class_name, paper, bar, class_name, bar, class_name, ink,
-        class_name, ink);
+        class_name, ink, ARCHIVE_SELECTION);
     provider = gtk_css_provider_new();
     gtk_css_provider_load_from_data(provider, css, -1, NULL);
     g_free(css);
@@ -588,14 +677,10 @@ static GtkWidget *build_note_card(ArchiveWindow *aw, Note *note,
     header_row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 4);
     gtk_style_context_add_class(gtk_widget_get_style_context(header_row),
                                 "card-header");
-    gtk_widget_set_margin_start(header_row, 8);
-    gtk_widget_set_margin_end(header_row, 4);
-    gtk_widget_set_margin_top(header_row, 4);
-    gtk_widget_set_margin_bottom(header_row, 4);
+    gtk_style_context_add_class(gtk_widget_get_style_context(header_row),
+                                "archive-card-header");
 
-    value = (note->has_title && note->title)
-                ? g_strdup(note->title)
-                : note_title(note->text);
+    value = note_card_title(note);
     title = gtk_label_new(value);
     g_free(value);
     attrs = pango_attr_list_new();
@@ -605,22 +690,17 @@ static GtkWidget *build_note_card(ArchiveWindow *aw, Note *note,
     gtk_label_set_xalign(GTK_LABEL(title), 0.0f);
     gtk_label_set_ellipsize(GTK_LABEL(title), PANGO_ELLIPSIZE_END);
     gtk_label_set_lines(GTK_LABEL(title), 1);
+    gtk_label_set_width_chars(GTK_LABEL(title), 26);
+    gtk_label_set_max_width_chars(GTK_LABEL(title), 26);
     gtk_widget_set_hexpand(title, TRUE);
+    gtk_style_context_add_class(gtk_widget_get_style_context(title),
+                                "archive-card-title");
     gtk_box_pack_start(GTK_BOX(header_row), title, TRUE, TRUE, 0);
-
-    remove = gtk_button_new_from_icon_name("user-trash-symbolic",
-                                           GTK_ICON_SIZE_BUTTON);
-    gtk_widget_set_valign(remove, GTK_ALIGN_CENTER);
-    set_accessible_label(remove, "Delete note");
-    gtk_style_context_add_class(gtk_widget_get_style_context(remove), "flat");
-    g_object_set_data(G_OBJECT(remove), "note", note);
-    g_signal_connect(remove, "clicked", G_CALLBACK(on_delete_clicked), aw);
-    gtk_box_pack_end(GTK_BOX(header_row), remove, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(card), header_row, FALSE, FALSE, 0);
 
     content = gtk_box_new(GTK_ORIENTATION_VERTICAL, 4);
-    gtk_widget_set_margin_start(content, 8);
-    gtk_widget_set_margin_end(content, 8);
+    gtk_widget_set_margin_start(content, 10);
+    gtk_widget_set_margin_end(content, 10);
     gtk_widget_set_margin_top(content, 6);
     gtk_widget_set_margin_bottom(content, 6);
     gtk_widget_set_vexpand(content, TRUE);
@@ -642,27 +722,31 @@ static GtkWidget *build_note_card(ArchiveWindow *aw, Note *note,
     gtk_label_set_line_wrap_mode(GTK_LABEL(excerpt_label),
                                  PANGO_WRAP_WORD_CHAR);
     gtk_label_set_lines(GTK_LABEL(excerpt_label), 4);
+    gtk_label_set_width_chars(GTK_LABEL(excerpt_label), 34);
+    gtk_label_set_max_width_chars(GTK_LABEL(excerpt_label), 34);
     gtk_widget_set_vexpand(excerpt_label, TRUE);
+    gtk_style_context_add_class(gtk_widget_get_style_context(excerpt_label),
+                                "archive-card-excerpt");
     gtk_box_pack_start(GTK_BOX(content), excerpt_label, TRUE, TRUE, 0);
 
-    footer = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
-    value = note_tag_list(note->tags);
-    tags = gtk_label_new(value);
-    g_free(value);
-    gtk_label_set_xalign(GTK_LABEL(tags), 0.0f);
-    gtk_label_set_ellipsize(GTK_LABEL(tags), PANGO_ELLIPSIZE_END);
-    gtk_widget_set_hexpand(tags, TRUE);
-    gtk_box_pack_start(GTK_BOX(footer), tags, TRUE, TRUE, 0);
-
-    value = note_date(note->date);
-    date = gtk_label_new(value);
-    g_free(value);
-    gtk_label_set_xalign(GTK_LABEL(date), 1.0f);
-    gtk_box_pack_end(GTK_BOX(footer), date, FALSE, FALSE, 0);
-    gtk_box_pack_end(GTK_BOX(content), footer, FALSE, FALSE, 0);
+    tags_text = note_tag_list(note->tags);
+    if (*tags_text) {
+        footer = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
+        gtk_style_context_add_class(gtk_widget_get_style_context(footer),
+                                    "archive-card-footer");
+        tags = gtk_label_new(tags_text);
+        gtk_label_set_xalign(GTK_LABEL(tags), 0.0f);
+        gtk_label_set_ellipsize(GTK_LABEL(tags), PANGO_ELLIPSIZE_END);
+        gtk_label_set_max_width_chars(GTK_LABEL(tags), 34);
+        gtk_widget_set_hexpand(tags, TRUE);
+        gtk_box_pack_start(GTK_BOX(footer), tags, TRUE, TRUE, 0);
+        gtk_box_pack_end(GTK_BOX(content), footer, FALSE, FALSE, 0);
+    }
+    g_free(tags_text);
 
     gtk_box_pack_start(GTK_BOX(card), content, TRUE, TRUE, 0);
     gtk_container_add(GTK_CONTAINER(child), card);
+    apply_card_provider(child, aw->css);
     apply_card_provider(card, provider);
     g_object_unref(provider);
     g_object_set_data(G_OBJECT(child), "note", note);
@@ -754,6 +838,7 @@ static GtkWidget *build_note_row(ArchiveWindow *aw, Note *note) {
     gtk_box_pack_start(GTK_BOX(box), meta, FALSE, FALSE, 0);
 
     gtk_container_add(GTK_CONTAINER(row), box);
+    apply_card_provider(row, aw->css);
     gtk_widget_show_all(row);
     return row;
 }
@@ -874,24 +959,6 @@ static void delete_selected_notes(ArchiveWindow *aw) {
     }
 }
 
-/* Elimina le note selezionate dal pulsante dell'header. */
-static void on_delete_selected(GtkButton *button, gpointer data) {
-    (void)button;
-    delete_selected_notes(data);
-}
-
-/* Crea una nuova nota dall'archivio. */
-static void on_new_note(GtkButton *button, gpointer data) {
-    ArchiveWindow *aw = data;
-    Note *note;
-
-    (void)button;
-    note = store_new(aw->store, "");
-    if (!note) return;
-    if (aw->open_cb) aw->open_cb(note, aw->open_data);
-    archive_window_refresh(aw->window);
-}
-
 /* Esc chiude la lista del giorno e riporta il fuoco al calendario. */
 static gboolean on_day_list_key_press(GtkWidget *widget, GdkEventKey *event,
                                       gpointer data) {
@@ -907,79 +974,60 @@ static gboolean on_day_list_key_press(GtkWidget *widget, GdkEventKey *event,
     return FALSE;
 }
 
-/* Alterna vista calendario/lista. */
-static void on_calendar_clicked(GtkButton *button, gpointer data) {
-    ArchiveWindow *aw = data;
-    const char *visible;
-
-    (void)button;
-    visible = gtk_stack_get_visible_child_name(GTK_STACK(aw->stack));
-    if (visible && g_strcmp0(visible, "calendar") == 0) {
-        gtk_stack_set_visible_child_name(GTK_STACK(aw->stack), "list");
-        gtk_button_set_label(GTK_BUTTON(aw->calendar_button), "Calendar");
-        repopulate_list(aw);
-    } else {
-        gtk_stack_set_visible_child_name(GTK_STACK(aw->stack), "calendar");
-        gtk_button_set_label(GTK_BUTTON(aw->calendar_button), "Notes");
-        update_calendar(aw);
-    }
-    update_window_title(aw);
+/* Allinea i toggle Tags/Date allo stato della sidebar. */
+static void update_sidebar_buttons(ArchiveWindow *aw) {
+    if (!aw || !aw->tags_button || !aw->date_button) return;
+    g_signal_handlers_block_by_func(aw->tags_button,
+                                    G_CALLBACK(on_sidebar_toggled), aw);
+    g_signal_handlers_block_by_func(aw->date_button,
+                                    G_CALLBACK(on_sidebar_toggled), aw);
+    gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(aw->tags_button),
+                                 aw->sidebar_tags);
+    gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(aw->date_button),
+                                 !aw->sidebar_tags);
+    g_signal_handlers_unblock_by_func(aw->tags_button,
+                                      G_CALLBACK(on_sidebar_toggled), aw);
+    g_signal_handlers_unblock_by_func(aw->date_button,
+                                      G_CALLBACK(on_sidebar_toggled), aw);
 }
 
 /* Alterna albero date/tag nella sidebar. */
-static void on_sidebar_toggle(GtkButton *button, gpointer data) {
+static void on_sidebar_toggled(GtkToggleButton *button, gpointer data) {
     ArchiveWindow *aw = data;
+    gboolean tags = GPOINTER_TO_INT(
+        g_object_get_data(G_OBJECT(button), "archive-tags")) != 0;
 
-    aw->sidebar_tags = !aw->sidebar_tags;
-    gtk_stack_set_visible_child_name(
-        GTK_STACK(aw->sidebar_stack),
-        aw->sidebar_tags ? "tags" : "dates");
-    set_accessible_label(GTK_WIDGET(button),
-                         aw->sidebar_tags ? "Show dates" : "Show tags");
+    if (gtk_toggle_button_get_active(button) && aw->sidebar_tags != tags) {
+        aw->sidebar_tags = tags;
+        gtk_stack_set_visible_child_name(
+            GTK_STACK(aw->sidebar_stack),
+            tags ? "tags" : "dates");
+    }
+    update_sidebar_buttons(aw);
 }
 
-/* Mostra il catalogo dei tag. */
-static void on_tags_clicked(GtkButton *button, gpointer data) {
+/* Alterna vista calendario/lista. */
+static void on_calendar_clicked(GtkToggleButton *button, gpointer data) {
     ArchiveWindow *aw = data;
-    char *catalog;
-    char **parts;
-    GString *text;
-    gboolean any = FALSE;
-    guint i;
-    GtkWidget *dialog;
+    gboolean enabled = gtk_toggle_button_get_active(button);
 
-    (void)button;
-    catalog = store_tags_catalog(aw->store);
-    text = g_string_new(NULL);
-    if (!catalog || !*catalog) {
-        g_string_append(text, "No tags yet.");
+    gtk_stack_set_visible_child_name(GTK_STACK(aw->stack),
+                                     enabled ? "calendar" : "list");
+    if (enabled) {
+        gtk_widget_hide(aw->sidebar);
+        gtk_widget_hide(aw->tags_button);
+        gtk_widget_hide(aw->date_button);
+        update_calendar(aw);
     } else {
-        g_string_append(text, "Tags in this archive:\n\n");
-        parts = g_strsplit(catalog, "\n", -1);
-        for (i = 0; parts[i] != NULL; ++i) {
-            char *name = g_strstrip(parts[i]);
-            if (!*name) continue;
-            if (any) g_string_append_c(text, '\n');
-            g_string_append(text, "\342\200\242 ");
-            g_string_append(text, name);
-            any = TRUE;
-        }
-        g_strfreev(parts);
-        if (!any) {
-            g_string_truncate(text, 0);
-            g_string_append(text, "No tags yet.");
-        }
+        gtk_widget_show(aw->sidebar);
+        gtk_widget_show(aw->tags_button);
+        gtk_widget_show(aw->date_button);
+        update_sidebar_buttons(aw);
+        repopulate_list(aw);
     }
-    g_free(catalog);
-
-    dialog = gtk_message_dialog_new(GTK_WINDOW(aw->window),
-                                    GTK_DIALOG_MODAL |
-                                    GTK_DIALOG_DESTROY_WITH_PARENT,
-                                    GTK_MESSAGE_INFO, GTK_BUTTONS_CLOSE,
-                                    "%s", text->str);
-    gtk_dialog_run(GTK_DIALOG(dialog));
-    gtk_widget_destroy(dialog);
-    g_string_free(text, TRUE);
+    set_accessible_label(GTK_WIDGET(button),
+                         enabled ? "Show notes" : "Show calendar");
+    update_window_title(aw);
 }
 
 /* Annulla il timer di debounce della ricerca. */
@@ -1006,21 +1054,6 @@ static void on_search_changed(GtkSearchEntry *entry, gpointer data) {
     (void)entry;
     cancel_search_timeout(aw);
     aw->search_timeout_id = g_timeout_add(150, search_debounce_cb, aw);
-}
-
-/* Ripoppola la lista dopo il filtro tag. */
-static void on_filter_changed(GtkComboBox *combo, gpointer data) {
-    ArchiveWindow *aw = data;
-    gint active = gtk_combo_box_get_active(combo);
-    char *text = active > 0
-                     ? gtk_combo_box_text_get_active_text(
-                           GTK_COMBO_BOX_TEXT(combo))
-                     : NULL;
-
-    g_free(aw->tag_filter);
-    aw->tag_filter = text;
-    sync_tag_tree(aw);
-    repopulate_list(aw);
 }
 
 /* Comparatore per chiavi numeriche. */
@@ -1098,6 +1131,25 @@ static void select_date_node(ArchiveWindow *aw) {
             return;
     }
     gtk_tree_selection_select_iter(selection, &iter);
+    {
+        GtkTreePath *path = gtk_tree_model_get_path(
+            GTK_TREE_MODEL(aw->date_model), &iter);
+
+        if (path != NULL) {
+            gtk_tree_view_expand_to_path(GTK_TREE_VIEW(aw->date_tree), path);
+            gtk_tree_path_free(path);
+        }
+    }
+}
+
+/* Espande una riga dell'albero indicata dall'iter. */
+static void expand_tree_iter(GtkWidget *tree, GtkTreeModel *model,
+                             GtkTreeIter *iter) {
+    GtkTreePath *path = gtk_tree_model_get_path(model, iter);
+
+    if (path == NULL) return;
+    gtk_tree_view_expand_row(GTK_TREE_VIEW(tree), path, FALSE);
+    gtk_tree_path_free(path);
 }
 
 /* Seleziona il nodo tag corrente o la radice. */
@@ -1127,13 +1179,6 @@ static void select_tag_node(ArchiveWindow *aw) {
         }
     }
     gtk_tree_selection_select_iter(selection, &root);
-}
-
-/* Mantiene sincronizzato l'albero dei tag con il filtro corrente. */
-static void sync_tag_tree(ArchiveWindow *aw) {
-    aw->updating_sidebar = TRUE;
-    select_tag_node(aw);
-    aw->updating_sidebar = FALSE;
 }
 
 /* Costruisce l'albero date con conteggi. */
@@ -1175,7 +1220,7 @@ static void populate_date_tree(ArchiveWindow *aw) {
 
     gtk_tree_store_append(model, &root, NULL);
     {
-        char *label = g_strdup_printf("All dates (%u)", total);
+        char *label = g_strdup_printf("All notes (%u)", total);
         gtk_tree_store_set(model, &root,
                            DATE_COL_LABEL, label,
                            DATE_COL_VALUE, 0u,
@@ -1189,10 +1234,8 @@ static void populate_date_tree(ArchiveWindow *aw) {
 
     for (i = 0; i < year_keys->len; ++i) {
         guint year = g_array_index(year_keys, guint, i);
-        guint count = GPOINTER_TO_UINT(
-            g_hash_table_lookup(years, GUINT_TO_POINTER(year)));
         GtkTreeIter year_iter;
-        char *label = g_strdup_printf("%04u (%u)", year, count);
+        char *label = g_strdup_printf("%04u", year);
 
         gtk_tree_store_append(model, &year_iter, &root);
         gtk_tree_store_set(model, &year_iter,
@@ -1204,11 +1247,14 @@ static void populate_date_tree(ArchiveWindow *aw) {
         for (j = 0; j < month_keys->len; ++j) {
             guint month = g_array_index(month_keys, guint, j);
             GtkTreeIter month_iter;
+            guint month_number;
 
             if (month / 100u != year) continue;
-            count = GPOINTER_TO_UINT(
-                g_hash_table_lookup(months, GUINT_TO_POINTER(month)));
-            label = g_strdup_printf("%02u (%u)", month % 100u, count);
+            month_number = month % 100u;
+            label = g_strdup_printf(
+                "%s", month_number >= 1 && month_number <= 12
+                          ? MONTH_NAMES[month_number - 1]
+                          : "");
             gtk_tree_store_append(model, &month_iter, &year_iter);
             gtk_tree_store_set(model, &month_iter,
                                DATE_COL_LABEL, label,
@@ -1219,16 +1265,9 @@ static void populate_date_tree(ArchiveWindow *aw) {
             for (k = 0; k < day_keys->len; ++k) {
                 guint day = g_array_index(day_keys, guint, k);
                 GtkTreeIter day_iter;
-                char *date_text;
 
                 if (day / 100u != month) continue;
-                count = GPOINTER_TO_UINT(
-                    g_hash_table_lookup(days, GUINT_TO_POINTER(day)));
-                date_text = date_format(day);
-                label = g_strdup_printf("%s (%u)",
-                                        date_text ? date_text : "",
-                                        count);
-                g_free(date_text);
+                label = g_strdup_printf("%02u", day % 100u);
                 gtk_tree_store_append(model, &day_iter, &month_iter);
                 gtk_tree_store_set(model, &day_iter,
                                    DATE_COL_LABEL, label,
@@ -1246,6 +1285,17 @@ static void populate_date_tree(ArchiveWindow *aw) {
     g_hash_table_destroy(months);
     g_hash_table_destroy(days);
 
+    {
+        GtkTreeIter year, month;
+
+        expand_tree_iter(aw->date_tree, GTK_TREE_MODEL(model), &root);
+        if (gtk_tree_model_iter_children(GTK_TREE_MODEL(model), &year, &root)) {
+            expand_tree_iter(aw->date_tree, GTK_TREE_MODEL(model), &year);
+            if (gtk_tree_model_iter_children(GTK_TREE_MODEL(model), &month,
+                                             &year))
+                expand_tree_iter(aw->date_tree, GTK_TREE_MODEL(model), &month);
+        }
+    }
     select_date_node(aw);
     aw->updating_sidebar = FALSE;
 }
@@ -1287,12 +1337,13 @@ static void populate_tag_tree(ArchiveWindow *aw) {
 
     gtk_tree_store_append(model, &root, NULL);
     {
-        char *label = g_strdup_printf("All tags (%u)",
-                                      g_hash_table_size(counts));
+        char *label = g_strdup_printf(
+            "All notes (%u)",
+            aw->store && aw->store->notes ? aw->store->notes->len : 0);
         gtk_tree_store_set(model, &root,
                            TAG_COL_LABEL, label,
                            TAG_COL_VALUE, "",
-                           TAG_COL_COUNT, 0, -1);
+                           TAG_COL_COUNT, "", -1);
         g_free(label);
     }
 
@@ -1302,18 +1353,19 @@ static void populate_tag_tree(ArchiveWindow *aw) {
         const char *name = item->data;
         guint count = GPOINTER_TO_UINT(g_hash_table_lookup(counts, name));
         GtkTreeIter child;
-        char *label = g_strdup_printf("%s (%u)", name, count);
+        char number[16];
 
+        g_snprintf(number, sizeof(number), "%u", count);
         gtk_tree_store_append(model, &child, &root);
         gtk_tree_store_set(model, &child,
-                           TAG_COL_LABEL, label,
+                           TAG_COL_LABEL, name,
                            TAG_COL_VALUE, name,
-                           TAG_COL_COUNT, (gint)count, -1);
-        g_free(label);
+                           TAG_COL_COUNT, number, -1);
     }
     g_list_free(keys);
     g_hash_table_destroy(counts);
 
+    expand_tree_iter(aw->tag_tree, GTK_TREE_MODEL(model), &root);
     select_tag_node(aw);
     aw->updating_sidebar = FALSE;
 }
@@ -1322,46 +1374,6 @@ static void populate_tag_tree(ArchiveWindow *aw) {
 static void populate_sidebar(ArchiveWindow *aw) {
     populate_date_tree(aw);
     populate_tag_tree(aw);
-}
-
-/* Popola il combo dei tag. */
-static void populate_tag_combo(ArchiveWindow *aw) {
-    GtkComboBox *combo = GTK_COMBO_BOX(aw->tag_combo);
-    char *catalog;
-    char **parts;
-    gint active = 0;
-    gint index = 1;
-    gboolean found = FALSE;
-    guint i;
-
-    g_signal_handlers_block_by_func(combo, G_CALLBACK(on_filter_changed), aw);
-    gtk_combo_box_text_remove_all(GTK_COMBO_BOX_TEXT(combo));
-    gtk_combo_box_text_append_text(GTK_COMBO_BOX_TEXT(combo), "All tags");
-
-    catalog = store_tags_catalog(aw->store);
-    if (catalog && *catalog) {
-        parts = g_strsplit(catalog, "\n", -1);
-        for (i = 0; parts[i] != NULL; ++i) {
-            char *name = g_strstrip(parts[i]);
-            if (!*name) continue;
-            gtk_combo_box_text_append_text(GTK_COMBO_BOX_TEXT(combo), name);
-            if (aw->tag_filter && g_strcmp0(aw->tag_filter, name) == 0) {
-                active = index;
-                found = TRUE;
-            }
-            ++index;
-        }
-        g_strfreev(parts);
-    }
-    g_free(catalog);
-
-    if (aw->tag_filter && !found) {
-        g_free(aw->tag_filter);
-        aw->tag_filter = NULL;
-    }
-    gtk_combo_box_set_active(combo, active);
-    g_signal_handlers_unblock_by_func(combo, G_CALLBACK(on_filter_changed),
-                                      aw);
 }
 
 /* Salva la posizione di scorrimento corrente del flow box. */
@@ -1404,32 +1416,28 @@ static void restore_flow_scroll_later(ArchiveWindow *aw) {
         g_idle_add_full(G_PRIORITY_DEFAULT_IDLE, restore_flow_scroll, aw, NULL);
 }
 
-/* Aggiorna titolo finestra e header in base a vista e filtri. */
+/* Titoli coerenti con Windows; la lista contiene sempre "Archive". */
 static void update_window_title(ArchiveWindow *aw) {
     const char *visible;
     const char *text;
-    gboolean calendar_view;
-    gboolean filtered;
-    const char *header_title;
-    char *window_title;
+    const char *title;
 
     if (!aw || !aw->header) return;
-    visible = gtk_stack_get_visible_child_name(GTK_STACK(aw->stack));
-    calendar_view = visible && g_strcmp0(visible, "calendar") == 0;
-    text = gtk_entry_get_text(GTK_ENTRY(aw->search));
-    filtered = (text && *text) ||
-               (aw->tag_filter && *aw->tag_filter) ||
-               (aw->date_filter && aw->date_kind > 0);
+    visible = aw->stack != NULL
+                  ? gtk_stack_get_visible_child_name(GTK_STACK(aw->stack))
+                  : NULL;
+    text = aw->search != NULL ? gtk_entry_get_text(GTK_ENTRY(aw->search)) : NULL;
+    if (visible != NULL && g_strcmp0(visible, "calendar") == 0) {
+        gboolean filtered = (text != NULL && *text != '\0') ||
+                            (aw->tag_filter != NULL && *aw->tag_filter != '\0') ||
+                            (aw->date_filter != 0 && aw->date_kind > 0);
 
-    if (calendar_view)
-        header_title = filtered ? "Calendar - Filtered notes" : "Calendar";
-    else
-        header_title = "Archive";
-
-    gtk_header_bar_set_title(GTK_HEADER_BAR(aw->header), header_title);
-    window_title = g_strdup_printf("Jotilla \342\200\224 %s", header_title);
-    gtk_window_set_title(GTK_WINDOW(aw->window), window_title);
-    g_free(window_title);
+        title = filtered ? "Calendar - Filtered notes" : "Calendar";
+    } else {
+        title = "Notes Archive";
+    }
+    gtk_header_bar_set_title(GTK_HEADER_BAR(aw->header), title);
+    gtk_window_set_title(GTK_WINDOW(aw->window), title);
 }
 
 /* Ricarica la lista con filtri e ricerca. */
@@ -2254,30 +2262,6 @@ static void on_open_folder(GtkButton *button, gpointer data) {
     g_free(path);
 }
 
-/* Abilita o disabilita l'avvio automatico da menu. */
-static void on_autostart_toggled(GtkCheckMenuItem *item, gpointer data) {
-    (void)data;
-    platform_autostart_set(gtk_check_menu_item_get_active(item));
-}
-
-/* Apre la cartella archivio corrente nel file manager. */
-static void on_open_archive_folder(GtkMenuItem *item, gpointer data) {
-    ArchiveWindow *aw = data;
-    char *uri;
-    GError *error = NULL;
-
-    (void)item;
-    if (!aw->store || !aw->store->archive_dir) return;
-    uri = g_filename_to_uri(aw->store->archive_dir, NULL, NULL);
-    if (!uri) return;
-    if (!g_app_info_launch_default_for_uri(uri, NULL, &error)) {
-        g_warning("Impossibile aprire la cartella archivio: %s",
-                  error ? error->message : "errore sconosciuto");
-        if (error) g_error_free(error);
-    }
-    g_free(uri);
-}
-
 /* Applica il filtro selezionato nell'albero delle date. */
 static void on_date_tree_selection_changed(GtkTreeSelection *selection,
                                            gpointer data) {
@@ -2311,7 +2295,6 @@ static void on_tag_tree_selection_changed(GtkTreeSelection *selection,
     g_free(aw->tag_filter);
     aw->tag_filter = (tag && *tag) ? g_strdup(tag) : NULL;
     g_free(tag);
-    populate_tag_combo(aw);
     repopulate_list(aw);
 }
 
@@ -2325,6 +2308,7 @@ static void archive_state_free(gpointer data) {
         g_source_remove(aw->flow_scroll_restore_id);
     if (aw->day_counts) g_hash_table_destroy(aw->day_counts);
     if (aw->visible_notes) g_ptr_array_free(aw->visible_notes, TRUE);
+    if (aw->css) g_object_unref(aw->css);
     g_free(aw->tag_filter);
     g_free(aw);
 }
@@ -2344,25 +2328,22 @@ GtkWidget *archive_window_new(Store *store) {
     ArchiveWindow *aw;
     GtkWidget *window;
     GtkWidget *header;
-    GtkWidget *new_note;
-    GtkWidget *calendar_button;
-    GtkWidget *sidebar_button;
-    GtkWidget *delete_button;
-    GtkWidget *open_folder;
-    GtkWidget *tags_button;
-    GtkWidget *refresh_button;
-    GtkWidget *menu_button;
-    GtkWidget *menu;
-    GtkWidget *autostart_item;
-    GtkWidget *open_archive_item;
-    GtkWidget *refresh_item;
     GtkWidget *content;
-    GtkWidget *paned;
+    GtkWidget *toolbar;
+    GtkWidget *tags_toggle;
+    GtkWidget *date_toggle;
+    GtkWidget *archive_button;
+    GtkWidget *archive_box;
+    GtkWidget *archive_icon;
+    GtkWidget *archive_label;
+    GtkWidget *calendar_button;
+    GtkWidget *body;
+    GtkWidget *sidebar;
     GtkWidget *right;
-    GtkWidget *top;
     GtkWidget *scroll;
     GtkWidget *calendar_page;
     GtkWidget *calendar_scroll;
+    GtkWidget *calendar_nav;
     GtkWidget *date_scroll;
     GtkWidget *tag_scroll;
     GtkCellRenderer *renderer;
@@ -2370,8 +2351,10 @@ GtkWidget *archive_window_new(Store *store) {
     GtkTreeSelection *selection;
 
     window = gtk_window_new(GTK_WINDOW_TOPLEVEL);
-    gtk_window_set_title(GTK_WINDOW(window), "Jotilla \342\200\224 Archive");
-    gtk_window_set_default_size(GTK_WINDOW(window), 980, 640);
+    gtk_window_set_title(GTK_WINDOW(window), "Notes Archive");
+    gtk_window_set_default_size(GTK_WINDOW(window), 990, 660);
+    gtk_style_context_add_class(gtk_widget_get_style_context(window),
+                                "archive-window");
 
     aw = g_new0(ArchiveWindow, 1);
     aw->window = window;
@@ -2386,92 +2369,101 @@ GtkWidget *archive_window_new(Store *store) {
                         : aw->cal_year * 10000u + 101u;
     aw->day_counts = g_hash_table_new(g_direct_hash, g_direct_equal);
     aw->selection_anchor = -1;
+    aw->css = gtk_css_provider_new();
+    gtk_css_provider_load_from_data(aw->css, ARCHIVE_CSS, -1, NULL);
 
     header = gtk_header_bar_new();
-    gtk_header_bar_set_title(GTK_HEADER_BAR(header), "Archive");
+    gtk_style_context_add_class(gtk_widget_get_style_context(header),
+                                "archive-header");
+    gtk_header_bar_set_title(GTK_HEADER_BAR(header), "Notes Archive");
     gtk_header_bar_set_subtitle(GTK_HEADER_BAR(header), "");
     gtk_header_bar_set_show_close_button(GTK_HEADER_BAR(header), TRUE);
     aw->header = header;
-
-    new_note = gtk_button_new_with_label("New note");
-    gtk_widget_set_tooltip_text(new_note, "Create a new note");
-    g_signal_connect(new_note, "clicked", G_CALLBACK(on_new_note), aw);
-    gtk_header_bar_pack_start(GTK_HEADER_BAR(header), new_note);
-
-    calendar_button = gtk_button_new_with_label("Calendar");
-    aw->calendar_button = calendar_button;
-    set_accessible_label(calendar_button, "Toggle the calendar view");
-    g_signal_connect(calendar_button, "clicked",
-                     G_CALLBACK(on_calendar_clicked), aw);
-    gtk_header_bar_pack_start(GTK_HEADER_BAR(header), calendar_button);
-
-    sidebar_button = gtk_button_new_with_label("Dates/Tags");
-    set_accessible_label(sidebar_button, "Show tags");
-    g_signal_connect(sidebar_button, "clicked",
-                     G_CALLBACK(on_sidebar_toggle), aw);
-    gtk_header_bar_pack_start(GTK_HEADER_BAR(header), sidebar_button);
-
-    delete_button = gtk_button_new_with_label("Delete selected");
-    set_accessible_label(delete_button,
-                         "Delete the selected notes from the archive");
-    g_signal_connect(delete_button, "clicked",
-                     G_CALLBACK(on_delete_selected), aw);
-    gtk_header_bar_pack_start(GTK_HEADER_BAR(header), delete_button);
-
-    open_folder = gtk_button_new_with_label("Open folder\342\200\246");
-    set_accessible_label(open_folder, "Switch archive folder");
-    g_signal_connect(open_folder, "clicked",
-                     G_CALLBACK(on_open_folder), aw);
-    gtk_header_bar_pack_end(GTK_HEADER_BAR(header), open_folder);
-
-    tags_button = gtk_button_new_with_label("Tags");
-    set_accessible_label(tags_button, "Show all tags");
-    g_signal_connect(tags_button, "clicked", G_CALLBACK(on_tags_clicked), aw);
-    gtk_header_bar_pack_end(GTK_HEADER_BAR(header), tags_button);
-
-    refresh_button = gtk_button_new_with_label("Refresh");
-    set_accessible_label(refresh_button, "Reload the archive");
-    g_signal_connect_swapped(refresh_button, "clicked",
-                             G_CALLBACK(archive_window_refresh), window);
-    gtk_header_bar_pack_end(GTK_HEADER_BAR(header), refresh_button);
-
-    menu = gtk_menu_new();
-
-    autostart_item = gtk_check_menu_item_new_with_label("Start at login");
-    gtk_check_menu_item_set_active(GTK_CHECK_MENU_ITEM(autostart_item),
-                                   platform_autostart_enabled());
-    g_signal_connect(autostart_item, "toggled",
-                     G_CALLBACK(on_autostart_toggled), aw);
-    gtk_menu_shell_append(GTK_MENU_SHELL(menu), autostart_item);
-
-    open_archive_item = gtk_menu_item_new_with_label("Open archive folder");
-    g_signal_connect(open_archive_item, "activate",
-                     G_CALLBACK(on_open_archive_folder), aw);
-    gtk_menu_shell_append(GTK_MENU_SHELL(menu), open_archive_item);
-
-    gtk_menu_shell_append(GTK_MENU_SHELL(menu),
-                          gtk_separator_menu_item_new());
-
-    refresh_item = gtk_menu_item_new_with_label("Refresh");
-    g_signal_connect_swapped(refresh_item, "activate",
-                             G_CALLBACK(archive_window_refresh), window);
-    gtk_menu_shell_append(GTK_MENU_SHELL(menu), refresh_item);
-
-    gtk_widget_show_all(menu);
-
-    menu_button = gtk_menu_button_new();
-    gtk_button_set_label(GTK_BUTTON(menu_button), "\342\213\256");
-    gtk_menu_button_set_popup(GTK_MENU_BUTTON(menu_button), menu);
-    set_accessible_label(menu_button, "Archive settings");
-    gtk_header_bar_pack_end(GTK_HEADER_BAR(header), menu_button);
-
     gtk_window_set_titlebar(GTK_WINDOW(window), header);
 
     content = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
+    gtk_style_context_add_class(gtk_widget_get_style_context(content),
+                                "archive-content");
     gtk_container_add(GTK_CONTAINER(window), content);
 
-    paned = gtk_paned_new(GTK_ORIENTATION_HORIZONTAL);
-    gtk_widget_set_vexpand(paned, TRUE);
+    toolbar = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
+    gtk_style_context_add_class(gtk_widget_get_style_context(toolbar),
+                                "archive-toolbar");
+
+    tags_toggle = gtk_toggle_button_new_with_label("Tags");
+    aw->tags_button = tags_toggle;
+    gtk_style_context_add_class(gtk_widget_get_style_context(tags_toggle),
+                                "archive-tool-button");
+    g_object_set_data(G_OBJECT(tags_toggle), "archive-tags",
+                      GINT_TO_POINTER(1));
+    set_accessible_label(tags_toggle, "Show tags");
+    g_signal_connect(tags_toggle, "toggled",
+                     G_CALLBACK(on_sidebar_toggled), aw);
+    gtk_box_pack_start(GTK_BOX(toolbar), tags_toggle, FALSE, FALSE, 0);
+
+    date_toggle = gtk_toggle_button_new_with_label("Date");
+    aw->date_button = date_toggle;
+    gtk_style_context_add_class(gtk_widget_get_style_context(date_toggle),
+                                "archive-tool-button");
+    g_object_set_data(G_OBJECT(date_toggle), "archive-tags",
+                      GINT_TO_POINTER(0));
+    gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(date_toggle), TRUE);
+    set_accessible_label(date_toggle, "Show dates");
+    g_signal_connect(date_toggle, "toggled",
+                     G_CALLBACK(on_sidebar_toggled), aw);
+    gtk_box_pack_start(GTK_BOX(toolbar), date_toggle, FALSE, FALSE, 0);
+
+    aw->search = gtk_search_entry_new();
+    gtk_entry_set_max_length(GTK_ENTRY(aw->search), 511);
+    gtk_entry_set_placeholder_text(GTK_ENTRY(aw->search),
+                                   "Search notes and tags");
+    gtk_widget_set_hexpand(aw->search, TRUE);
+    gtk_widget_set_tooltip_text(aw->search, "Search text and tags");
+    gtk_style_context_add_class(gtk_widget_get_style_context(aw->search),
+                                "archive-search");
+    gtk_box_pack_start(GTK_BOX(toolbar), aw->search, TRUE, TRUE, 0);
+
+    archive_button = gtk_button_new();
+    gtk_style_context_add_class(gtk_widget_get_style_context(archive_button),
+                                "archive-tool-button");
+    archive_box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 4);
+    archive_icon = gtk_image_new_from_icon_name("folder-symbolic",
+                                                GTK_ICON_SIZE_MENU);
+    archive_label = gtk_label_new("Archive");
+    gtk_box_pack_start(GTK_BOX(archive_box), archive_icon, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(archive_box), archive_label, FALSE, FALSE, 0);
+    gtk_container_add(GTK_CONTAINER(archive_button), archive_box);
+    set_accessible_label(archive_button, "Switch archive folder");
+    g_signal_connect(archive_button, "clicked",
+                     G_CALLBACK(on_open_folder), aw);
+    gtk_box_pack_start(GTK_BOX(toolbar), archive_button, FALSE, FALSE, 0);
+
+    calendar_button = gtk_toggle_button_new();
+    aw->calendar_button = calendar_button;
+    gtk_widget_set_size_request(calendar_button, 32, 32);
+    gtk_style_context_add_class(gtk_widget_get_style_context(calendar_button),
+                                "archive-icon-button");
+    gtk_button_set_image(GTK_BUTTON(calendar_button),
+                         gtk_image_new_from_icon_name(
+                             "x-office-calendar-symbolic",
+                             GTK_ICON_SIZE_MENU));
+    set_accessible_label(calendar_button, "Show calendar");
+    gtk_widget_set_tooltip_text(calendar_button, "Show calendar");
+    g_signal_connect(calendar_button, "toggled",
+                     G_CALLBACK(on_calendar_clicked), aw);
+    gtk_box_pack_end(GTK_BOX(toolbar), calendar_button, FALSE, FALSE, 0);
+
+    gtk_box_pack_start(GTK_BOX(content), toolbar, FALSE, FALSE, 0);
+
+    body = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
+    gtk_widget_set_vexpand(body, TRUE);
+
+    sidebar = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
+    aw->sidebar = sidebar;
+    gtk_style_context_add_class(gtk_widget_get_style_context(sidebar),
+                                "archive-sidebar");
+    gtk_widget_set_size_request(sidebar, 230, -1);
+    gtk_box_pack_start(GTK_BOX(body), sidebar, FALSE, FALSE, 0);
 
     aw->date_model = gtk_tree_store_new(DATE_COL_COUNT,
                                         G_TYPE_STRING, G_TYPE_UINT,
@@ -2480,6 +2472,9 @@ GtkWidget *archive_window_new(Store *store) {
         GTK_TREE_MODEL(aw->date_model));
     g_object_unref(aw->date_model);
     gtk_tree_view_set_headers_visible(GTK_TREE_VIEW(aw->date_tree), FALSE);
+    gtk_tree_view_set_enable_tree_lines(GTK_TREE_VIEW(aw->date_tree), TRUE);
+    gtk_style_context_add_class(gtk_widget_get_style_context(aw->date_tree),
+                                "archive-tree");
     renderer = gtk_cell_renderer_text_new();
     column = gtk_tree_view_column_new_with_attributes(
         "Dates", renderer, "text", DATE_COL_LABEL, NULL);
@@ -2491,21 +2486,34 @@ GtkWidget *archive_window_new(Store *store) {
                      G_CALLBACK(on_date_tree_selection_changed), aw);
 
     date_scroll = gtk_scrolled_window_new(NULL, NULL);
+    gtk_style_context_add_class(gtk_widget_get_style_context(date_scroll),
+                                "archive-sidebar-scroll");
     gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(date_scroll),
                                    GTK_POLICY_AUTOMATIC, GTK_POLICY_AUTOMATIC);
+    gtk_scrolled_window_set_overlay_scrolling(
+        GTK_SCROLLED_WINDOW(date_scroll), FALSE);
+    gtk_widget_set_vexpand(date_scroll, TRUE);
     gtk_container_add(GTK_CONTAINER(date_scroll), aw->date_tree);
 
     aw->tag_model = gtk_tree_store_new(TAG_COL_N_COLUMNS,
                                        G_TYPE_STRING, G_TYPE_STRING,
-                                       G_TYPE_INT);
+                                       G_TYPE_STRING);
     aw->tag_tree = gtk_tree_view_new_with_model(
         GTK_TREE_MODEL(aw->tag_model));
     g_object_unref(aw->tag_model);
     gtk_tree_view_set_headers_visible(GTK_TREE_VIEW(aw->tag_tree), FALSE);
+    gtk_style_context_add_class(gtk_widget_get_style_context(aw->tag_tree),
+                                "archive-tree");
     renderer = gtk_cell_renderer_text_new();
     column = gtk_tree_view_column_new_with_attributes(
         "Tags", renderer, "text", TAG_COL_LABEL, NULL);
     gtk_tree_view_column_set_expand(column, TRUE);
+    gtk_tree_view_append_column(GTK_TREE_VIEW(aw->tag_tree), column);
+    renderer = gtk_cell_renderer_text_new();
+    g_object_set(renderer, "xalign", 1.0, NULL);
+    column = gtk_tree_view_column_new_with_attributes(
+        "Count", renderer, "text", TAG_COL_COUNT, NULL);
+    gtk_tree_view_column_set_alignment(column, 1.0f);
     gtk_tree_view_append_column(GTK_TREE_VIEW(aw->tag_tree), column);
     selection = gtk_tree_view_get_selection(GTK_TREE_VIEW(aw->tag_tree));
     gtk_tree_selection_set_mode(selection, GTK_SELECTION_SINGLE);
@@ -2513,8 +2521,13 @@ GtkWidget *archive_window_new(Store *store) {
                      G_CALLBACK(on_tag_tree_selection_changed), aw);
 
     tag_scroll = gtk_scrolled_window_new(NULL, NULL);
+    gtk_style_context_add_class(gtk_widget_get_style_context(tag_scroll),
+                                "archive-sidebar-scroll");
     gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(tag_scroll),
                                    GTK_POLICY_AUTOMATIC, GTK_POLICY_AUTOMATIC);
+    gtk_scrolled_window_set_overlay_scrolling(
+        GTK_SCROLLED_WINDOW(tag_scroll), FALSE);
+    gtk_widget_set_vexpand(tag_scroll, TRUE);
     gtk_container_add(GTK_CONTAINER(tag_scroll), aw->tag_tree);
 
     aw->sidebar_stack = gtk_stack_new();
@@ -2523,28 +2536,14 @@ GtkWidget *archive_window_new(Store *store) {
     gtk_stack_add_named(GTK_STACK(aw->sidebar_stack), date_scroll, "dates");
     gtk_stack_add_named(GTK_STACK(aw->sidebar_stack), tag_scroll, "tags");
     gtk_stack_set_visible_child_name(GTK_STACK(aw->sidebar_stack), "dates");
-    gtk_widget_set_size_request(aw->sidebar_stack, 210, -1);
+    gtk_widget_set_vexpand(aw->sidebar_stack, TRUE);
+    gtk_box_pack_start(GTK_BOX(sidebar), aw->sidebar_stack, TRUE, TRUE, 0);
 
     right = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
-
-    top = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
-    gtk_widget_set_margin_start(top, 8);
-    gtk_widget_set_margin_end(top, 8);
-    gtk_widget_set_margin_top(top, 8);
-    gtk_widget_set_margin_bottom(top, 8);
-
-    aw->search = gtk_search_entry_new();
-    gtk_entry_set_max_length(GTK_ENTRY(aw->search), 511);
-    gtk_entry_set_placeholder_text(GTK_ENTRY(aw->search),
-                                   "Search notes\342\200\246");
-    gtk_widget_set_hexpand(aw->search, TRUE);
-    gtk_widget_set_tooltip_text(aw->search, "Search text and tags");
-    gtk_box_pack_start(GTK_BOX(top), aw->search, TRUE, TRUE, 0);
-
-    aw->tag_combo = gtk_combo_box_text_new();
-    gtk_widget_set_tooltip_text(aw->tag_combo, "Filter by tag");
-    gtk_box_pack_start(GTK_BOX(top), aw->tag_combo, FALSE, FALSE, 0);
-    gtk_box_pack_start(GTK_BOX(right), top, FALSE, FALSE, 0);
+    gtk_style_context_add_class(gtk_widget_get_style_context(right),
+                                "archive-content");
+    gtk_widget_set_hexpand(right, TRUE);
+    gtk_box_pack_start(GTK_BOX(body), right, TRUE, TRUE, 0);
 
     aw->stack = gtk_stack_new();
     gtk_stack_set_transition_type(GTK_STACK(aw->stack),
@@ -2552,18 +2551,26 @@ GtkWidget *archive_window_new(Store *store) {
     gtk_widget_set_vexpand(aw->stack, TRUE);
 
     scroll = gtk_scrolled_window_new(NULL, NULL);
+    gtk_style_context_add_class(gtk_widget_get_style_context(scroll),
+                                "archive-scroll");
     gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(scroll),
-                                   GTK_POLICY_AUTOMATIC, GTK_POLICY_AUTOMATIC);
+                                   GTK_POLICY_NEVER, GTK_POLICY_ALWAYS);
+    gtk_scrolled_window_set_overlay_scrolling(
+        GTK_SCROLLED_WINDOW(scroll), FALSE);
     aw->flow = gtk_flow_box_new();
     gtk_flow_box_set_selection_mode(GTK_FLOW_BOX(aw->flow),
                                     GTK_SELECTION_MULTIPLE);
-    gtk_flow_box_set_homogeneous(GTK_FLOW_BOX(aw->flow), TRUE);
-    gtk_flow_box_set_column_spacing(GTK_FLOW_BOX(aw->flow), 8);
-    gtk_flow_box_set_row_spacing(GTK_FLOW_BOX(aw->flow), 8);
-    gtk_widget_set_margin_start(aw->flow, 8);
-    gtk_widget_set_margin_end(aw->flow, 8);
-    gtk_widget_set_margin_top(aw->flow, 8);
-    gtk_widget_set_margin_bottom(aw->flow, 8);
+    gtk_flow_box_set_homogeneous(GTK_FLOW_BOX(aw->flow), FALSE);
+    gtk_flow_box_set_column_spacing(GTK_FLOW_BOX(aw->flow), 9);
+    gtk_flow_box_set_row_spacing(GTK_FLOW_BOX(aw->flow), 9);
+    gtk_widget_set_valign(aw->flow, GTK_ALIGN_START);
+    gtk_widget_set_vexpand(aw->flow, FALSE);
+    gtk_style_context_add_class(gtk_widget_get_style_context(aw->flow),
+                                "archive-flow");
+    gtk_widget_set_margin_start(aw->flow, 10);
+    gtk_widget_set_margin_end(aw->flow, 10);
+    gtk_widget_set_margin_top(aw->flow, 10);
+    gtk_widget_set_margin_bottom(aw->flow, 10);
     g_signal_connect(aw->flow, "child-activated",
                      G_CALLBACK(on_flow_child_activated), aw);
     g_signal_connect(aw->flow, "selected-children-changed",
@@ -2575,55 +2582,61 @@ GtkWidget *archive_window_new(Store *store) {
     gtk_stack_add_named(GTK_STACK(aw->stack), scroll, "list");
 
     calendar_page = gtk_box_new(GTK_ORIENTATION_VERTICAL, 6);
+    gtk_style_context_add_class(gtk_widget_get_style_context(calendar_page),
+                                "archive-calendar-page");
     gtk_widget_set_margin_start(calendar_page, 8);
     gtk_widget_set_margin_end(calendar_page, 8);
     gtk_widget_set_margin_top(calendar_page, 8);
     gtk_widget_set_margin_bottom(calendar_page, 8);
 
-    {
-        GtkWidget *calendar_nav = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
+    calendar_nav = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
+    gtk_widget_set_halign(calendar_nav, GTK_ALIGN_CENTER);
+    aw->calendar_prev = gtk_button_new_with_label("\342\200\271");
+    gtk_style_context_add_class(gtk_widget_get_style_context(aw->calendar_prev),
+                                "archive-tool-button");
+    set_accessible_label(aw->calendar_prev, "Previous year");
+    g_object_set_data(G_OBJECT(aw->calendar_prev), "step",
+                      GINT_TO_POINTER(-1));
+    g_signal_connect(aw->calendar_prev, "clicked",
+                     G_CALLBACK(on_calendar_year_step), aw);
+    gtk_box_pack_start(GTK_BOX(calendar_nav), aw->calendar_prev,
+                       FALSE, FALSE, 0);
 
-        gtk_widget_set_halign(calendar_nav, GTK_ALIGN_CENTER);
-        aw->calendar_prev = gtk_button_new_with_label("\342\200\271");
-        set_accessible_label(aw->calendar_prev, "Previous year");
-        g_object_set_data(G_OBJECT(aw->calendar_prev), "step",
-                          GINT_TO_POINTER(-1));
-        g_signal_connect(aw->calendar_prev, "clicked",
-                         G_CALLBACK(on_calendar_year_step), aw);
-        gtk_box_pack_start(GTK_BOX(calendar_nav), aw->calendar_prev,
-                           FALSE, FALSE, 0);
+    aw->calendar_year = gtk_entry_new();
+    gtk_entry_set_max_length(GTK_ENTRY(aw->calendar_year), 4);
+    gtk_entry_set_width_chars(GTK_ENTRY(aw->calendar_year), 6);
+    gtk_entry_set_alignment(GTK_ENTRY(aw->calendar_year), 0.5f);
+    set_accessible_label(aw->calendar_year, "Calendar year");
+    gtk_box_pack_start(GTK_BOX(calendar_nav), aw->calendar_year,
+                       FALSE, FALSE, 0);
 
-        aw->calendar_year = gtk_entry_new();
-        gtk_entry_set_max_length(GTK_ENTRY(aw->calendar_year), 4);
-        gtk_entry_set_width_chars(GTK_ENTRY(aw->calendar_year), 6);
-        gtk_entry_set_alignment(GTK_ENTRY(aw->calendar_year), 0.5f);
-        set_accessible_label(aw->calendar_year, "Calendar year");
-        gtk_box_pack_start(GTK_BOX(calendar_nav), aw->calendar_year,
-                           FALSE, FALSE, 0);
+    aw->calendar_next = gtk_button_new_with_label("\342\200\272");
+    gtk_style_context_add_class(gtk_widget_get_style_context(aw->calendar_next),
+                                "archive-tool-button");
+    set_accessible_label(aw->calendar_next, "Next year");
+    g_object_set_data(G_OBJECT(aw->calendar_next), "step",
+                      GINT_TO_POINTER(1));
+    g_signal_connect(aw->calendar_next, "clicked",
+                     G_CALLBACK(on_calendar_year_step), aw);
+    gtk_box_pack_start(GTK_BOX(calendar_nav), aw->calendar_next,
+                       FALSE, FALSE, 0);
 
-        aw->calendar_next = gtk_button_new_with_label("\342\200\272");
-        set_accessible_label(aw->calendar_next, "Next year");
-        g_object_set_data(G_OBJECT(aw->calendar_next), "step",
-                          GINT_TO_POINTER(1));
-        g_signal_connect(aw->calendar_next, "clicked",
-                         G_CALLBACK(on_calendar_year_step), aw);
-        gtk_box_pack_start(GTK_BOX(calendar_nav), aw->calendar_next,
-                           FALSE, FALSE, 0);
-
-        aw->calendar_today_button = gtk_button_new_with_label("Today");
-        set_accessible_label(aw->calendar_today_button, "Go to today");
-        g_signal_connect(aw->calendar_today_button, "clicked",
-                         G_CALLBACK(on_calendar_today_clicked), aw);
-        gtk_box_pack_start(GTK_BOX(calendar_nav), aw->calendar_today_button,
-                           FALSE, FALSE, 0);
-        gtk_box_pack_start(GTK_BOX(calendar_page), calendar_nav,
-                           FALSE, FALSE, 0);
-    }
+    aw->calendar_today_button = gtk_button_new_with_label("Today");
+    gtk_style_context_add_class(
+        gtk_widget_get_style_context(aw->calendar_today_button),
+        "archive-tool-button");
+    set_accessible_label(aw->calendar_today_button, "Go to today");
+    g_signal_connect(aw->calendar_today_button, "clicked",
+                     G_CALLBACK(on_calendar_today_clicked), aw);
+    gtk_box_pack_start(GTK_BOX(calendar_nav), aw->calendar_today_button,
+                       FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(calendar_page), calendar_nav,
+                       FALSE, FALSE, 0);
 
     aw->calendar = gtk_drawing_area_new();
     gtk_style_context_add_class(gtk_widget_get_style_context(aw->calendar),
-                                "view");
-    gtk_widget_set_size_request(aw->calendar, 640, 400);
+                                "archive-calendar");
+    gtk_widget_set_size_request(aw->calendar, 640, 360);
     gtk_widget_set_vexpand(aw->calendar, TRUE);
     gtk_widget_set_can_focus(aw->calendar, TRUE);
     gtk_widget_add_events(aw->calendar,
@@ -2645,13 +2658,18 @@ GtkWidget *archive_window_new(Store *store) {
     aw->calendar_label = gtk_label_new("");
     gtk_label_set_xalign(GTK_LABEL(aw->calendar_label), 0.0f);
     gtk_style_context_add_class(
-        gtk_widget_get_style_context(aw->calendar_label), "dim-label");
+        gtk_widget_get_style_context(aw->calendar_label),
+        "archive-calendar-label");
     gtk_box_pack_start(GTK_BOX(calendar_page), aw->calendar_label,
                        FALSE, FALSE, 0);
 
     calendar_scroll = gtk_scrolled_window_new(NULL, NULL);
+    gtk_style_context_add_class(gtk_widget_get_style_context(calendar_scroll),
+                                "archive-scroll");
     gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(calendar_scroll),
                                    GTK_POLICY_NEVER, GTK_POLICY_AUTOMATIC);
+    gtk_scrolled_window_set_overlay_scrolling(
+        GTK_SCROLLED_WINDOW(calendar_scroll), FALSE);
     gtk_widget_set_vexpand(calendar_scroll, TRUE);
     aw->calendar_list = gtk_list_box_new();
     gtk_list_box_set_selection_mode(GTK_LIST_BOX(aw->calendar_list),
@@ -2667,10 +2685,7 @@ GtkWidget *archive_window_new(Store *store) {
     gtk_stack_add_named(GTK_STACK(aw->stack), calendar_page, "calendar");
 
     gtk_box_pack_start(GTK_BOX(right), aw->stack, TRUE, TRUE, 0);
-    gtk_paned_pack1(GTK_PANED(paned), aw->sidebar_stack, FALSE, FALSE);
-    gtk_paned_pack2(GTK_PANED(paned), right, TRUE, FALSE);
-    gtk_paned_set_position(GTK_PANED(paned), 220);
-    gtk_box_pack_start(GTK_BOX(content), paned, TRUE, TRUE, 0);
+    gtk_box_pack_start(GTK_BOX(content), body, TRUE, TRUE, 0);
 
     g_object_set_data(G_OBJECT(window), ARCHIVE_STORE_KEY, store);
     g_object_set_data_full(G_OBJECT(window), ARCHIVE_STATE_KEY, aw,
@@ -2680,8 +2695,6 @@ GtkWidget *archive_window_new(Store *store) {
                      G_CALLBACK(on_search_changed), aw);
     g_signal_connect(aw->search, "key-press-event",
                      G_CALLBACK(on_search_key_press), aw);
-    g_signal_connect(aw->tag_combo, "changed",
-                     G_CALLBACK(on_filter_changed), aw);
     g_signal_connect(aw->calendar_year, "activate",
                      G_CALLBACK(on_calendar_year_activate), aw);
     g_signal_connect(aw->calendar_year, "focus-out-event",
@@ -2689,10 +2702,12 @@ GtkWidget *archive_window_new(Store *store) {
     g_signal_connect(window, "key-press-event",
                      G_CALLBACK(on_window_key_press), aw);
 
-    populate_tag_combo(aw);
+    apply_card_provider(header, aw->css);
+    apply_card_provider(content, aw->css);
     populate_sidebar(aw);
     repopulate_list(aw);
     update_calendar(aw);
+    update_sidebar_buttons(aw);
     gtk_widget_show_all(window);
     return window;
 }
@@ -2704,7 +2719,6 @@ void archive_window_refresh(GtkWidget *window) {
     if (!aw) return;
     cancel_search_timeout(aw);
     capture_flow_scroll(aw);
-    populate_tag_combo(aw);
     populate_sidebar(aw);
     repopulate_list(aw);
     update_calendar(aw);
